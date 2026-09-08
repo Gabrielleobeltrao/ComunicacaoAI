@@ -43,9 +43,11 @@ const PASSOS: [string, string, string][] = [
  * mudar, a captura antiga vira uma promessa que o produto não cumpre mais, e a defesa
  * contra isso é ela ser barata de refazer.
  */
-const CAPTURAS: { arquivo: string; titulo: string; texto: string; alt: string }[] = [
+export const CAPTURAS: { arquivo: string; largura: number; altura: number; titulo: string; texto: string; alt: string }[] = [
   {
     arquivo: '/capturas/escritorio.png',
+    largura: 1280,
+    altura: 820,
     titulo: 'O escritório, com quem trabalha nele',
     texto:
       'Cada agente tem mesa, setor e um estado visível: pensando, trabalhando, parado. Clicar num deles abre o que ele sabe, o que pode usar e o que já fez — sem ler log.',
@@ -53,6 +55,8 @@ const CAPTURAS: { arquivo: string; titulo: string; texto: string; alt: string }[
   },
   {
     arquivo: '/capturas/conhecimento.png',
+    largura: 826,
+    altura: 696,
     titulo: 'O mesmo andar, pelo que se sabe nele',
     texto:
       'Uma nuvem que gira: documentos, agentes e setores ligados por quem contém e quem alcança. Selecionar um nó acende a vizinhança dele e responde “o que isto atinge?” sem abrir painel.',
@@ -60,6 +64,8 @@ const CAPTURAS: { arquivo: string; titulo: string; texto: string; alt: string }[
   },
   {
     arquivo: '/capturas/atividade.png',
+    largura: 1280,
+    altura: 700,
     titulo: 'A cadeia inteira de uma resposta',
     texto:
       'De onde partiu (um monitor, uma rotina, uma mensagem), por quais etapas passou, o que foi entregue, quanto demorou e quanto consumiu. Uma linha por execução, e nenhum conteúdo sensível.',
@@ -289,7 +295,10 @@ export function Home() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 40 }}>
           {CAPTURAS.map((c, i) => (
             <div key={c.arquivo} className="grid items-center gap-6 md:grid-cols-2">
-              <div style={{ order: i % 2 === 1 ? 2 : 0, minWidth: 0 }}>
+              {/* A alternância é do DESKTOP, onde há duas colunas. Como `order` inline vale
+                  em qualquer largura, no celular ela jogava a imagem para ANTES do próprio
+                  título — e a pessoa via a tela antes de saber que tela era. */}
+              <div className={i % 2 === 1 ? 'md:order-2' : undefined} style={{ minWidth: 0 }}>
                 <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 19, fontWeight: 800, color: 'var(--text-heading)', margin: '0 0 8px' }}>{c.titulo}</h3>
                 <p style={{ fontSize: 15, color: 'var(--text-muted)', lineHeight: 1.6, margin: 0 }}>{c.texto}</p>
               </div>
@@ -299,8 +308,13 @@ export function Home() {
                 // `lazy` porque estas ficam abaixo da dobra: baixá-las no primeiro quadro
                 // atrasaria justamente o que a pessoa veio ver.
                 loading="lazy"
-                width={1280}
-                height={820}
+                // As MEDIDAS DE VERDADE de cada arquivo, e não um par repetido: é delas que
+                // o navegador tira a proporção para reservar o espaço antes de baixar a
+                // imagem. Erradas, a página salta quando cada uma chega — e no celular o
+                // salto acontece justamente sob o dedo. `capturas.test.ts` compara os dois
+                // números com o cabeçalho do PNG.
+                width={c.largura}
+                height={c.altura}
                 data-testid={`home-captura-${i}`}
                 style={{ width: '100%', height: 'auto', borderRadius: 14, border: '1px solid var(--border-subtle)', boxShadow: 'var(--shadow-raised)', background: 'var(--surface-card)' }}
               />

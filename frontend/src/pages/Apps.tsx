@@ -25,7 +25,7 @@ import {
 import type { AppCatalogEntry, AppInstallation } from '../lib/apps'
 import { API_URL } from '../lib/api'
 import { useAppNavigation } from '../lib/appNavigation'
-import { Badge, Button, Card, Dialog, EmptyState, Field, Icon, IconButton, Input, Select, Tabs, Tag } from '../ui'
+import { Badge, Button, Card, Dialog, EmptyState, Field, Icon, IconButton, Input, Select, Tabs, Tag, usePonteiroGrosso } from '../ui'
 
 // The Apps page: what the account can connect (Catálogo), what it already connected
 // (Conectados) and the HTTP actions the owner wrote themselves (Personalizados).
@@ -68,6 +68,7 @@ const TABS: { value: TabKey; label: string }[] = [
 ]
 
 export function Apps() {
+  const dedo = usePonteiroGrosso()
   const [params, setParams] = useSearchParams()
   const raw = params.get('tab')
   const tab: TabKey = raw === 'connected' || raw === 'custom' || raw === 'mine' ? raw : 'catalog'
@@ -176,7 +177,7 @@ export function Apps() {
             Aquela página pertence ao App <strong>{inactiveName}</strong>, que ainda não está ativo nesta conta. Ative-o aqui para abri-la.
           </p>
         ) : null}
-        <Tabs tabs={TABS} value={tab} onChange={setTab} style={{ alignSelf: 'start' }} />
+        <Tabs tabs={TABS} value={tab} onChange={setTab} rotulo="Seção" style={{ alignSelf: 'start' }} />
 
         {tab === 'custom' ? (
           <CustomToolsPanel />
@@ -198,10 +199,14 @@ export function Apps() {
             {/* CADA FILTRO É UMA PERGUNTA, e a pergunta fica escrita.
                 Eram quinze pastilhas soltas em duas fileiras sem rótulo — e duas delas,
                 "Todos" e "Tudo", com a mesma cara e significados diferentes. */}
-            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }} data-testid="apps-filtros">
+            {/* `minWidth: 0`: sem isto o `min-width: auto` de item flex deixava este bloco
+                ficar mais largo que a coluna (391 num espaço de 358) e o campo "Categoria"
+                era cortado na borda — com a rolagem interna da Origem nunca entrando em
+                ação, porque não havia o que rolar. */}
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end', minWidth: 0 }} data-testid="apps-filtros">
               {/* Larguras que ENCOLHEM: num celular os três controles empilham, e um campo
                   de largura fixa deixa uma faixa morta ao lado dele. */}
-              <label style={{ ...ROTULO, flex: '1 1 200px', maxWidth: 280 }}>
+              <label className="max-sm:!max-w-full" style={{ ...ROTULO, flex: '1 1 200px', maxWidth: 280 }}>
                 Buscar
                 <Input
                   value={search}
@@ -215,7 +220,7 @@ export function Apps() {
 
               {/* A categoria vem dos dados e cresce com o catálogo: uma fileira de pastilhas
                   quebra em duas linhas no dia em que alguém publica a décima segunda. */}
-              <label style={{ ...ROTULO, flex: '1 1 160px', maxWidth: 220 }}>
+              <label className="max-sm:!max-w-full" style={{ ...ROTULO, flex: '1 1 160px', maxWidth: 220 }}>
                 Categoria
                 <Select
                   value={category}
@@ -228,6 +233,24 @@ export function Apps() {
 
               {/* A origem é um conjunto FECHADO de quatro: emendadas, elas se leem como um
                   controle só — e não como quatro pastilhas soltas ao lado das outras onze. */}
+              {/* SOB O DEDO A ORIGEM VIRA LISTA. Quatro segmentos emendados somam 375 px
+                  numa coluna de 358: rolavam para o lado, e rolagem lateral escondida é a
+                  pior forma de esconder — quem não sabe que existe uma quarta opção não
+                  arrasta para procurá-la. Aberta, ela é a mesma pergunta da "Categoria"
+                  logo acima, e responde do mesmo jeito. */}
+              {dedo ? (
+                <label className="max-sm:!max-w-full" style={{ ...ROTULO, flex: '1 1 160px', maxWidth: 220 }}>
+                  Origem
+                  <Select
+                    value={origem}
+                    onChange={(e) => setOrigem(e.target.value as Origem)}
+                    data-testid="origem-filtros"
+                    aria-label="Origem"
+                    style={{ width: '100%' }}
+                    options={ORIGENS.map((o) => ({ value: o.valor, label: o.label }))}
+                  />
+                </label>
+              ) : (
               <div style={{ ...ROTULO, maxWidth: '100%' }} role="group" aria-label="Origem" data-testid="origem-filtros">
                 Origem
                 {/* Quatro segmentos emendados não podem quebrar linha sem virar dois
@@ -247,6 +270,7 @@ export function Apps() {
                   ))}
                 </div>
               </div>
+              )}
 
               {/* Só aparece quando há o que limpar: um controle que não faz nada é ruído. */}
               {(search || category || origem !== 'todos') && (
@@ -335,6 +359,10 @@ function SegmentoDeOrigem({
       style={{
         height: 42,
         padding: '0 14px',
+        // Sem isto o flex encolhia cada segmento até partir a palavra: "Tud|o", "Meu|s".
+        // O bloco em volta já rola para o lado; o que faltava era o botão não ceder.
+        whiteSpace: 'nowrap',
+        flex: '0 0 auto',
         border: `1px solid ${active ? 'var(--intent-brand)' : 'var(--border-strong)'}`,
         // A borda compartilhada não pode virar duas: o vizinho da direita cobre a do vizinho
         // da esquerda, e o botão ativo sobe para a frente para a dele não ser coberta.

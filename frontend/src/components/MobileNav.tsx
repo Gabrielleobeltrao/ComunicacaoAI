@@ -82,14 +82,19 @@ export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { 
                 <span style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bctx.building?.name ?? 'Prédio'}</span>
                 <div className="flex items-center gap-2">
                   <span style={{ width: 12, height: 12, borderRadius: 4, background: bctx.activeFloor?.color ?? 'var(--accent, #6b5cff)', flexShrink: 0 }} />
-                  <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {/* O nome do andar QUEBRA em vez de virar reticências. Era a única
+                      informação do bloco e aparecia como "Atendimento e pós…": um menu
+                      que corta justamente o que diz onde você está. Duas linhas cabem. */}
+                  <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-heading)', minWidth: 0, overflowWrap: 'anywhere' }}>
                     Andar atual: {bctx.activeFloor?.name ?? 'Nenhum'}
                   </span>
                 </div>
                 <button
                   onClick={onOpenFloorPicker}
                   className="flex items-center justify-center gap-2 rounded-lg"
-                  style={{ minHeight: 40, padding: '0 12px', border: '1px solid var(--border-strong,#d0d5dd)', background: 'var(--surface-card,#fff)', color: 'var(--text-body)', cursor: 'pointer', font: 'inherit', fontWeight: 600 }}
+                  // `minHeight` inline venceria a classe: 44 direto, que é o mínimo do
+                  // sistema, e este menu só existe sob o dedo.
+                  style={{ minHeight: 44, padding: '0 12px', border: '1px solid var(--border-strong,#d0d5dd)', background: 'var(--surface-card,#fff)', color: 'var(--text-body)', cursor: 'pointer', font: 'inherit', fontWeight: 600 }}
                 >
                   <Icon name="chevrons-up-down" size={16} />
                   Trocar de andar

@@ -22,7 +22,9 @@ export function CascaPublica({ children, rodape = true }: { children: ReactNode;
           marca, link e dois botões numa linha só empurravam a página inteira para o lado.
           Quebrar é o comportamento certo; encolher a fonte seria esconder o problema. */}
       <header className="flex flex-wrap items-center gap-x-3 gap-y-2" style={{ padding: '18px var(--gutter-screen)' }}>
-        <Link to="/" style={{ textDecoration: 'none' }} aria-label="Início">
+        {/* `ds-hit` cresce o alvo só sob ponteiro grosso: no desktop a marca continua do
+            tamanho que é, no celular ela vira um alvo que o polegar acerta. */}
+        <Link to="/" className="ds-hit flex items-center" style={{ textDecoration: 'none' }} aria-label="Início">
           <Brand />
         </Link>
         <nav className="flex items-center gap-1" aria-label="Navegação do site">
@@ -45,13 +47,18 @@ export function CascaPublica({ children, rodape = true }: { children: ReactNode;
             </Link>
           ))}
         </nav>
-        <div style={{ flex: 1 }} />
-        <Button variant="ghost" size="sm" onClick={() => navigate('/login')} data-testid="publico-entrar">
-          Entrar
-        </Button>
-        <Button size="sm" onClick={() => navigate('/register')} data-testid="publico-criar-conta">
-          Criar conta
-        </Button>
+        {/* Os dois botões andam JUNTOS. Soltos, o `flex-wrap` quebrava entre eles e o
+            "Criar conta" descia sozinho, encostado à esquerda, como se tivesse escapado.
+            Agrupados com `ms-auto`, ou cabem na linha da marca, ou descem os dois
+            alinhados à direita — nas duas larguras parece uma decisão. */}
+        <div className="ms-auto flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={() => navigate('/login')} data-testid="publico-entrar">
+            Entrar
+          </Button>
+          <Button size="sm" onClick={() => navigate('/register')} data-testid="publico-criar-conta">
+            Criar conta
+          </Button>
+        </div>
       </header>
 
       <main style={{ flex: 1 }}>{children}</main>
@@ -63,10 +70,12 @@ export function CascaPublica({ children, rodape = true }: { children: ReactNode;
           data-testid="publico-rodape"
         >
           <span>© {new Date().getFullYear()} Tavorium</span>
-          <Link to="/docs" style={{ color: 'inherit' }}>
+          {/* Links de rodapé são controles isolados, e não links no meio de uma frase:
+              eles precisam do alvo inteiro. */}
+          <Link to="/docs" className="ds-hit inline-flex items-center" style={{ color: 'inherit' }}>
             Documentação
           </Link>
-          <Link to="/login" style={{ color: 'inherit' }}>
+          <Link to="/login" className="ds-hit inline-flex items-center" style={{ color: 'inherit' }}>
             Entrar
           </Link>
         </footer>

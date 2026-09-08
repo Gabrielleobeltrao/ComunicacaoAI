@@ -19,7 +19,7 @@ import { AgentSectorAssignment } from '../components/AgentSectorAssignment'
 import { floorAgent, floorAgents, floorSector } from '../lib/floorRoutes'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import type { AgentOverview, AgentStatsResponse, AgentSummary } from '../lib/types'
-import { Button, Card, MetricStat, StatusPill, Tag } from '../ui'
+import { Button, Card, MetricStat, StatusPill, Tabs, Tag } from '../ui'
 import type { AgentStatus } from '../ui'
 import { Illustration } from '../office/Illustration'
 
@@ -522,35 +522,19 @@ export function AgentDetail() {
             <Card padding="0" style={{ minWidth: 0 }}>
               {/* Only the tab STRIP scrolls sideways on a phone; the tab content must
                   never be clipped by the card. */}
-              <div style={{ display: 'flex', padding: '14px 18px', borderBottom: '1px solid var(--border-subtle)', overflowX: 'auto' }} data-testid="agent-tabs">
-                <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 'var(--radius-control)', background: 'var(--surface-sunken)' }}>
-                  {TABS.map((t) => {
-                    const on = t.key === active
-                    return (
-                      <button
-                        key={t.key}
-                        onClick={() => navigate(fid ? floorAgent(fid, agent._id, t.key) : `/agents/${agent._id}/${t.key}`)}
-                        style={{
-                          height: 32,
-                          padding: '0 14px',
-                          borderRadius: 'var(--radius-xs)',
-                          border: 0,
-                          background: on ? 'var(--surface-card)' : 'transparent',
-                          boxShadow: on ? 'var(--shadow-flat)' : 'none',
-                          color: on ? 'var(--text-heading)' : 'var(--text-muted)',
-                          fontFamily: 'var(--font-ui)',
-                          fontSize: 13.5,
-                          fontWeight: 700,
-                          whiteSpace: 'nowrap',
-                          cursor: 'pointer',
-                          transition: 'all var(--dur-fast) var(--ease-standard)',
-                        }}
-                      >
-                        {t.label}
-                      </button>
-                    )
-                  })}
-                </div>
+              {/* A MESMA fileira de abas do resto do sistema, e não uma cópia à mão.
+                  Esta era um clone do `Tabs` com os mesmos defeitos que o componente já
+                  tinha corrigido: 32 px de alvo e cinco rótulos rolando de lado num
+                  telefone. Sob o dedo o componente troca a fileira por um botão que abre
+                  a lista inteira — e agora esta tela ganha isso de graça. */}
+              <div style={{ display: 'flex', padding: '14px 18px', borderBottom: '1px solid var(--border-subtle)' }} data-testid="agent-tabs">
+                <Tabs
+                  tabs={TABS.map((t) => ({ value: t.key, label: t.label }))}
+                  value={active}
+                  onChange={(chave) => navigate(fid ? floorAgent(fid, agent._id, chave) : `/agents/${agent._id}/${chave}`)}
+                  rotulo="Seção"
+                  style={{ alignSelf: 'start', flex: '1 1 auto' }}
+                />
               </div>
               <div style={{ padding: 18, minWidth: 0, overflowWrap: 'anywhere' }}>
                 {active === 'atividade' ? (
