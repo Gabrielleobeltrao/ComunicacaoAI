@@ -702,3 +702,41 @@ test('AMEAÇA: com VÁRIOS andares e nenhuma área dita, o Arquiteto PERGUNTA em
   // E ela não inventa um andar novo enquanto a resposta não vem.
   assert.equal(blueprint.organization.floors.filter((f) => f.action === 'create').length, 0)
 })
+
+test('ACEITAÇÃO: o dado que já chega por uma FONTE da conta também é reconhecido', () => {
+  /**
+   * O CASO REAL: a pessoa diz "já tenho uma base com o valor do bitcoin". Na plataforma,
+   * o que existe é uma FONTE chamada "Bitcoin" gravando num Database chamado "Históricos".
+   * O nome que ela usa está na fonte, não na base — e o casador só olhava a base e os
+   * conjuntos, então não achava nada e mandava criar uma coleta nova em cima de uma coleta
+   * que já roda há 13 mil leituras.
+   */
+  const inventario = {
+    ownerId: 'dono',
+    at: new Date(),
+    building: { id: '000000000000000000000b01', name: 'Prédio' },
+    sections: {
+      database: {
+        kind: 'database',
+        total: 1,
+        truncated: false,
+        items: [{ id: '000000000000000000000db1', label: 'Históricos', ownerScope: 'account:', status: 'active', meta: { adapterKind: 'data_history' } }],
+      },
+      source: {
+        kind: 'source',
+        total: 1,
+        truncated: false,
+        items: [{ id: '000000000000000000000f01', label: 'Bitcoin', ownerScope: 'account:', status: 'active', meta: { kind: 'api_polling', history: true } }],
+      },
+    },
+  }
+  const brief = {
+    ...emptyBrief('Guardar a máxima e a mínima do dia do Bitcoin'),
+    liveDataNeeds: [{ source: 'Bitcoin', freshness: '15s', required: true }],
+  }
+  const { blueprint, pending } = compilar(brief, { inventory: inventario })
+
+  // Nada de coleta nova: a fonte que já roda é a fonte.
+  assert.equal(blueprint.operations.sources.filter((s) => s.action === 'create').length, 0, JSON.stringify(blueprint.operations.sources))
+  assert.deepEqual(pending.filter((p) => p.kind === 'source_config'), [])
+})

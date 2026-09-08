@@ -1101,6 +1101,16 @@ function compilarFonteDeDado(
    * erro oposto e pior — gravar o dado de um assunto dentro da base de outro, com a
    * proposta dizendo "estou reusando o que você já tem".
    */
+  /**
+   * A COLETA QUE JÁ RODA vence a coleta nova.
+   *
+   * Antes da base, porque é mais específico: quem tem a fonte tem o dado chegando, e abrir
+   * outra em cima dela é pagar duas vezes pela mesma leitura — e ficar com duas séries que
+   * divergem no primeiro minuto em que uma falhar.
+   */
+  const fonteDaConta = fonteDaContaQueJaServe(ctx.inventory, need.source)
+  if (fonteDaConta) return
+
   const jaExiste = baseQueJaServe(ctx.inventory, need.source)
   if (jaExiste) {
     if (!bp.resources.databases.some((d) => d.resourceId === jaExiste.id)) {
@@ -1203,13 +1213,30 @@ function fonteQueJaServe(bp: OfficeBlueprintV2, texto: string): string | null {
 function baseQueJaServe(inventory: OfficeInventory | null, texto: string): { id: string; label: string } | null {
   const termos = termosDistintivos(texto)
   if (!termos.length) return null
+  const casa = (rotulo: string) => termosDistintivos(rotulo).some((t) => termos.includes(t))
+
   const bases = inventory?.sections.database?.items ?? []
   const conjuntos = inventory?.sections.dataset?.items ?? []
   for (const base of bases) {
     const rotulos = [base.label, ...conjuntos.filter((d) => d.meta?.dataStoreId === base.id).map((d) => d.label)]
-    if (rotulos.some((r) => termosDistintivos(r).some((t) => termos.includes(t)))) return { id: base.id, label: base.label }
+    if (rotulos.some(casa)) return { id: base.id, label: base.label }
   }
   return null
+}
+
+/**
+ * A FONTE da conta que já traz este dado.
+ *
+ * O NOME QUE A PESSOA USA COSTUMA ESTAR AQUI, e não na base. Numa conta real, "a minha base
+ * do bitcoin" era uma fonte chamada "Bitcoin" gravando num Database chamado "Históricos":
+ * procurar só pelo nome da base não achava nada, e a proposta mandava abrir uma coleta nova
+ * em cima de uma que já rodava havia treze mil leituras.
+ */
+function fonteDaContaQueJaServe(inventory: OfficeInventory | null, texto: string): { id: string; label: string } | null {
+  const termos = termosDistintivos(texto)
+  if (!termos.length) return null
+  const achada = (inventory?.sections.source?.items ?? []).find((f) => termosDistintivos(f.label).some((t) => termos.includes(t)))
+  return achada ? { id: achada.id, label: achada.label } : null
 }
 
 /** Palavras que identificam UMA coisa: fora do vocabulário comum e com dígito ou tamanho. */

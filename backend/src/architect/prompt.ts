@@ -34,11 +34,20 @@ Responda SOMENTE com um objeto JSON, sem cerca de código e sem texto antes ou d
   "phase": "discovery" | "proposal" | "revision",
   "question": null | { "key": "identificador-curto", "text": "a pergunta", "why": "por que isto importa", "choices": [{ "value": "v", "label": "rótulo" }], "allowUnknown": true },
   "answerPatch": { "chave-da-pergunta": "resposta" },
-  "briefPatch": null | { "businessGoal": "...", "channels": [...], "jobs": [{ "id": "chave-curta", "name": "...", "trigger": "o que faz começar", "input": "o que chega", "decision": "o julgamento exigido — vazio quando é só execução", "action": "o que é feito", "output": "o que sai", "risk": "low"|"medium"|"high", "requiresHumanApproval": true|false }], "integrations": [{ "key": "chave-do-app", "need": "para quê" }], "knowledgeNeeds": [{ "subject": "...", "required": true }], "humanApprovals": [{ "action": "...", "rule": "..." }], "knownFacts": [{ "key": "...", "value": "...", "source": "user" }], "successCriteria": [...], "constraints": [...] },
+  "briefPatch": null | { "businessGoal": "...", "channels": [...], "jobs": [{ "id": "chave-curta", "name": "...", "trigger": "o que faz começar", "input": "o que chega", "decision": "o julgamento exigido — vazio quando é só execução", "action": "o que é feito", "output": "o que sai", "risk": "low"|"medium"|"high", "requiresHumanApproval": true|false }], "integrations": [{ "key": "chave-do-app", "need": "para quê" }], "knowledgeNeeds": [{ "subject": "...", "required": true }], "liveDataNeeds": [{ "source": "de onde o dado VEM, pelo nome que a pessoa usa", "freshness": "de quanto em quanto tempo", "required": true }], "recordsToKeep": [{ "subject": "o que precisa ficar GUARDADO", "fields": ["campo"], "retentionDays": null }], "humanApprovals": [{ "action": "...", "rule": "..." }], "knownFacts": [{ "key": "...", "value": "...", "source": "user" }], "successCriteria": [...], "constraints": [...] },
   "blueprintPatch": null | { "title": "...", "objective": "...", "floors": [...], "agents": [...], "sectors": [...], "routines": [...], "appRequirements": [...], "knowledgeRequirements": [...], "assumptions": [...], "warnings": [...] },
   "assumptions": [{ "key": "k", "text": "o que você assumiu por falta de resposta", "questionKey": "pergunta-que-resolveria" }],
   "warnings": [{ "path": "onde", "message": "o que preocupa" }]
 }
+
+DADO QUE CHEGA e DADO QUE FICA — os dois campos que fazem a proposta ter Database:
+- liveDataNeeds[]: o que a operação PRECISA LER continuamente. "Já tenho uma base com o
+  preço do bitcoin a cada 15 segundos" é um item aqui, com o nome que a pessoa usou — o
+  servidor procura essa base na conta e reaproveita em vez de criar outra.
+- recordsToKeep[]: o que precisa FICAR GUARDADO para poder ser comparado depois. "Uma base
+  só com o máximo do dia e a data" é um item aqui.
+Sem estes dois campos preenchidos, a proposta sai SEM Database nenhum — e uma operação que
+lê de um lugar e grava em outro vira um agente sozinho, sem de onde ler nem onde escrever.
 
 Formato de cada item do blueprint:
 - floors[]: { key, action:"create", name, mission?, description?, workMode:"organization"|"coordinated", coordinatorAgentKey?, rationale }
