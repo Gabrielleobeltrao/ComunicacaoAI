@@ -78,3 +78,28 @@ export function CommunityRedirect() {
   rest.set('tab', tab === 'mine' ? 'mine' : tab === 'tools' ? 'custom' : 'catalog')
   return <Navigate to={`/apps?${rest.toString()}`} replace />
 }
+
+/**
+ * /resources — o inventário que era só um espelho.
+ *
+ * Ele listava documentos, Apps, databases e ferramentas sem deixar fazer nada com eles:
+ * cada um já tem a sua tela, e é lá que se age. A pergunta que justificaria uma tela
+ * própria — quem alcança isto, quem usou de verdade, o que quebra se eu tirar — nunca
+ * chegou a ser desenhada, e uma lista que duplica quatro telas é um item de menu que
+ * promete mais do que entrega.
+ *
+ * O favorito continua chegando, e chegando no lugar CERTO: o tipo que a pessoa estava
+ * olhando decide o destino. Sem tipo, a prateleira de Apps, que é a mais próxima de um
+ * "o que este escritório tem".
+ */
+export function ResourcesRedirect() {
+  const [params] = useSearchParams()
+  const { activeFloorId, loading } = useBuildingContext()
+  if (loading) return null
+  const kind = params.get('kind')
+  if (kind === 'database') return <Navigate to="/databases" replace />
+  if (kind === 'tool') return <Navigate to="/apps?tab=custom" replace />
+  // Conhecimento vive no ANDAR: sem andar ativo não há mapa para abrir.
+  if (kind === 'knowledge' && activeFloorId) return <Navigate to={`/floors/${activeFloorId}?view=knowledge`} replace />
+  return <Navigate to="/apps" replace />
+}

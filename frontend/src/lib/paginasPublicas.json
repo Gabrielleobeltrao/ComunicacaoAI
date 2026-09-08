@@ -1,0 +1,38 @@
+{
+  "_comentario": [
+    "A LISTA das páginas públicas — uma só, lida por três lugares.",
+    "O componente de metadados a usa para escrever o título e a descrição enquanto se navega;",
+    "o script de build a usa para gravar um HTML por rota, com esses mesmos metadados no texto",
+    "cru; e o sitemap sai dela. Se cada um tivesse a sua lista, elas divergiriam no primeiro",
+    "acréscimo — e a divergência apareceria como uma página que o buscador conhece e a pessoa",
+    "não encontra, ou o contrário.",
+    "",
+    "O que ENTRA aqui é o que pode ser visto sem sessão. Uma rota autenticada nesta lista vira",
+    "um convite para o buscador indexar uma tela de login."
+  ],
+  "site": {
+    "nome": "Tavorium",
+    "url": "https://comunicacaoai.onplataform.com",
+    "descricaoPadrao": "Um escritório de agentes de IA que trabalham juntos: com memória, com as ferramentas que a sua equipe já usa, e com custo por tarefa à vista."
+  },
+  "paginas": [
+    {
+      "rota": "/",
+      "titulo": "Tavorium — um escritório de agentes de IA",
+      "descricao": "Monte uma operação inteira em conversa, conecte o que ela já usa e veja rodando. Agentes com memória, conhecimento com dono e validade, e custo por tarefa à vista.",
+      "prioridade": "1.0"
+    },
+    {
+      "rota": "/login",
+      "titulo": "Entrar · Tavorium",
+      "descricao": "Entre no seu escritório de agentes: acompanhe o que está rodando, o que cada um aprendeu e quanto custou.",
+      "prioridade": "0.3"
+    },
+    {
+      "rota": "/register",
+      "titulo": "Criar conta · Tavorium",
+      "descricao": "Crie a sua conta e monte o primeiro andar do escritório — agentes, conhecimento e as ferramentas que a equipe já usa.",
+      "prioridade": "0.5"
+    }
+  ]
+}

@@ -107,10 +107,6 @@ export function FloorView() {
             ))}
           </nav>
 
-          {/* Os RECURSOS deste andar. Não é uma segunda lista: é o mesmo catálogo,
-              filtrado por contexto — e é por isso que ele nunca diverge do global. */}
-          <FloorResources floorId={floor.id} />
-
           {/* O mapa do escritório continua exatamente o que era; a visão de conhecimento
               troca SÓ a área central, e não a página. */}
           {view === 'office' ? (
@@ -118,6 +114,11 @@ export function FloorView() {
           ) : (
             <KnowledgeMap floorId={floor.id} floorName={floor.name} />
           )}
+
+          {/* Os RECURSOS deste andar, DEPOIS do escritório. Antes eles ficavam entre as
+              abas e o mapa, empurrando para baixo justamente o que a pessoa veio ver — e
+              um índice do que existe só interessa depois de olhar quem trabalha aqui. */}
+          <FloorResources floorId={floor.id} />
           {/* The SAME analytics service the building view reads, scoped to this
               floor — never a second formula. */}
           <ExecutionAnalytics

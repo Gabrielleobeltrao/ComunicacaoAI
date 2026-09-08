@@ -174,7 +174,7 @@ export function OfficeFloor({
   )
 
   return (
-    <div ref={hostRef}>
+    <div ref={hostRef} data-testid="floor-office">
       <OfficeMap
         cols={cols}
         rows={rows}

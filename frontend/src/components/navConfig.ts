@@ -60,7 +60,6 @@ export const NAV_V2: NavItemDef[] = [
    * RECURSOS: o que o escritório possui. Apps já era isto e estava em CONTROLE, ao lado
    * de telas de observação — o que misturava "o que existe" com "o que aconteceu".
    */
-  { key: 'resources', label: 'Recursos', icon: 'layers', scope: 'general', group: 'resources', path: () => '/resources', activePrefixes: () => ['/resources'] },
   { key: 'apps', label: 'Apps', icon: 'blocks', scope: 'general', group: 'resources', path: () => '/apps', activePrefixes: () => ['/apps'] },
   // Históricos: o que a conta guarda ao longo do tempo. Fica em CONTROLE porque é uma
   // superfície de observação — quem entra aqui vem consultar, não construir.

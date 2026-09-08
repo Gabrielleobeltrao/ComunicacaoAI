@@ -1,0 +1,64 @@
+{
+  "_comentario": [
+    "O ÍNDICE da documentação — dados, e não código, porque três lugares precisam dele: o app",
+    "desenha o menu, o script de build escreve o HTML de cada página com os metadados dela, e o",
+    "sitemap sai da mesma lista. Um índice em TypeScript obrigaria o script de build a compilar",
+    "TypeScript para saber quais páginas existem — e a alternativa preguiçosa seria uma segunda",
+    "lista, que diverge no primeiro acréscimo.",
+    "",
+    "O markdown fica em `conteudo/<slug>.md`. Um caso de teste confere que todo slug tem arquivo",
+    "e que todo arquivo tem slug: conteúdo órfão é trabalho escrito que ninguém alcança."
+  ],
+  "secoes": [
+    {
+      "titulo": "Começar",
+      "paginas": [
+        {
+          "slug": "comecar",
+          "titulo": "Do zero ao primeiro agente",
+          "resumo": "Criar a conta, montar o primeiro andar e ver um agente responder — em uma página."
+        }
+      ]
+    },
+    {
+      "titulo": "Conceitos",
+      "paginas": [
+        {
+          "slug": "conceitos",
+          "titulo": "Prédio, andar, setor, agente",
+          "resumo": "A estrutura do escritório, e os três mecanismos de dados que o sistema separa de propósito."
+        },
+        {
+          "slug": "arquiteto",
+          "titulo": "O Arquiteto e o Blueprint",
+          "resumo": "Como uma operação inteira é montada em conversa, com prévia, confirmação e reversão."
+        }
+      ]
+    },
+    {
+      "titulo": "Referência técnica",
+      "paginas": [
+        {
+          "slug": "api",
+          "titulo": "A API",
+          "resumo": "Autenticação, os recursos principais e o formato das respostas — com exemplos reais."
+        },
+        {
+          "slug": "permissao",
+          "titulo": "Permissão e alcance",
+          "resumo": "Quem alcança o quê, por que a cadeia delega em vez de generalizar, e como uma recusa se explica."
+        }
+      ]
+    },
+    {
+      "titulo": "Decisões",
+      "paginas": [
+        {
+          "slug": "decisoes",
+          "titulo": "Por que é assim",
+          "resumo": "O modelo classifica, o código decide. Nenhum id vem do modelo. Monitor parado não gasta token."
+        }
+      ]
+    }
+  ]
+}

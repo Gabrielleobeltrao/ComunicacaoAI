@@ -29,11 +29,6 @@ export interface ResourceSummary {
   updatedAt?: string
 }
 
-export interface ResourceDetail extends ResourceSummary {
-  capabilities: string[]
-  meta: Record<string, unknown>
-}
-
 export interface AccessDecision {
   allowed: boolean
   capabilities: string[]
@@ -63,15 +58,6 @@ export interface AccessRow {
   pending: { code: string; message: string } | null
 }
 
-export interface ResourceImpact {
-  resource: { kind: ResourceKind; id: string }
-  accessibleBy: { subjectType: string; subjectId: string; name: string }[]
-  usedBy: { executionId: string; kind: string; at: string }[]
-  usedCount: number
-  dependents: { kind: string; id: string; name: string; reason: string }[]
-  recommendation: 'safe_to_delete' | 'prefer_archive'
-}
-
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const corpo = (await res.json().catch(() => null)) as { message?: string; error?: string } | null
@@ -91,12 +77,8 @@ const qs = (p: Record<string, string | number | null | undefined>) =>
 export const listResources = (opts: { kind?: string; scopeType?: string; scopeId?: string; access?: 'owned' | 'available'; q?: string; limit?: number } = {}) =>
   get<{ items: ResourceSummary[]; byKind: Record<string, number>; kinds: ResourceKind[] }>(`/api/resources?${qs(opts)}`)
 
-export const getResource = (kind: ResourceKind, id: string) => get<ResourceDetail>(`/api/resources/${kind}/${id}`)
 
-export const getResourceAccess = (kind: ResourceKind, id: string, agentId?: string) =>
-  get<AccessDecision>(`/api/resources/${kind}/${id}/access?${qs({ agentId })}`)
 
-export const getResourceImpact = (kind: ResourceKind, id: string) => get<ResourceImpact>(`/api/resources/${kind}/${id}/impact`)
 
 /** A matriz do agente: tudo o que existe, com a decisão de cada um — inclusive as negativas. */
 export const getAgentResourceAccess = (agentId: string) => get<{ items: AccessRow[] }>(`/api/agents/${agentId}/resource-access`)

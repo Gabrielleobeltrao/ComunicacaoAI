@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
-import { Button, Card } from '../ui'
+import { Card, IconButton } from '../ui'
 import { buildCharacterResolver } from '../lib/agentAvatar'
 import { useKnowledgeGraph } from './useKnowledgeGraph'
 import { boundsOf, brumaDe, centroDe, daTela, layoutGraph, normalizacaoDe, paraTela, raioDe, relativoAo } from './layout'
 import type { Camera } from './layout'
 import type { Positioned } from './layout'
 import { KnowledgeNode, RAIO } from './KnowledgeNode'
-import { KnowledgeFilters } from './KnowledgeFilters'
-import type { FiltrosDoMapa } from './KnowledgeFilters'
 import { KnowledgeInspector } from './KnowledgeInspector'
 import { KnowledgeEditor } from './KnowledgeEditor'
 import type { KnowledgeScopeType } from '../lib/knowledge'
@@ -27,6 +25,19 @@ import type { KnowledgeScopeType } from '../lib/knowledge'
 
 const ALTURA = 'clamp(360px, 64dvh, 620px)'
 
+/** Os limites do zoom e o passo — os mesmos números que os botões e a roda usam. */
+const ZOOM_MIN = 0.5
+const ZOOM_MAX = 2.5
+const PASSO_DE_ZOOM = 0.2
+
+/**
+ * O ângulo de onde se olha quando a tela abre — e para onde "Endireitar" volta.
+ *
+ * Levemente inclinado de propósito: de frente e reto, uma nuvem 3D é indistinguível de
+ * um desenho chapado, e a profundidade só apareceria depois de alguém girar.
+ */
+const ANGULO_INICIAL = { giro: -0.35, inclinacao: 0.22 }
+
 export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorName: string }) {
   /**
    * A VISÃO — 3D ou plana — mora na URL, como as outras escolhas de tela deste projeto.
@@ -44,25 +55,52 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
     setParamsDaTela(p, { replace: true })
   }
 
-  const [filtros, setFiltros] = useState<FiltrosDoMapa>({ q: '', status: '', source: '', viewAs: null })
-  const { graph, loading, error, recarregar, moveNode, organizar } = useKnowledgeGraph(floorId, filtros)
+  /**
+   * O mapa carrega TUDO do andar.
+   *
+   * Havia um painel de filtros — título, estado, origem e "ver como agente". Ele
+   * respondia perguntas que o mapa já responde de outro jeito: clicar num nó acende a
+   * vizinhança dele, e o inspector diz quem alcança o quê. Era uma segunda porta para a
+   * mesma resposta, ocupando um terço da largura.
+   */
+  const { graph, loading, error, recarregar, moveNode, organizar } = useKnowledgeGraph(floorId, {})
   const [selecionado, setSelecionado] = useState<string | null>(null)
   const [editando, setEditando] = useState<{ documentId: string | null } | null>(null)
-  const [filtrosAbertos, setFiltrosAbertos] = useState(false)
   const [zoom, setZoom] = useState(1)
   /**
    * O ÂNGULO de onde se olha. Começa levemente inclinado para cima: de frente e reto, uma
    * nuvem 3D é indistinguível de um desenho chapado, e a profundidade só aparece quando
    * alguém gira — o que ninguém faz sem antes desconfiar de que dá.
    */
-  const [angulo, setAngulo] = useState({ giro: -0.35, inclinacao: 0.22 })
+  const [angulo, setAngulo] = useState(ANGULO_INICIAL)
   /** Só a visão plana desloca o quadro: no 3D o gesto do fundo é girar. */
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const svgRef = useRef<SVGSVGElement | null>(null)
+  const molduraRef = useRef<HTMLDivElement | null>(null)
   const arrastando = useRef<{ nodeId: string; dx: number; dy: number } | null>(null)
   // O arrasto do FUNDO GIRA o mapa, como se gira um globo. É o que transforma a nuvem de
   // pontos num objeto: parado, o olho não tem como saber o que está na frente do quê.
   const arrastandoFundo = useRef<{ x: number; y: number; giro: number; inclinacao: number; panX: number; panY: number; moveu: boolean } | null>(null)
+
+  /**
+   * ZOOM PELA RODA, com Ctrl/Cmd — igual ao mapa do escritório.
+   *
+   * Com Ctrl/Cmd, e não sozinha: a roda pura continua rolando a PÁGINA, que é o que ela
+   * faz em todo lugar. Um mapa que captura a rolagem prende quem só queria passar por
+   * ele. O ouvinte é nativo e não-passivo porque `preventDefault` é o que impede o
+   * navegador de dar o seu próprio zoom por cima do nosso.
+   */
+  useEffect(() => {
+    const el = molduraRef.current
+    if (!el) return
+    const naRoda = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      e.preventDefault()
+      setZoom((z) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Number((z + (e.deltaY < 0 ? PASSO_DE_ZOOM : -PASSO_DE_ZOOM)).toFixed(2)))))
+    }
+    el.addEventListener('wheel', naRoda, { passive: false })
+    return () => el.removeEventListener('wheel', naRoda)
+  }, [graph])
 
   const camera: Camera = useMemo(() => ({ ...angulo, zoom, pan, plano }), [angulo, zoom, pan, plano])
 
@@ -273,7 +311,6 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
   }
 
-  const agentes = useMemo(() => posicionados.filter((n) => n.kind === 'agent'), [posicionados])
   const noSelecionado = selecionado ? porId.get(selecionado) : null
   const escopoDoEditor = useMemo(() => {
     const n = noSelecionado
@@ -284,56 +321,7 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
 
   return (
     <div className="flex flex-col gap-3" data-testid="knowledge-map">
-      <div className="flex flex-wrap items-center gap-2">
-        <Button variant="secondary" onClick={() => setFiltrosAbertos((v) => !v)} data-testid="knowledge-toggle-filters">
-          {filtrosAbertos ? 'Ocultar filtros' : 'Filtros'}
-        </Button>
-        <Button onClick={() => setEditando({ documentId: null })} data-testid="knowledge-add">
-          Adicionar conhecimento
-        </Button>
-        <Button variant="secondary" onClick={organizar} data-testid="knowledge-auto-layout">
-          Organizar automaticamente
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={trocarVisao}
-          aria-pressed={plano}
-          data-testid="knowledge-toggle-2d"
-          title={plano ? 'Voltar para a visão com profundidade' : 'Ver tudo do mesmo tamanho, sem nada atrás de nada'}
-        >
-          {plano ? 'Ver em 3D' : 'Ver em 2D'}
-        </Button>
-        <div className="flex items-center gap-1" style={{ marginLeft: 'auto' }}>
-          <Button variant="secondary" onClick={() => setZoom((z) => Math.max(0.5, z - 0.2))} aria-label="Diminuir zoom" data-testid="knowledge-zoom-out">
-            −
-          </Button>
-          <Button variant="secondary" onClick={() => setZoom((z) => Math.min(2.5, z + 0.2))} aria-label="Aumentar zoom" data-testid="knowledge-zoom-in">
-            +
-          </Button>
-          {/* Girar é fácil de fazer e fácil de exagerar: sem uma volta ao ponto de
-              partida, quem virou o mapa de cabeça para baixo tem de recarregar a página. */}
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setAngulo({ giro: -0.35, inclinacao: 0.22 })
-              setZoom(1)
-              setPan({ x: 0, y: 0 })
-            }}
-            aria-label="Voltar ao enquadramento inicial"
-            data-testid="knowledge-reset-view"
-          >
-            Endireitar
-          </Button>
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-3" style={{ display: 'grid', gridTemplateColumns: filtrosAbertos ? 'minmax(200px, 240px) 1fr' : '1fr', gap: 12, alignItems: 'start' }}>
-        {filtrosAbertos && (
-          <Card>
-            <KnowledgeFilters filtros={filtros} agentes={agentes} onChange={setFiltros} />
-          </Card>
-        )}
-
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12, alignItems: 'start' }}>
         <div className="flex flex-col gap-3" style={{ minWidth: 0 }}>
           <Card>
             {/* Os quatro estados, distintos: um erro desenhado como mapa vazio faria a
@@ -351,6 +339,7 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
             )}
 
             {graph && graph.nodes.length > 0 && (
+              <div ref={molduraRef} style={{ position: 'relative' }}>
               <svg
                 ref={svgRef}
                 viewBox={`${caixa.minX} ${caixa.minY} ${caixa.width} ${caixa.height}`}
@@ -487,6 +476,66 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
                   ))}
                 </g>
               </svg>
+
+              {/* Os controles da VISÃO ficam sobre o mapa, no canto — como no mapa do
+                  escritório. Eles não mudam nada do conhecimento: mudam de onde se olha,
+                  e por isso pertencem ao mapa, e não à barra de ações em cima dele. */}
+              <div style={{ position: 'absolute', right: 12, bottom: 12, zIndex: 30, display: 'flex', flexDirection: 'column', gap: 6 }} data-testid="knowledge-controles">
+                <IconButton
+                  icon={plano ? 'box' : 'square'}
+                  variant="card"
+                  size="sm"
+                  label={plano ? 'Ver com profundidade (3D)' : 'Ver tudo do mesmo tamanho (2D)'}
+                  aria-pressed={plano}
+                  onClick={trocarVisao}
+                  data-testid="knowledge-toggle-2d"
+                  style={plano ? { color: 'var(--text-on-brand)', background: 'var(--intent-brand)', borderColor: 'var(--intent-brand)' } : undefined}
+                />
+                <IconButton
+                  icon="plus"
+                  variant="card"
+                  size="sm"
+                  label="Aproximar"
+                  onClick={() => setZoom((z) => Math.min(ZOOM_MAX, z + PASSO_DE_ZOOM))}
+                  disabled={zoom >= ZOOM_MAX}
+                  data-testid="knowledge-zoom-in"
+                />
+                <IconButton
+                  icon="minus"
+                  variant="card"
+                  size="sm"
+                  label="Afastar"
+                  onClick={() => setZoom((z) => Math.max(ZOOM_MIN, z - PASSO_DE_ZOOM))}
+                  disabled={zoom <= ZOOM_MIN}
+                  data-testid="knowledge-zoom-out"
+                />
+                {/* Girar é fácil de fazer e fácil de exagerar: sem uma volta ao ponto de
+                    partida, quem virou o mapa de cabeça para baixo recarregaria a página. */}
+                {/* Organizar desfaz as posições salvas e devolve o mapa às forças. Fica
+                    com os outros controles porque o que ela muda é o DESENHO, e não o
+                    conhecimento. */}
+                <IconButton
+                  icon="shuffle"
+                  variant="card"
+                  size="sm"
+                  label="Organizar automaticamente"
+                  onClick={organizar}
+                  data-testid="knowledge-auto-layout"
+                />
+                <IconButton
+                  icon="maximize"
+                  variant="card"
+                  size="sm"
+                  label="Voltar ao enquadramento inicial"
+                  onClick={() => {
+                    setAngulo(ANGULO_INICIAL)
+                    setZoom(1)
+                    setPan({ x: 0, y: 0 })
+                  }}
+                  data-testid="knowledge-reset-view"
+                />
+              </div>
+              </div>
             )}
 
             {graph && graph.truncated && (

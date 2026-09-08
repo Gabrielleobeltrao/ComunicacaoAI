@@ -354,27 +354,6 @@ test('o que está à FRENTE é desenhado maior, mais forte, e por cima', async (
 
 // --- ver como agente --------------------------------------------------------------------
 
-test('"ver como agente" REMOVE o que ele não alcança', async ({ page }) => {
-  await stub(page)
-  await abrirConhecimento(page)
-  await expect(page.getByTestId(`knode-agent:${RAFAEL}`)).toBeVisible()
-
-  await page.getByTestId('knowledge-toggle-filters').click()
-  await page.getByTestId('knowledge-view-as').selectOption(MARINA)
-  // Removido do resultado, e não escondido por CSS: o nó não existe mais no documento.
-  await expect(page.getByTestId(`knode-agent:${RAFAEL}`)).toHaveCount(0)
-  await expect(page.getByTestId(`knode-agent:${MARINA}`)).toBeVisible()
-})
-
-test('a busca por título filtra os documentos', async ({ page }) => {
-  await stub(page)
-  await abrirConhecimento(page)
-  await page.getByTestId('knowledge-toggle-filters').click()
-  await page.getByTestId('knowledge-search').fill('Política')
-  await expect(page.getByTestId(`knode-document:${DOC_MARINA}`)).toBeVisible()
-  await expect(page.getByTestId(`knode-document:${DOC_ANDAR}`)).toHaveCount(0)
-})
-
 // --- inspector ---------------------------------------------------------------------------
 
 test('o inspector separa quem PODE ler de quem LEU', async ({ page }) => {
@@ -677,6 +656,65 @@ test('Esc também tira a seleção', async ({ page }) => {
   await expect(page.getByTestId('knowledge-inspector')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('knowledge-inspector')).toHaveCount(0)
+})
+
+test('ACEITAÇÃO: os controles da visão ficam SOBRE o mapa, no canto — como no escritório', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  /**
+   * Eram sete botões de texto numa barra em cima, misturando o que MUDA o conhecimento
+   * (adicionar, organizar) com o que muda só de onde se olha (zoom, endireitar, 2D). Os
+   * segundos pertencem ao mapa, e é lá que a mão vai procurá-los — do mesmo jeito que no
+   * mapa do escritório.
+   */
+  const controles = page.getByTestId('knowledge-controles')
+  const svg = page.getByTestId('knowledge-svg')
+  await expect(controles).toBeVisible()
+
+  const dentro = await page.evaluate(() => {
+    const c = document.querySelector('[data-testid="knowledge-controles"]')!.getBoundingClientRect()
+    const m = document.querySelector('[data-testid="knowledge-svg"]')!.getBoundingClientRect()
+    return {
+      sobreOMapa: c.right <= m.right + 1 && c.bottom <= m.bottom + 1 && c.left >= m.left - 1,
+      // No canto INFERIOR DIREITO: perto das duas bordas, longe das outras duas.
+      perto: m.right - c.right < 40 && m.bottom - c.bottom < 40,
+      longe: c.left - m.left > 100 && c.top - m.top > 100,
+    }
+  })
+  expect(dentro).toEqual({ sobreOMapa: true, perto: true, longe: true })
+
+  // E não sobrou barra nenhuma em cima: o único controle que mexe no desenho —
+  // organizar — desceu para o canto com os outros.
+  await expect(page.getByTestId('knowledge-auto-layout')).toBeVisible()
+  await expect(controles.getByTestId('knowledge-auto-layout')).toHaveCount(1)
+  await expect(page.getByTestId('knowledge-add')).toHaveCount(0)
+  await expect(page.getByTestId('knowledge-toggle-filters')).toHaveCount(0)
+  await expect(svg).toBeVisible()
+})
+
+test('a roda com Ctrl/Cmd aproxima; sozinha, ela rola a página', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  const escala = async () => {
+    const t = await page.getByTestId(`knode-agent:${MARINA}`).getAttribute('transform')
+    return Number(/scale\(([\d.]+)\)/.exec(t ?? '')?.[1] ?? 0)
+  }
+  const svg = page.getByTestId('knowledge-svg')
+  await svg.hover()
+  const antes = await escala()
+
+  // Roda SOZINHA: o mapa não mexe. Um mapa que captura a rolagem prende quem só queria
+  // passar por ele.
+  await page.mouse.wheel(0, -240)
+  expect(await escala()).toBe(antes)
+
+  // Com Ctrl, aproxima.
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, -240)
+  await page.keyboard.up('Control')
+  await expect.poll(escala).toBeGreaterThan(antes)
 })
 
 test('erro de API NÃO vira mapa vazio', async ({ page }) => {

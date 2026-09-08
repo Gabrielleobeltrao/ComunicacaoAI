@@ -1,13 +1,14 @@
 import { Suspense, lazy } from 'react'
 import type { ReactNode } from 'react'
 import { APP_SURFACE_ROUTES } from './components/appSurfaceRegistry'
+import { MetaDaPagina } from './components/MetaDaPagina'
 import { LegacyChannelRedirect } from './pages/redirects'
 import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
 import { BuildingProvider } from './contexts/BuildingContext'
 import { ArchitectAssistantProvider } from './components/ArchitectAssistant'
-import { ArchitectLegacyRedirect, CommunityRedirect, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
+import { ArchitectLegacyRedirect, CommunityRedirect, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect, ResourcesRedirect } from './pages/redirects'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
@@ -29,6 +30,10 @@ import { Widget } from './pages/Widget'
 const sobDemanda = <T extends Record<string, unknown>, K extends keyof T>(carregar: () => Promise<T>, nome: K) =>
   lazy(() => carregar().then((m) => ({ default: m[nome] as React.ComponentType })))
 
+// A documentação carrega SOB DEMANDA, como as outras páginas grandes: com import
+// estático, o react-markdown e todo o conteúdo entravam no pacote de entrada — e quem só
+// abriu a landing baixava a documentação inteira junto.
+const Docs = sobDemanda(() => import('./pages/Docs'), 'Docs')
 const Apps = sobDemanda(() => import('./pages/Apps'), 'Apps')
 const Building = sobDemanda(() => import('./pages/Building'), 'Building')
 const ArchitectProjects = sobDemanda(() => import('./pages/architect/Projects'), 'ArchitectProjects')
@@ -37,7 +42,6 @@ const DataRecorders = sobDemanda(() => import('./pages/dataHistory/Recorders'), 
 const RecorderForm = sobDemanda(() => import('./pages/dataHistory/RecorderForm'), 'RecorderForm')
 const RecorderDetail = sobDemanda(() => import('./pages/dataHistory/RecorderDetail'), 'RecorderDetail')
 const FloorView = sobDemanda(() => import('./pages/FloorView'), 'FloorView')
-const Resources = sobDemanda(() => import('./pages/Resources'), 'Resources')
 const Databases = sobDemanda(() => import('./pages/Databases'), 'Databases')
 const Monitors = sobDemanda(() => import('./pages/Monitors'), 'Monitors')
 const MonitoringCenter = sobDemanda(() => import('./pages/MonitoringCenter'), 'MonitoringCenter')
@@ -75,9 +79,13 @@ function App() {
    */
   const routes = (
     <Suspense fallback={<div style={{ minHeight: '100vh' }} aria-busy="true" data-testid="rota-carregando" />}>
-    <Routes>
+    <>
+      <MetaDaPagina />
+      <Routes>
       {/* Public */}
       <Route path="/" element={<Home />} />
+      <Route path="/docs" element={<Docs />} />
+      <Route path="/docs/:slug" element={<Docs />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/widget/:publicKey" element={<Widget />} />
@@ -103,7 +111,7 @@ function App() {
           {/* A memória é do prédio inteiro, não de um andar: fica ao lado dos logs. */}
           <Route path="/memories" element={<P><Memories /></P>} />
           {/* Canonical floor-scoped routes */}
-          <Route path="/resources" element={<P><Resources /></P>} />
+          <Route path="/resources" element={<ResourcesRedirect />} />
           <Route path="/databases" element={<P><Databases /></P>} />
           <Route path="/monitors" element={<P><Monitors /></P>} />
           <Route path="/monitoring" element={<P><MonitoringCenter /></P>} />
@@ -186,6 +194,7 @@ function App() {
       <Route path="/teams/*" element={<Navigate to="/setores" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
+    </>
     </Suspense>
   )
 
