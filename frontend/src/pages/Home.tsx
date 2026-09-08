@@ -1,5 +1,6 @@
-import { useNavigate } from 'react-router'
-import { Badge, Brand, Button, Card, Icon, StatusPill } from '../ui'
+import { Link, useNavigate } from 'react-router'
+import { Badge, Button, Card, Icon, StatusPill } from '../ui'
+import { CascaPublica } from '../components/CascaPublica'
 import type { AgentStatus } from '../ui'
 
 const DEMO: { name: string; dept: string; color: string; status: AgentStatus }[] = [
@@ -21,21 +22,38 @@ const VALUES: [string, string, string][] = [
   ['wallet', 'Custo transparente', 'Tokens, custo e desempenho por agente, como uma folha de pagamento.'],
 ]
 
+/**
+ * COMO FUNCIONA, em três passos.
+ *
+ * A landing dizia o que o produto É e pulava direto para os valores. Quem chega sem
+ * conhecer a categoria não sabe o que vai FAZER depois de criar a conta — e a dúvida
+ * "quanto trabalho isso dá?" é a que decide a maioria das visitas.
+ */
+const PASSOS: [string, string, string][] = [
+  ['message-square', 'Descreva a operação', 'Em português, para o Arquiteto: quem atende o quê, com base em qual política, e quando você quer ser avisado.'],
+  ['eye', 'Leia a prévia', 'Ele monta setores, agentes, conhecimento e monitores — e mostra tudo antes de criar. Nada acontece sem a sua confirmação.'],
+  ['activity', 'Veja rodando', 'A Atividade mostra a cadeia inteira de cada resposta: quem falou com quem, o que foi lido e quanto custou.'],
+]
+
+/**
+ * As quatro coisas que este produto tem e as ferramentas de automação genéricas não.
+ *
+ * Elas são afirmações VERIFICÁVEIS — cada uma tem uma página na documentação que a
+ * explica. Uma landing que promete o que a documentação não sustenta é a landing que
+ * produz o cancelamento no segundo mês.
+ */
+const DIFERENCAS: [string, string, string][] = [
+  ['book-open-check', 'Conhecimento com dono e validade', 'Um documento pertence ao andar, ao setor ou ao agente, e pode vencer. Vencido, ele aparece marcado — não some, porque sumir esconderia que alguém precisa revisá-lo.'],
+  ['radar', 'Monitor parado não gasta token', 'Enquanto o valor não cruza a condição, não existe chamada de modelo. Nem uma. Perguntar de minuto em minuto se algo mudou é uma conta que cresce sozinha enquanto nada acontece.'],
+  ['wallet', 'Custo por tarefa, e não por mês', 'Cada execução registra o que consumiu. Dá para saber qual agente custa caro, e por quê.'],
+  ['shield-check', 'Toda ação tem prévia e trilha', 'Plano, diferença, impacto, confirmação explícita e auditoria. Reexecutar não duplica.'],
+]
+
 export function Home() {
   const navigate = useNavigate()
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--surface-app)' }}>
-      <header className="flex items-center gap-4" style={{ padding: '18px var(--gutter-screen)' }}>
-        <Brand />
-        <div style={{ flex: 1 }} />
-        <Button variant="ghost" size="sm" onClick={() => navigate('/login')}>
-          Entrar
-        </Button>
-        <Button size="sm" onClick={() => navigate('/register')}>
-          Criar conta
-        </Button>
-      </header>
+    <CascaPublica>
 
       <section
         className="mx-auto grid items-center gap-10 lg:grid-cols-2"
@@ -165,6 +183,76 @@ export function Home() {
           </Card>
         ))}
       </section>
-    </div>
+
+      <section className="mx-auto" style={{ maxWidth: 1180, padding: '0 var(--gutter-screen) 64px' }}>
+        <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 24, fontWeight: 800, color: 'var(--text-heading)', margin: '0 0 6px' }}>Como funciona</h2>
+        <p style={{ fontSize: 15, color: 'var(--text-muted)', margin: '0 0 20px' }}>Três passos, e o segundo é onde você decide se o que ele montou está certo.</p>
+        <div className="grid gap-4 md:grid-cols-3" data-testid="home-passos">
+          {PASSOS.map(([icon, t, b], i) => (
+            <Card key={t} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <span className="flex items-center gap-2">
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 26,
+                    height: 26,
+                    borderRadius: 'var(--radius-full)',
+                    background: 'var(--intent-brand)',
+                    color: '#fff',
+                    fontSize: 13,
+                    fontWeight: 800,
+                  }}
+                >
+                  {i + 1}
+                </span>
+                <Icon name={icon} size={18} color="var(--intent-brand)" />
+              </span>
+              <span style={{ fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 800, color: 'var(--text-heading)' }}>{t}</span>
+              <span style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.5 }}>{b}</span>
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      <section className="mx-auto" style={{ maxWidth: 1180, padding: '0 var(--gutter-screen) 64px' }}>
+        <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 24, fontWeight: 800, color: 'var(--text-heading)', margin: '0 0 6px' }}>O que muda em relação a automatizar do jeito comum</h2>
+        <p style={{ fontSize: 15, color: 'var(--text-muted)', margin: '0 0 20px' }}>
+          Cada uma destas está explicada por inteiro na{' '}
+          <Link to="/docs" style={{ color: 'var(--text-link)' }}>
+            documentação
+          </Link>
+          .
+        </p>
+        <div className="grid gap-4 md:grid-cols-2" data-testid="home-diferencas">
+          {DIFERENCAS.map(([icon, t, b]) => (
+            <Card key={t} style={{ display: 'flex', gap: 12 }}>
+              <Icon name={icon} size={22} color="var(--intent-brand)" style={{ marginTop: 2, flex: '0 0 auto' }} />
+              <span style={{ minWidth: 0 }}>
+                <span style={{ display: 'block', fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--text-heading)', marginBottom: 4 }}>{t}</span>
+                <span style={{ display: 'block', fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.5 }}>{b}</span>
+              </span>
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      <section className="mx-auto flex flex-wrap items-center gap-4" style={{ maxWidth: 1180, padding: '0 var(--gutter-screen) 72px' }}>
+        <div style={{ minWidth: 0, flex: '1 1 280px' }}>
+          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 24, fontWeight: 800, color: 'var(--text-heading)', margin: '0 0 4px' }}>Comece pelo primeiro andar</h2>
+          <p style={{ fontSize: 15, color: 'var(--text-muted)', margin: 0 }}>Um andar, um agente, uma política. O resto cresce depois.</p>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <Button size="lg" iconRight="arrow-right" onClick={() => navigate('/register')} data-testid="home-cta-final">
+            Criar conta
+          </Button>
+          {/* Quem é técnico decide lendo, e não pelo herói. */}
+          <Button size="lg" variant="secondary" onClick={() => navigate('/docs')} data-testid="home-cta-docs">
+            Ler a documentação
+          </Button>
+        </div>
+      </section>
+    </CascaPublica>
   )
 }
