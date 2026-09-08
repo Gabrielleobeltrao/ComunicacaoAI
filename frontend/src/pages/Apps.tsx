@@ -25,7 +25,7 @@ import {
 import type { AppCatalogEntry, AppInstallation } from '../lib/apps'
 import { API_URL } from '../lib/api'
 import { useAppNavigation } from '../lib/appNavigation'
-import { Badge, Button, Card, Dialog, EmptyState, Field, Icon, IconButton, Input, Select, Tabs, Tag } from '../ui'
+import { Badge, Button, Card, Dialog, EmptyState, Field, Icon, IconButton, Input, Select, Tabs, Tag, usePonteiroGrosso } from '../ui'
 
 // The Apps page: what the account can connect (Catálogo), what it already connected
 // (Conectados) and the HTTP actions the owner wrote themselves (Personalizados).
@@ -68,6 +68,7 @@ const TABS: { value: TabKey; label: string }[] = [
 ]
 
 export function Apps() {
+  const dedo = usePonteiroGrosso()
   const [params, setParams] = useSearchParams()
   const raw = params.get('tab')
   const tab: TabKey = raw === 'connected' || raw === 'custom' || raw === 'mine' ? raw : 'catalog'
@@ -176,7 +177,7 @@ export function Apps() {
             Aquela página pertence ao App <strong>{inactiveName}</strong>, que ainda não está ativo nesta conta. Ative-o aqui para abri-la.
           </p>
         ) : null}
-        <Tabs tabs={TABS} value={tab} onChange={setTab} style={{ alignSelf: 'start' }} />
+        <Tabs tabs={TABS} value={tab} onChange={setTab} rotulo="Seção" style={{ alignSelf: 'start' }} />
 
         {tab === 'custom' ? (
           <CustomToolsPanel />
@@ -232,6 +233,24 @@ export function Apps() {
 
               {/* A origem é um conjunto FECHADO de quatro: emendadas, elas se leem como um
                   controle só — e não como quatro pastilhas soltas ao lado das outras onze. */}
+              {/* SOB O DEDO A ORIGEM VIRA LISTA. Quatro segmentos emendados somam 375 px
+                  numa coluna de 358: rolavam para o lado, e rolagem lateral escondida é a
+                  pior forma de esconder — quem não sabe que existe uma quarta opção não
+                  arrasta para procurá-la. Aberta, ela é a mesma pergunta da "Categoria"
+                  logo acima, e responde do mesmo jeito. */}
+              {dedo ? (
+                <label className="max-sm:!max-w-full" style={{ ...ROTULO, flex: '1 1 160px', maxWidth: 220 }}>
+                  Origem
+                  <Select
+                    value={origem}
+                    onChange={(e) => setOrigem(e.target.value as Origem)}
+                    data-testid="origem-filtros"
+                    aria-label="Origem"
+                    style={{ width: '100%' }}
+                    options={ORIGENS.map((o) => ({ value: o.valor, label: o.label }))}
+                  />
+                </label>
+              ) : (
               <div style={{ ...ROTULO, maxWidth: '100%' }} role="group" aria-label="Origem" data-testid="origem-filtros">
                 Origem
                 {/* Quatro segmentos emendados não podem quebrar linha sem virar dois
@@ -251,6 +270,7 @@ export function Apps() {
                   ))}
                 </div>
               </div>
+              )}
 
               {/* Só aparece quando há o que limpar: um controle que não faz nada é ruído. */}
               {(search || category || origem !== 'todos') && (

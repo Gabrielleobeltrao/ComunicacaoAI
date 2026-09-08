@@ -173,21 +173,69 @@ test('AMEAÇA: nenhuma tela renderiza a caixa de erro com o dublê no ar', async
   }
 })
 
-test('no DESKTOP as abas continuam numa linha só, sem rolagem', async ({ page }) => {
-  // `overflow-x: auto` na fileira de abas é acomodação de tela estreita. Onde cabe, não
-  // pode aparecer rolagem nenhuma — nem o corte que ela implica.
-  await page.setViewportSize({ width: 1280, height: 900 })
+test('ACEITAÇÃO: sob o dedo as abas viram um botão que abre a lista inteira', async ({ page }) => {
+  /**
+   * Cinco abas somam 453 px de rótulo numa coluna de 358. A fileira já rolava para o lado
+   * — mas rolagem lateral escondida é a pior forma de esconder: quem não sabe que existe
+   * uma quinta aba nunca arrasta para procurá-la. O botão diz onde você está, e o popup
+   * mostra as cinco de uma vez, cada uma na linha inteira.
+   */
   await stub(page)
   await page.goto('/monitoring')
   await page.waitForLoadState('networkidle')
-  const abas = page.locator('[role="tablist"], [data-testid="monitoring-abas"]').first()
-  const sobra = await page
-    .locator('button', { hasText: 'Histórico' })
-    .first()
-    .evaluate((e) => {
-      const fila = e.parentElement!
-      return fila.scrollWidth - fila.clientWidth
-    })
-  expect(sobra, 'as abas rolam mesmo numa tela larga').toBeLessThanOrEqual(1)
-  await expect(abas.or(page.locator('button', { hasText: 'Histórico' }).first())).toBeVisible()
+
+  const botao = page.getByTestId('tabs-compacto')
+  await expect(botao).toBeVisible()
+  await expect(botao).toContainText('Visão geral')
+  await expect(page.getByTestId('tabs-popup')).toHaveCount(0)
+
+  await botao.click()
+  const popup = page.getByTestId('tabs-popup')
+  await expect(popup).toBeVisible()
+  const opcoes = popup.getByRole('button')
+  await expect(opcoes).toHaveCount(5)
+  const alturas = await opcoes.evaluateAll((bs) => bs.map((b) => Math.round(b.getBoundingClientRect().height)))
+  expect(Math.min(...alturas), `opção apertada: ${alturas.join(', ')}`).toBeGreaterThanOrEqual(MINIMO)
+
+  // E escolher uma FECHA e troca de seção — um popup que não decide nada é um degrau a mais.
+  await page.getByTestId('tabs-opcao-sources').click()
+  await expect(page.getByTestId('tabs-popup')).toHaveCount(0)
+  await expect(page.getByTestId('tabs-compacto')).toContainText('Fontes')
+})
+
+
+// UM CONTEXTO DE DESKTOP DE VERDADE. `setViewportSize` alarga a janela mas não desliga o
+// toque: o contexto continua respondendo `pointer: coarse`, e o componente continua
+// achando que há um dedo na tela. Foi assim que estes dois casos falharam primeiro —
+// mediam uma janela larga com dedo, que não é o que ninguém tem.
+test.describe('no desktop', () => {
+  test.use({ viewport: { width: 1280, height: 900 }, hasTouch: false, isMobile: false })
+
+  test('as abas continuam numa linha só, sem rolagem', async ({ page }) => {
+    // `overflow-x: auto` na fileira de abas é acomodação de tela estreita. Onde cabe, não
+    // pode aparecer rolagem nenhuma — nem o corte que ela implica.
+    await stub(page)
+    await page.goto('/monitoring')
+    await page.waitForLoadState('networkidle')
+    const abas = page.locator('[role="tablist"], [data-testid="monitoring-abas"]').first()
+    const sobra = await page
+      .locator('button', { hasText: 'Histórico' })
+      .first()
+      .evaluate((e) => {
+        const fila = e.parentElement!
+        return fila.scrollWidth - fila.clientWidth
+      })
+    expect(sobra, 'as abas rolam mesmo numa tela larga').toBeLessThanOrEqual(1)
+    await expect(abas.or(page.locator('button', { hasText: 'Histórico' }).first())).toBeVisible()
+  })
+
+  test('as abas continuam sendo abas, sem popup nenhum', async ({ page }) => {
+    // O popup é acomodação do dedo. Num mouse ele seria um clique a mais para chegar
+    // onde já dava para ir direto.
+    await stub(page)
+    await page.goto('/monitoring')
+    await page.waitForLoadState('networkidle')
+    await expect(page.getByTestId('tabs-compacto')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Histórico' })).toBeVisible()
+  })
 })
