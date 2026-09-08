@@ -130,3 +130,21 @@ test('o texto do prompt diz o que existe, e marca a ação sensível', async () 
   // configuração conectada. (O padrão evita "secretary", que é um perfil legítimo.)
   assert.doesNotMatch(texto, /\bsk-[A-Za-z0-9]|Bearer |\bpassword\b|api[_-]?key\s*[:=]/i)
 })
+
+test('AMEAÇA: o catálogo diz que agente LÊ e GRAVA em Database', async () => {
+  /**
+   * NA CONVERSA REAL ele disse: "não temos nenhuma função/tool cadastrada que leia e
+   * escreva nessas bases, então precisamos de um agente LLM analista". Era falso pelos dois
+   * lados — um agente com concessão já lista, consulta e (agora) grava em Database, sem
+   * ferramenta nenhuma cadastrada. A consequência foi um plano com um agente sozinho, sem
+   * de onde ler nem onde escrever.
+   *
+   * O modelo só sabe o que o catálogo diz. Omitir a capacidade não o deixa em dúvida: o faz
+   * concluir que ela não existe — e concluir com convicção, porque a frase dele é
+   * literalmente sobre "o catálogo atual desta conta".
+   */
+  const texto = manifestForPrompt(await buildCapabilityManifest(DONO))
+  assert.match(texto, /database_query/, 'o catálogo não diz que dá para consultar Database')
+  assert.match(texto, /database_insert_rows/, 'o catálogo não diz que dá para gravar em Database')
+  assert.match(texto, /concess|grant/i, 'precisa dizer que depende de concessão, senão ele promete acesso que não existe')
+})

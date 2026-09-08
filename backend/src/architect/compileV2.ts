@@ -622,6 +622,11 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
       name: existente?.label ?? registro.subject,
       owner: { ownerType: 'account' },
       adapterKind: 'data_history',
+      // Quem grava aqui são os agentes DESTA operação — declarado, para o dono ver e
+      // aprovar junto com o resto. Sem isto o plano criava a base e o agente não a
+      // alcançava: operação montada e muda.
+      agentKeys: bp.organization.agents.map((a) => a.key),
+      agentAccess: 'write' as const,
       ...(registro.retentionDays ? { retentionDays: registro.retentionDays } : {}),
     })
 
@@ -1124,6 +1129,11 @@ function compilarFonteDeDado(
         name: jaExiste.label,
         owner: { ownerType: 'account' },
         adapterKind: 'data_history',
+        // LEITURA e só: esta é a base de onde a operação consome. Conceder escrita numa
+        // base que a pessoa já usa para outra coisa seria o plano assumindo um risco que
+        // ninguém pediu.
+        agentKeys: bp.organization.agents.map((a) => a.key),
+        agentAccess: 'read' as const,
       })
     }
     return

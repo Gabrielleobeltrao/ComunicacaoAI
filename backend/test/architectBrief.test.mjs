@@ -229,3 +229,4 @@ test('AMEAÇA: todo campo do Brief que o compilador usa está no contrato do mod
   const ausentes = lidosPeloCompilador.filter((campo) => !esquema.includes(`"${campo}"`))
   assert.deepEqual(ausentes, [], `campos que o compilador lê e o modelo nunca vê: ${ausentes.join(', ')}`)
 })
+

@@ -740,3 +740,31 @@ test('ACEITAÇÃO: o dado que já chega por uma FONTE da conta também é reconh
   assert.equal(blueprint.operations.sources.filter((s) => s.action === 'create').length, 0, JSON.stringify(blueprint.operations.sources))
   assert.deepEqual(pending.filter((p) => p.kind === 'source_config'), [])
 })
+
+test('ACEITAÇÃO: a base que a operação usa é CONCEDIDA aos agentes dela', () => {
+  /**
+   * Sem isto o plano cria a base, cria o agente, e o agente não alcança a base: a operação
+   * fica montada e muda. O acesso é concessão — quem concede é o dono, na aprovação — mas
+   * o plano precisa DIZER de quem é o acesso, senão não há o que aprovar.
+   */
+  const brief = {
+    ...emptyBrief('Guardar o máximo diário do Bitcoin'),
+    recordsToKeep: [{ subject: 'máximo diário do bitcoin', fields: ['data', 'maximo'], retentionDays: null }],
+    jobs: [
+      {
+        id: 'j1',
+        name: 'Registrar o máximo do dia',
+        trigger: 'todo fim de dia',
+        input: 'as cotações do dia',
+        decision: 'conferir se já existe registro do dia',
+        action: 'gravar data e máximo',
+        output: 'uma linha por dia',
+      },
+    ],
+  }
+  const { blueprint } = compilar(brief)
+  const base = blueprint.resources.databases[0]
+  assert.ok(base, 'a proposta precisa ter a base de destino')
+  assert.ok(Array.isArray(base.agentKeys), 'a base precisa declarar de quem é o acesso')
+  assert.ok(base.agentKeys.length > 0, `nenhum agente alcança a base: ${JSON.stringify(base)}`)
+})

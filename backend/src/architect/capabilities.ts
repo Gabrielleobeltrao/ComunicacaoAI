@@ -193,5 +193,15 @@ ${apps}
 FERRAMENTAS PRÓPRIAS DA CONTA:
 ${tools}
 
+DATABASE — EMBUTIDO, sem cadastrar ferramenta nenhuma:
+Todo agente com CONCESSÃO num Database recebe automaticamente:
+- database_list_datasets: quais conjuntos existem naquele Database
+- database_query: consultar registros de um conjunto (filtro, campos, ordem, limite)
+- database_insert_rows: gravar novos registros num conjunto
+Ou seja: "ler de uma base e gravar em outra" NÃO precisa de função nova nem de ferramenta
+própria — precisa da concessão, que a proposta declara e o dono aprova. Dizer que não dá
+porque não há função cadastrada é falso, e faz a operação nascer sem de onde ler nem onde
+escrever.
+
 ESCOPOS DE CONHECIMENTO: ${m.knowledgeScopes.join(', ')}`
 }

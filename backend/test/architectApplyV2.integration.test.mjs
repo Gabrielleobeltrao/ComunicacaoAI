@@ -38,7 +38,7 @@ after(async () => {
 })
 
 beforeEach(async () => {
-  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'data_stores', 'dataset_definitions', 'monitoring_sources', 'monitors', 'automations', 'automation_versions', 'widgets', 'connections', 'tools'])
+  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'data_stores', 'dataset_definitions', 'monitoring_sources', 'monitors', 'automations', 'automation_versions', 'widgets', 'connections', 'tools', 'data_store_grants'])
     await db.collection(c).deleteMany({})
 
   predio = new ObjectId()
@@ -555,4 +555,50 @@ test('aplicar duas vezes não duplica o passo de entrega', async () => {
 
   const flow = await db.collection('automations').findOne({ ownerId: DONO })
   assert.equal(flow.draftDefinition.steps.filter((p) => p.type === 'delivery.send').length, 1)
+})
+
+test('ACEITAÇÃO: a base declara de quem é o acesso, e a aplicação CONCEDE', async () => {
+  /**
+   * Sem isto o plano criava a base, criava o agente, e o agente não a alcançava: operação
+   * montada e muda, com a última etapa sobrando para alguém fazer à mão sem saber que
+   * precisava. Quem aprova continua sendo o dono — ele aprova o plano, e o plano diz isto
+   * por escrito.
+   */
+  const bp = base()
+  bp.resources.databases = [
+    item({ key: 'base-maximos', name: 'Máximos diários', owner: { ownerType: 'account' }, adapterKind: 'data_history', agentKeys: ['marina'], agentAccess: 'write' }),
+  ]
+
+  await aplicar(bp)
+  const store = await db.collection('data_stores').findOne({ ownerId: DONO, name: 'Máximos diários' })
+  const grant = await db.collection('data_store_grants').findOne({ ownerId: DONO, dataStoreId: store._id })
+  assert.ok(grant, 'a base nasceu sem concessão nenhuma')
+  assert.equal(grant.subjectType, 'agent')
+  assert.equal(grant.subjectId.toString(), agente.toString())
+  assert.ok(grant.capabilities.includes('insert'), `gravar exige insert: ${JSON.stringify(grant.capabilities)}`)
+  assert.ok(grant.capabilities.includes('query'))
+})
+
+test('AMEAÇA: base de LEITURA não recebe permissão de escrita', async () => {
+  // Conceder escrita numa base que a pessoa já usa para outra coisa é o plano assumindo um
+  // risco que ninguém pediu — e o dado errado entra sem ninguém ter aprovado a entrada.
+  const bp = base()
+  bp.resources.databases = [
+    item({ key: 'base-fonte', name: 'Históricos', owner: { ownerType: 'account' }, adapterKind: 'data_history', agentKeys: ['marina'], agentAccess: 'read' }),
+  ]
+
+  await aplicar(bp)
+  const store = await db.collection('data_stores').findOne({ ownerId: DONO, name: 'Históricos' })
+  const grant = await db.collection('data_store_grants').findOne({ ownerId: DONO, dataStoreId: store._id })
+  assert.ok(grant)
+  assert.equal(grant.capabilities.includes('insert'), false, `leitura não concede escrita: ${JSON.stringify(grant.capabilities)}`)
+  assert.ok(grant.capabilities.includes('query'))
+})
+
+test('sem `agentKeys`, nada é concedido — planos antigos continuam como eram', async () => {
+  const bp = base()
+  bp.resources.databases = [item({ key: 'base-x', name: 'Sem dono', owner: { ownerType: 'account' }, adapterKind: 'data_history' })]
+  await aplicar(bp)
+  const store = await db.collection('data_stores').findOne({ ownerId: DONO, name: 'Sem dono' })
+  assert.equal(await db.collection('data_store_grants').countDocuments({ ownerId: DONO, dataStoreId: store._id }), 0)
 })

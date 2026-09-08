@@ -168,6 +168,23 @@ export interface BlueprintDatabaseV2 extends BlueprintItemBaseV2 {
   owner: { ownerType: 'account' | 'building' | 'floor'; ownerKey?: string | null }
   adapterKind: string
   retentionDays?: number | null
+  /**
+   * DE QUEM É O ACESSO a esta base.
+   *
+   * O plano criava a base e criava o agente, e o agente não a alcançava: a operação nascia
+   * montada e muda. Acesso continua sendo CONCESSÃO — quem concede é o dono, na aprovação —
+   * mas sem o plano dizer de quem é o acesso não há o que aprovar, e a última etapa ficava
+   * para alguém fazer à mão sem saber que precisava.
+   *
+   * Ausente nos planos anteriores a este campo: eles continuam válidos e sem concessão
+   * nenhuma, exatamente como eram.
+   */
+  agentKeys?: string[]
+  /**
+   * LER ou LER E GRAVAR. Uma base de onde a operação só consome não recebe escrita: quem
+   * concedeu leitura não concedeu escrita, e derivar uma da outra é conceder no lugar do dono.
+   */
+  agentAccess?: 'read' | 'write'
 }
 
 export interface BlueprintDatasetV2 extends BlueprintItemBaseV2 {
