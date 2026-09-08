@@ -9,7 +9,8 @@
     "lint": "oxlint",
     "test": "vitest run",
     "preview": "vite preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "capturas": "npm run build && CAPTURAS=1 E2E_PREVIEW=1 playwright test e2e/capturas.spec.ts"
   },
   "dependencies": {
     "better-auth": "^1.6.23",
