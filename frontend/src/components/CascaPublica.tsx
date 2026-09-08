@@ -47,13 +47,18 @@ export function CascaPublica({ children, rodape = true }: { children: ReactNode;
             </Link>
           ))}
         </nav>
-        <div style={{ flex: 1 }} />
-        <Button variant="ghost" size="sm" onClick={() => navigate('/login')} data-testid="publico-entrar">
-          Entrar
-        </Button>
-        <Button size="sm" onClick={() => navigate('/register')} data-testid="publico-criar-conta">
-          Criar conta
-        </Button>
+        {/* Os dois botões andam JUNTOS. Soltos, o `flex-wrap` quebrava entre eles e o
+            "Criar conta" descia sozinho, encostado à esquerda, como se tivesse escapado.
+            Agrupados com `ms-auto`, ou cabem na linha da marca, ou descem os dois
+            alinhados à direita — nas duas larguras parece uma decisão. */}
+        <div className="ms-auto flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={() => navigate('/login')} data-testid="publico-entrar">
+            Entrar
+          </Button>
+          <Button size="sm" onClick={() => navigate('/register')} data-testid="publico-criar-conta">
+            Criar conta
+          </Button>
+        </div>
       </header>
 
       <main style={{ flex: 1 }}>{children}</main>

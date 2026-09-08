@@ -89,3 +89,33 @@ test('no DESKTOP nada disso muda: o índice continua aberto e ao lado', async ({
   })
   expect(lado).toBe(true)
 })
+
+test('ACEITAÇÃO: cada captura vem DEPOIS do título que a explica', async ({ page }) => {
+  /**
+   * A landing alterna texto e imagem no desktop com `order`. Como `order` inline vale em
+   * qualquer largura, na coluna única do celular ele jogava a imagem das seções ímpares
+   * para antes do próprio `<h3>`: a pessoa via uma tela do produto sem saber que tela era,
+   * e o título aparecia depois, explicando uma imagem que já tinha passado.
+   */
+  await page.goto('/')
+  const blocos = page.locator('[data-testid="home-capturas"] .grid')
+  await expect(blocos.first()).toBeVisible()
+  const invertidos = await blocos.evaluateAll((gs) =>
+    gs
+      .map((g, i) => [i, g.querySelector('h3')!.getBoundingClientRect().top, g.querySelector('img')!.getBoundingClientRect().top] as const)
+      .filter(([, titulo, imagem]) => titulo > imagem)
+      .map(([i]) => i),
+  )
+  expect(invertidos, `capturas com a imagem antes do título: ${invertidos.join(', ')}`).toEqual([])
+})
+
+test('no DESKTOP a alternância continua: a segunda captura fica à ESQUERDA', async ({ page }) => {
+  // A correção acima não pode custar o desenho de duas colunas — sem alternância, três
+  // blocos idênticos empilhados viram uma lista, e não uma página.
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.goto('/')
+  const lados = await page.locator('[data-testid="home-capturas"] .grid').evaluateAll((gs) =>
+    gs.map((g) => (g.querySelector('img')!.getBoundingClientRect().left < g.querySelector('h3')!.getBoundingClientRect().left ? 'imagem-esquerda' : 'texto-esquerda')),
+  )
+  expect(lados).toEqual(['texto-esquerda', 'imagem-esquerda', 'texto-esquerda'])
+})
