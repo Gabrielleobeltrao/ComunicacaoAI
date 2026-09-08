@@ -4,6 +4,8 @@ import { mergeSplitRationale } from './architecture.js'
 import { emptyBlueprint } from './blueprint.js'
 import type { ArchitectCapabilityManifest } from './capabilities.js'
 import type { OperationBrief } from './brief.js'
+import { areasOf, findExistingFloor } from './compileV2.js'
+import type { OfficeInventory } from './inventory.js'
 import type { BlueprintAgent, BlueprintLayer, OfficeBlueprintV1 } from './types.js'
 
 // O COMPILADOR: do entendimento para o desenho, sem passar pelo modelo.
@@ -92,24 +94,63 @@ export function compileBrief(
   brief: OperationBrief,
   manifest: ArchitectCapabilityManifest | null,
   base: { title: string; objective: string },
+  /** O que a conta já tem. Sem isto, todo pedido abria um andar próprio. */
+  inventory: OfficeInventory | null = null,
 ): CompileResult {
   const classification = classifyBrief(brief, manifest)
   const bp: OfficeBlueprintV1 = emptyBlueprint(base.title, brief.businessGoal || base.objective)
   const pending: CompileResult['pending'] = []
   const jobs: CompiledJob[] = []
 
+  /**
+   * UM TÍTULO NÃO É UM ANDAR NOVO.
+   *
+   * Isto criava um andar por operação, sempre: `action: 'create'` fixo, nome tirado do
+   * título, e o inventário nem chegava aqui. Quem já tinha o escritório montado pedia
+   * "guarde a máxima do dia" e ganhava um andar chamado "Máxima e mínima do Bitcoin" ao
+   * lado do que usava — e a operação nascia longe de tudo o que ela precisava.
+   *
+   * A regra é a mesma do V2: conta vazia ganha o primeiro andar; se a pessoa nomeia uma
+   * ÁREA ("atendimento", "financeiro"), essa área é procurada e criada se não existir; e
+   * trabalho que não descreve área nenhuma mora no andar que já existe.
+   */
+  const areas = areasOf(brief)
+  const daArea = areas.length ? findExistingFloor(inventory, areas[0]) : null
+  const existentes = inventory?.sections.floor?.items ?? []
+  const anfitriao = daArea ?? (areas.length === 0 ? (existentes[0] ?? null) : null)
+  /**
+   * A KEY NÃO MUDA — ela é o que liga a proposta ao recurso aplicado.
+   *
+   * Derivá-la do nome do andar anfitrião parecia mais legível e é um defeito: uma revisão
+   * que reencontrasse outro andar produziria outra `key`, e o `resourceMap` da aplicação
+   * anterior deixaria de casar. O resultado seria um segundo escritório ao lado do
+   * primeiro — exatamente o que "não duplica recursos existentes" proíbe. O que muda é a
+   * AÇÃO e para onde ela aponta.
+   */
   const floorKey = 'operacao'
   bp.floors = [
-    {
-      key: floorKey,
-      action: 'create',
-      name: base.title.slice(0, 60) || 'Operação',
-      mission: brief.businessGoal.slice(0, 200) || undefined,
-      workMode: 'organization',
-      layer: 'essential',
-      layerReason: 'é o lugar onde a operação mora',
-      rationale: 'um andar só: os agentes desta operação trabalham no mesmo contexto',
-    },
+    anfitriao
+      ? {
+          key: floorKey,
+          action: 'reuse',
+          resourceId: 'id' in anfitriao ? anfitriao.id : (anfitriao as { id: string }).id,
+          name: anfitriao.label,
+          mission: brief.businessGoal.slice(0, 200) || undefined,
+          workMode: 'organization',
+          layer: 'essential',
+          layerReason: 'é o lugar onde a operação mora',
+          rationale: 'este andar já existe: a operação entra nele em vez de abrir outro ao lado',
+        }
+      : {
+          key: floorKey,
+          action: 'create',
+          name: areas[0] ?? base.title.slice(0, 60) ?? 'Operação',
+          mission: brief.businessGoal.slice(0, 200) || undefined,
+          workMode: 'organization',
+          layer: 'essential',
+          layerReason: 'é o lugar onde a operação mora',
+          rationale: 'um andar só: os agentes desta operação trabalham no mesmo contexto',
+        },
   ]
 
   let indiceDeAgente = 0

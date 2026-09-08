@@ -573,3 +573,132 @@ test('AMEAÇA: `reuse` sem resourceId não sai daqui — seria apontar para um a
   assert.equal(andar.action, 'create')
   assert.equal(v2.validateBlueprintV2(r.blueprint).valid, true)
 })
+
+// --- o dado que JÁ ESTÁ NA CONTA ------------------------------------------------------------
+//
+// O CENÁRIO QUE FALHOU DE VERDADE: a conta tem um Database "Bitcoin" que já recebe cotação
+// a cada quinze segundos. O pedido foi "pegue esse dado e guarde a máxima e a mínima do
+// dia". O Arquiteto criou uma fonte nova do zero, deixou uma pendência pedindo "de onde
+// este dado vem" — e abriu um andar novo para uma operação que não precisava de andar
+// nenhum.
+//
+// A causa é estreita e verificável: `compilarFonteDeDado` nascia com `action: 'create'`
+// fixo e não recebia o inventário. Andar e Database já sabiam procurar o que existe
+// (`findExistingFloor`, `acharDatabase`); a fonte de dado, não. O resultado é o pior tipo
+// de proposta: ela parece completa, e o que ela monta ignora o que a pessoa já tem.
+
+const inventarioComBase = (nome) => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: { id: '000000000000000000000b01', name: 'Prédio' },
+  sections: {
+    database: {
+      kind: 'database',
+      total: 1,
+      truncated: false,
+      items: [{ id: '000000000000000000000db1', label: nome, ownerScope: 'account:', status: 'active', meta: { adapterKind: 'data_history' } }],
+    },
+    dataset: {
+      kind: 'dataset',
+      total: 1,
+      truncated: false,
+      items: [
+        {
+          id: '000000000000000000000db1:cotacoes',
+          label: 'Cotações',
+          ownerScope: 'database:000000000000000000000db1',
+          meta: { dataStoreId: '000000000000000000000db1', key: 'cotacoes', mutability: 'append_only' },
+        },
+      ],
+    },
+  },
+})
+
+test('ACEITAÇÃO: um dado que já está numa Database da conta é REUSADO, não recriado', () => {
+  const brief = {
+    ...emptyBrief('Guardar a máxima e a mínima do dia do Bitcoin'),
+    liveDataNeeds: [{ source: 'Bitcoin', freshness: '15s', required: true }],
+  }
+  const { blueprint, pending } = compilar(brief, { inventory: inventarioComBase('Bitcoin') })
+
+  // A proposta APONTA para a base que existe, em vez de abrir uma fonte do zero.
+  const usoDaBase = blueprint.resources.databases.find((d) => d.action === 'reuse')
+  assert.ok(usoDaBase, `nenhum Database reusado; propostos: ${JSON.stringify(blueprint.resources.databases.map((d) => [d.key, d.action]))}`)
+  assert.equal(usoDaBase.resourceId, '000000000000000000000db1')
+
+  // E não sobra a pendência que manda a pessoa dizer de onde vem um dado que já chega.
+  const semFonte = pending.filter((p) => p.kind === 'source_config')
+  assert.deepEqual(semFonte, [], `pendência sobrando: ${JSON.stringify(semFonte)}`)
+})
+
+test('AMEAÇA: uma base de OUTRO assunto não é confundida com a pedida', () => {
+  /**
+   * O erro oposto, e pior: reusar por parecer. Uma base de "Notas fiscais" respondendo a um
+   * pedido sobre Bitcoin gravaria dado de um assunto dentro do outro — e ninguém veria,
+   * porque a proposta diria "reusando o que você já tem".
+   */
+  const brief = {
+    ...emptyBrief('Guardar a máxima e a mínima do dia do Bitcoin'),
+    liveDataNeeds: [{ source: 'Bitcoin', freshness: '15s', required: true }],
+  }
+  const { blueprint, pending } = compilar(brief, { inventory: inventarioComBase('Notas fiscais') })
+
+  assert.equal(blueprint.resources.databases.filter((d) => d.action === 'reuse').length, 0)
+  // Sem base para reusar, a fonte volta a ser criada — e a pendência honesta reaparece.
+  assert.ok(pending.some((p) => p.kind === 'source_config'), 'sem base compatível, a pendência tem de aparecer')
+})
+
+const inventarioComAndares = (nomes) => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: { id: '000000000000000000000b01', name: 'Prédio' },
+  sections: {
+    floor: {
+      kind: 'floor',
+      total: nomes.length,
+      truncated: false,
+      items: nomes.map((n, i) => ({ id: `00000000000000000000f${String(i).padStart(3, '0')}`, label: n, ownerScope: 'building:000000000000000000000b01', status: 'active' })),
+    },
+  },
+})
+
+test('ACEITAÇÃO: numa conta com UM andar, um trabalho sem área não abre andar novo', () => {
+  /**
+   * O SEGUNDO SINTOMA DO MESMO PEDIDO: "cara, ele criou um novo andar".
+   *
+   * Sem palavra de área no texto ("atendimento", "financeiro"...), o nome do andar virava o
+   * TÍTULO DA OPERAÇÃO — e um título nunca casa com um andar existente, então nascia um
+   * andar por operação. Guardar a máxima do Bitcoin não é uma área da empresa; é trabalho
+   * que mora num andar que já existe.
+   */
+  const brief = { ...emptyBrief('Guardar a máxima e a mínima do dia do Bitcoin') }
+  const { blueprint } = compilar(brief, {
+    inventory: inventarioComAndares(['Operações']),
+    base: { title: 'Máxima e mínima do Bitcoin', objective: 'Guardar as pontas do dia' },
+  })
+
+  const andares = blueprint.organization.floors
+  assert.equal(andares.length, 1, `andares propostos: ${JSON.stringify(andares.map((f) => [f.name, f.action]))}`)
+  assert.equal(andares[0].action, 'reuse')
+  assert.equal(andares[0].resourceId, '00000000000000000000f000')
+})
+
+test('AMEAÇA: com VÁRIOS andares e nenhuma área dita, o Arquiteto PERGUNTA em vez de escolher', () => {
+  /**
+   * Escolher sozinho entre três andares é adivinhar onde o trabalho da pessoa mora — e a
+   * proposta sairia montada no lugar errado, parecendo certa. Perguntar é mais barato que
+   * desfazer.
+   */
+  const brief = { ...emptyBrief('Guardar a máxima e a mínima do dia do Bitcoin') }
+  const { blueprint, pending } = compilar(brief, {
+    inventory: inventarioComAndares(['Atendimento', 'Financeiro', 'Logística']),
+    base: { title: 'Máxima e mínima do Bitcoin', objective: 'Guardar as pontas do dia' },
+  })
+
+  assert.ok(
+    pending.some((p) => p.kind === 'floor_choice'),
+    `faltou a pendência de escolha de andar: ${JSON.stringify(pending)}`,
+  )
+  // E ela não inventa um andar novo enquanto a resposta não vem.
+  assert.equal(blueprint.organization.floors.filter((f) => f.action === 'create').length, 0)
+})

@@ -266,7 +266,15 @@ async function runTurn(
    */
   const legadoDoModelo = Boolean(projeto.blueprint) && !projeto.compiled
   const compilar = briefNovo.jobs.length > 0 && !legadoDoModelo && Boolean(turno.blueprintPatch || (turno.briefPatch && projeto.compiled))
-  const compilado = compilar ? compileBrief(briefNovo, manifesto, { title: projeto.title, objective: projeto.objective }) : null
+  /**
+   * O INVENTÁRIO é lido UMA vez e serve aos dois compiladores.
+   *
+   * Sem ele o V1 abria um andar por operação — `action: 'create'` fixo, nome tirado do
+   * título — e o V2 recebia esse andar pronto e o repetia. A escolha entre expandir e criar
+   * precisa do que a conta tem, e é aqui que ela passa a ter.
+   */
+  const inventario = compilar || architectV2Enabled() ? await loadOfficeInventory(ownerId).catch(() => null) : null
+  const compilado = compilar ? compileBrief(briefNovo, manifesto, { title: projeto.title, objective: projeto.objective }, inventario) : null
 
   /**
    * O plano V2 é compilado do MESMO Brief, e só quando a flag está ligada.
@@ -283,7 +291,7 @@ async function runTurn(
       ? compileBriefV2({
           brief: briefNovo,
           manifest: manifesto,
-          inventory: await loadOfficeInventory(ownerId).catch(() => null),
+          inventory: inventario,
           base: { title: projeto.title, objective: projeto.objective },
           changeKind: projeto.status === 'applied' ? 'expand' : 'create',
           // Os andares vêm do plano V1: é ele que a saga aplica, e é dele que sai a `key`
@@ -315,7 +323,17 @@ async function runTurn(
   // Os avisos do conserto entram JUNTO dos do modelo: quem lê a proposta lê tudo num
   // lugar só, e não descobre a mudança comparando duas versões.
   if (blueprint) {
-    const avisos = [...(consertoDoPatch?.warnings ?? []), ...(consertoDoReuso?.warnings ?? [])]
+    /**
+     * AS PENDÊNCIAS DO COMPILADOR viram aviso — antes elas eram CALCULADAS E JOGADAS FORA.
+     *
+     * `compileBriefV2` já apurava o que falta para o plano funcionar: "falta dizer de onde
+     * este dado vem", "nenhuma função registrada faz este cálculo", "em qual andar este
+     * trabalho mora". Nada disso era lido por ninguém. A pessoa recebia uma proposta de
+     * aparência completa, aplicava, e descobria o buraco depois — sem nunca ter visto a
+     * frase que o descrevia.
+     */
+    const pendencias = (compiladoV2?.pending ?? []).map((p) => ({ path: p.kind, message: `${p.ref}: ${p.because}` }))
+    const avisos = [...pendencias, ...(consertoDoPatch?.warnings ?? []), ...(consertoDoReuso?.warnings ?? [])]
     if (avisos.length) blueprint.warnings = [...(blueprint.warnings ?? []), ...avisos].slice(0, L.MAX_WARNINGS)
   }
 

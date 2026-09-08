@@ -249,3 +249,39 @@ test('Brief vazio compila um desenho vazio — e não quebra', () => {
   assert.equal(r.blueprint.floors.length, 1)
   assert.deepEqual(r.pending, [])
 })
+
+// --- o andar que já existe --------------------------------------------------------------
+//
+// O SINTOMA RELATADO: "cara, ele criou um novo andar". Toda operação abria um andar com o
+// nome do próprio título, sempre, porque `compileBrief` fixava `action: 'create'` e nem
+// recebia o inventário. Guardar a máxima do Bitcoin não é uma área nova da empresa — é
+// trabalho que mora onde a pessoa já trabalha.
+
+const inventarioAndares = (nomes) => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: { id: '000000000000000000000b01', name: 'Prédio' },
+  sections: {
+    floor: {
+      kind: 'floor',
+      total: nomes.length,
+      truncated: false,
+      items: nomes.map((n, i) => ({ id: `00000000000000000000f${String(i).padStart(3, '0')}`, label: n, ownerScope: 'building:000000000000000000000b01', status: 'active' })),
+    },
+  },
+})
+
+test('ACEITAÇÃO: com um andar na conta, a operação MORA nele — não abre outro', () => {
+  const brief = { ...briefCompleto(), businessGoal: 'Guardar a máxima e a mínima do dia do Bitcoin' }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Máxima e mínima do Bitcoin', objective: 'x' }, inventarioAndares(['Operações']))
+  assert.equal(blueprint.floors.length, 1)
+  assert.equal(blueprint.floors[0].action, 'reuse')
+  assert.equal(blueprint.floors[0].resourceId, '00000000000000000000f000')
+  assert.equal(blueprint.floors[0].name, 'Operações')
+})
+
+test('a conta VAZIA continua ganhando o primeiro andar', () => {
+  // O oposto não pode quebrar: quem está começando precisa do andar criado.
+  const { blueprint } = compileBrief(briefCompleto(), manifesto, { title: 'Atendimento', objective: 'x' }, null)
+  assert.equal(blueprint.floors[0].action, 'create')
+})
