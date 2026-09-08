@@ -485,7 +485,7 @@ test('o Arquiteto pergunta uma coisa por vez, com opções e “não sei ainda�
   await stub(page, { messages: [{ id: 'm1', role: 'user', content: 'quero automatizar o atendimento', createdAt: NOW }] })
   await page.goto(`/architect/${PROJETO_ID}`)
   await page.getByTestId('architect-input').fill('quero automatizar')
-  await page.getByTestId('architect-send').click()
+  await page.getByTestId('architect-enviar').click()
 
   await expect(page.getByTestId('architect-question')).toBeVisible()
   await expect(page.getByText('O canal decide quem recebe a conversa.')).toBeVisible()
@@ -497,7 +497,7 @@ test('responder por uma opção manda o rótulo, sem a pessoa digitar', async ({
   await stub(page)
   await page.goto(`/architect/${PROJETO_ID}`)
   await page.getByTestId('architect-input').fill('oi')
-  await page.getByTestId('architect-send').click()
+  await page.getByTestId('architect-enviar').click()
   await page.getByTestId('architect-choice-whatsapp').click()
   await expect.poll(() => mensagensEnviadas).toContain('WhatsApp')
 })
@@ -506,7 +506,7 @@ test('“não sei ainda” é uma resposta aceita', async ({ page }) => {
   await stub(page)
   await page.goto(`/architect/${PROJETO_ID}`)
   await page.getByTestId('architect-input').fill('oi')
-  await page.getByTestId('architect-send').click()
+  await page.getByTestId('architect-enviar').click()
   await page.getByTestId('architect-unknown').click()
   await expect.poll(() => mensagensEnviadas).toContain('Não sei ainda')
 })
@@ -528,7 +528,7 @@ test('a credencial colada some da tela e vira um aviso', async ({ page }) => {
   })
   await page.goto(`/architect/${PROJETO_ID}`)
   await page.getByTestId('architect-input').fill('minha chave é ghp_abcdefghijklmnopqrstuvwxyz0123')
-  await page.getByTestId('architect-send').click()
+  await page.getByTestId('architect-enviar').click()
   await expect(page.getByTestId('architect-message-system_notice')).toContainText(/credencial/i)
 })
 
@@ -735,13 +735,16 @@ test('a conversa recolhe e volta por um botão — recolhida, ela não some', as
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
 
-  await page.getByTestId('architect-chat-collapse').click()
-  await expect(page.getByTestId('architect-chat-panel')).toBeHidden()
+  // Com a proposta na tela a conversa começa recolhida: ela sai da frente de quem veio
+  // ler e decidir. Abrir é o primeiro passo do caso.
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-close').click()
+  await expect(page.getByTestId('architect-panel')).toBeHidden()
   // O caminho para pedir mudança não pode sumir junto com o painel.
-  const botao = page.getByTestId('architect-chat-open')
+  const botao = page.getByTestId('architect-launcher')
   await expect(botao).toBeVisible()
   await botao.click()
-  await expect(page.getByTestId('architect-chat-panel')).toBeVisible()
+  await expect(page.getByTestId('architect-panel')).toBeVisible()
   await expect(page.getByTestId('architect-input')).toBeVisible()
 })
 
@@ -769,13 +772,16 @@ test('o fluxo mostra quem coordena e quem é acionado — não só a lista', asy
 test('depois de aplicar, a conversa continua aberta para pedir ajuste', async ({ page }) => {
   await stub(page, { project: { ...COM_PROPOSTA, status: 'applied', appliedAt: NOW } })
   await page.goto(`/architect/${PROJETO_ID}`)
+  // Com a proposta na tela a conversa começa RECOLHIDA — ela sai da frente de quem veio
+  // ler e decidir. Abrir é o primeiro passo de todo caso que é sobre a conversa.
+  await page.getByTestId('architect-launcher').click()
 
   // O campo ficava desabilitado com "Este projeto já foi aplicado." — e trocar uma
   // instrução exigia começar outro projeto, que não sabia o que já existia.
   const campo = page.getByTestId('architect-input')
   await expect(campo).toBeEnabled()
   await campo.fill('troque o objetivo da Marina')
-  await page.getByTestId('architect-send').click()
+  await page.getByTestId('architect-enviar').click()
   await expect.poll(() => mensagensEnviadas).toContain('troque o objetivo da Marina')
 })
 
@@ -917,7 +923,7 @@ test('4) a espera é anunciada, e não parece uma tela travada', async ({ page }
   })
   await page.goto(`/architect/${PROJETO_ID}`)
   await page.getByTestId('architect-input').fill('oi')
-  await page.getByTestId('architect-send').click()
+  await page.getByTestId('architect-enviar').click()
 
   const espera = page.getByTestId('architect-thinking')
   await expect(espera).toHaveAttribute('role', 'status')
@@ -934,6 +940,9 @@ test('5) a falha já resolvida sai do alarme, mas fica no histórico', async ({ 
     project: COM_PROPOSTA,
   })
   await page.goto(`/architect/${PROJETO_ID}`)
+  // Com a proposta na tela a conversa começa RECOLHIDA — ela sai da frente de quem veio
+  // ler e decidir. Abrir é o primeiro passo de todo caso que é sobre a conversa.
+  await page.getByTestId('architect-launcher').click()
   const aviso = page.getByTestId('architect-message-system_notice')
   await expect(aviso).toContainText('A chave do provedor foi recusada')
   await expect(aviso).toContainText('já resolvido')
@@ -948,19 +957,20 @@ test('no desktop o chat FLUTUA: ele não toma largura de nada', async ({ page })
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
 
-  const painel = page.getByTestId('architect-chat-panel')
+  await page.getByTestId('architect-launcher').click()
+  const painel = page.getByTestId('architect-panel')
   expect(await painel.evaluate((el) => getComputedStyle(el).position)).toBe('fixed')
 
   // A largura da área de trabalho é a MESMA com o chat aberto e fechado. Era isso que a
   // coluna lateral fazia: ela comia 400px da proposta o tempo todo.
   const comChat = (await page.getByTestId('architect-workspace').boundingBox())!.width
-  await page.getByTestId('architect-chat-collapse').click()
+  await page.getByTestId('architect-close').click()
   await expect(painel).toBeHidden()
   const semChat = (await page.getByTestId('architect-workspace').boundingBox())!.width
   expect(semChat).toBe(comChat)
 
   // Fechado, ele vira botão — o caminho para pedir mudança não some.
-  await expect(page.getByTestId('architect-chat-open')).toBeVisible()
+  await expect(page.getByTestId('architect-launcher')).toBeVisible()
 })
 
 test('fechar e reabrir preserva a conversa e o que estava digitado', async ({ page }) => {
@@ -970,11 +980,14 @@ test('fechar e reabrir preserva a conversa e o que estava digitado', async ({ pa
     messages: [{ id: 'm1', role: 'assistant', content: 'Montei a proposta.', createdAt: NOW }],
   })
   await page.goto(`/architect/${PROJETO_ID}`)
+  // Com a proposta na tela a conversa começa RECOLHIDA — ela sai da frente de quem veio
+  // ler e decidir. Abrir é o primeiro passo de todo caso que é sobre a conversa.
+  await page.getByTestId('architect-launcher').click()
   await expect(page.getByTestId('architect-message-assistant')).toContainText('Montei a proposta.')
 
   await page.getByTestId('architect-input').fill('quero trocar o nome da Marina')
-  await page.getByTestId('architect-chat-collapse').click()
-  await page.getByTestId('architect-chat-open').click()
+  await page.getByTestId('architect-close').click()
+  await page.getByTestId('architect-launcher').click()
 
   // O texto continua lá: fechar é esconder, não desmontar. Perder o que a pessoa
   // escreveu ao clicar em "fechar" seria um jeito eficiente de ensinar a nunca fechar.
@@ -986,6 +999,9 @@ test('trocar de tela não mexe na conversa — e existe UMA conversa só', async
   await page.setViewportSize({ width: 1440, height: 900 })
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
+  // Com a proposta na tela a conversa começa RECOLHIDA — ela sai da frente de quem veio
+  // ler e decidir. Abrir é o primeiro passo de todo caso que é sobre a conversa.
+  await page.getByTestId('architect-launcher').click()
 
   await page.getByTestId('architect-input').fill('rascunho de pergunta')
   await page.getByTestId('architect-tab-escritorio').click()
@@ -1148,11 +1164,14 @@ test('o mapa da prévia é uma seção com nome e descrição — não uma figur
 test('uma revisão não arrasta a pessoa para outra tela', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
+  // Com a proposta na tela a conversa começa RECOLHIDA — ela sai da frente de quem veio
+  // ler e decidir. Abrir é o primeiro passo de todo caso que é sobre a conversa.
+  await page.getByTestId('architect-launcher').click()
   await page.getByTestId('architect-tab-escritorio').click()
   await expect(page.getByTestId('architect-office-map')).toBeVisible()
 
   await page.getByTestId('architect-input').fill('troque o nome da Marina')
-  await page.getByTestId('architect-send').click()
+  await page.getByTestId('architect-enviar').click()
   await expect.poll(() => mensagensEnviadas).toContain('troque o nome da Marina')
 
   // Quem pediu a mudança está olhando o desenho: é ali que ela precisa aparecer.
@@ -1458,7 +1477,7 @@ test('sem chave de provedor, a tela manda para Configurações', async ({ page }
   await stub(page, { turn: { status: 400, json: { code: 'no_provider_key', message: 'Configure a chave do provedor em Configurações para o Arquiteto poder trabalhar.' } } })
   await page.goto(`/architect/${PROJETO_ID}`)
   await page.getByTestId('architect-input').fill('oi')
-  await page.getByTestId('architect-send').click()
+  await page.getByTestId('architect-enviar').click()
   await expect(page.getByTestId('architect-error')).toContainText('Configure a chave do provedor')
   await expect(page.getByTestId('architect-settings-link')).toHaveAttribute('href', '/settings')
 })
@@ -1467,7 +1486,7 @@ test('limite de tokens atingido é dito com todas as letras', async ({ page }) =
   await stub(page, { turn: { status: 429, json: { code: 'budget_exceeded', message: 'O limite mensal de tokens desta conta foi atingido.' } } })
   await page.goto(`/architect/${PROJETO_ID}`)
   await page.getByTestId('architect-input').fill('oi')
-  await page.getByTestId('architect-send').click()
+  await page.getByTestId('architect-enviar').click()
   await expect(page.getByTestId('architect-error')).toContainText('limite mensal de tokens')
 })
 
@@ -1562,27 +1581,38 @@ test('“Montar operação” NÃO é um módulo da navegação — a porta é o
 
 // --- celular -----------------------------------------------------------------------------------------------------------
 
-test('no celular é uma coluna só, com a conversa ABAIXO do conteúdo', async ({ page }) => {
+test('no celular a conversa é uma TELA, e sair dela devolve a proposta', async ({ page }) => {
+  /**
+   * MUDOU DE PROPÓSITO. A conversa era o último bloco da coluna, e a regra era que uma
+   * janela fixa numa tela de 390 px cobriria o conteúdo que ela serve para ajustar. Só que
+   * ela deixou de ser uma caixa desta página: é o painel do Arquiteto, o mesmo de todas as
+   * outras telas — e no telefone ele sempre foi uma tela inteira que se abre e se fecha.
+   *
+   * O motivo da regra antiga continua respeitado por outro caminho: com a proposta na
+   * tela o painel começa FECHADO, então ele não cobre nada até alguém pedir. E ocupar a
+   * tela inteira dá à conversa a largura que 390 px não têm de sobra.
+   */
   await stub(page, { project: COM_PROPOSTA })
   await page.setViewportSize({ width: 390, height: 780 })
   await page.goto(`/architect/${PROJETO_ID}`)
 
+  // Fechado, o conteúdo é a coluna inteira — nada coberto.
+  await expect(page.getByTestId('architect-panel')).toHaveCount(0)
   await expect(page.getByTestId('architect-tabs')).toBeVisible()
   await page.getByTestId('architect-tab-proposta').click()
   await expect(page.getByTestId('architect-counts')).toBeVisible()
-  await page.getByTestId('architect-tab-checklist').click()
-  await expect(page.getByTestId('architect-required-progress')).toBeVisible()
 
-  // No telefone a conversa NÃO flutua por cima: ela é o último bloco da coluna. Uma
-  // janela fixa numa tela de 390px cobriria o conteúdo que ela serve para ajustar.
-  const painel = page.getByTestId('architect-chat-panel')
+  // Aberto, ele é a tela: no telefone não há largura para dividir.
+  await page.getByTestId('architect-launcher').click()
+  const painel = page.getByTestId('architect-panel')
   await expect(painel).toBeVisible()
-  expect(await painel.evaluate((el) => getComputedStyle(el).position)).toBe('static')
-  const area = await page.getByTestId('architect-workspace').boundingBox()
-  const chat = await painel.boundingBox()
-  expect(chat!.y).toBeGreaterThan(area!.y)
-  // E o botão de fechar é exclusivo do desktop: no telefone não há para onde recolher.
-  await expect(page.getByTestId('architect-chat-collapse')).toBeHidden()
+  const caixa = (await painel.boundingBox())!
+  expect(Math.round(caixa.width), 'no telefone a conversa ocupa a largura inteira').toBe(390)
+
+  // E sair dela devolve a proposta, sem recarregar nada.
+  await page.getByTestId('architect-close').click()
+  await expect(page.getByTestId('architect-panel')).toHaveCount(0)
+  await expect(page.getByTestId('architect-counts')).toBeVisible()
 })
 
 test('em 320 px nada estoura para os lados — nas quatro telas', async ({ page }) => {
@@ -1592,6 +1622,7 @@ test('em 320 px nada estoura para os lados — nas quatro telas', async ({ page 
 
   for (const rota of ['/architect', `/architect/${PROJETO_ID}`]) {
     await page.goto(rota)
+    if (rota !== '/architect') await page.getByTestId('architect-launcher').click()
     await expect(page.getByTestId(rota === '/architect' ? 'architect-projects' : 'architect-conversation')).toBeVisible()
     expect(await folga(), `${rota} estourou`).toBeLessThanOrEqual(0)
   }
@@ -1619,7 +1650,7 @@ test('cada campo tem rótulo, e o erro é anunciado', async ({ page }) => {
   await page.goto(`/architect/${PROJETO_ID}`)
   await expect(page.getByLabel('Sua resposta')).toBeVisible()
   await page.getByTestId('architect-input').fill('oi')
-  await page.getByTestId('architect-send').click()
+  await page.getByTestId('architect-enviar').click()
   await expect(page.getByRole('alert')).toBeVisible()
 })
 
@@ -1737,3 +1768,11 @@ test('sem conexão nenhuma, a tela diz o que fazer em vez de oferecer um vazio m
   await page.getByTestId('architect-apply').click()
   await expect(page.getByTestId('architect-delivery-connection')).toContainText('ainda não tem uma conexão de envio')
 })
+
+
+
+
+
+
+
+

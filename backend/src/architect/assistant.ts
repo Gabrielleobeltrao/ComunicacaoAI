@@ -275,6 +275,14 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     objective: intent.objective,
   })
   /**
+   * O projeto nasce como a CASA DA CONVERSA, e não como uma proposta pronta.
+   *
+   * A distinção importa porque a tela dizia "Comecei um projeto" e oferecia "Abrir a
+   * proposta" no mesmo turno — mandando a pessoa para uma sala onde ainda não havia nada
+   * para ver, e deixando para trás a conversa que a levou até ali. Aqui o projeto é só
+   * onde as mensagens passam a ser gravadas; a proposta chega quando existir.
+   */
+  /**
    * A FRASE ORIGINAL entra no projeto como a primeira mensagem.
    *
    * Sem isto, quem pedia "observe CXSE3 e me avise quando o RSI cair abaixo de 30" no chat
@@ -289,10 +297,21 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
    * e o campo bloqueado: a pessoa não conseguia nem continuar a conversa nem abrir o projeto.
    * Montar a proposta é o próximo passo, dentro do projeto, e ele tem estado próprio.
    */
+  const resposta = maskSecretsDeep(
+    `Entendi: ${tituloDe(intent.objective)}. Vou montar isso com você aqui mesmo — quando a proposta estiver de pé eu te mostro. Nada é aplicado sem a sua aprovação.`,
+  ) as string
+  /**
+   * A RESPOSTA também é gravada.
+   *
+   * Antes só a frase da pessoa entrava no projeto: quem reabrisse a conversa via o próprio
+   * pedido e nenhuma resposta, como se o Arquiteto tivesse ignorado. Uma conversa pela
+   * metade é pior que nenhuma, porque parece um defeito.
+   */
+  await appendMessage(input.ownerId, projeto._id, 'assistant', resposta).catch(() => undefined)
   return {
     intent,
     phase: 'done',
-    text: maskSecretsDeep(`Vou montar isso. Comecei um projeto para "${tituloDe(intent.objective)}" — nada é aplicado sem a sua aprovação.`) as string,
+    text: resposta,
     question,
     projectId: projeto._id.toString(),
     context,

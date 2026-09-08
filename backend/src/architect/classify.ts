@@ -119,7 +119,73 @@ function appQueServe(job: BriefJob, manifest: ArchitectCapabilityManifest | null
  * é o mais caro — ele pensa, e pensar custa token e erra. Só chega em agente o
  * trabalho que precisa de julgamento.
  */
-export function classifyJob(job: BriefJob, manifest: ArchitectCapabilityManifest | null): ResourceDecision {
+/**
+ * A FORMA QUE A PESSOA PEDIU, quando ela pediu uma.
+ *
+ * Lida da frase dela, e só quando é explícita: "quero um AGENTE que…" é um pedido de
+ * agente. Sem a palavra, não há divergência a resolver — quem decide é a regra, que é o
+ * comportamento certo na maioria esmagadora dos casos.
+ *
+ * Isto não decide nada sozinho. Serve para o servidor NOTAR que discorda de quem pediu, e
+ * perguntar em vez de trocar em silêncio.
+ */
+export function formaPedida(job: BriefJob): ResourceKind | null {
+  const t = texto(job)
+  // A ordem importa: "um agente com uma ferramenta" é um pedido de agente.
+  if (/\bagentes?\b/.test(t)) return 'agent'
+  if (/\bferramentas?\b/.test(t)) return 'tool'
+  if (/\brotinas?\b|\bautomaç(ão|ao)\b|\bagendament/.test(t)) return 'routine'
+  if (/\bfunç(ão|ao)\b|\bfunctions?\b/.test(t)) return 'function'
+  return null
+}
+
+/**
+ * HÁ DÚVIDA REAL entre o que a regra recomenda e o que a pessoa pediu?
+ *
+ * Perguntar em toda divergência é quase tão ruim quanto trocar em silêncio: "agente" é
+ * como muita gente diz "quero que o sistema faça isso", e virar uma escolha de arquitetura
+ * a cada uso da palavra enche a conversa de degraus que não mudam nada.
+ *
+ * Duas coisas, e as duas são medíveis:
+ *
+ *   1. A RECOMENDAÇÃO NÃO SE SUSTENTA. A regra pede função e não existe função registrada
+ *      que faça aquilo; pede ferramenta e nenhum App serve. Recomendar o que não dá para
+ *      construir é justamente o caso em que a alternativa merece ser considerada.
+ *   2. A DESCRIÇÃO APOIA O PEDIDO. A pessoa escreveu "agente" e o trabalho tem julgamento
+ *      no texto; escreveu "ferramenta" e há ação em sistema. Aí a palavra foi escolha, e
+ *      não modo de falar.
+ *
+ * Fora disso a regra decide e segue. Não perguntar não é o mesmo que não contar: o que foi
+ * recusado e por quê continua em `rejected`, e a proposta mostra.
+ */
+export function haDuvidaDeForma(job: BriefJob, decisao: ResourceDecision, pedida: ResourceKind): boolean {
+  if (decisao.kind === pedida) return false
+  if (!decisao.resolved) return true
+  const alvo = texto(job)
+  const temDecisao = Boolean(job.decision && job.decision.trim())
+  if (pedida === 'agent') return JULGAMENTO.test(alvo) || CONVERSA.test(alvo) || temDecisao
+  if (pedida === 'tool') return ACAO_EXTERNA.test(alvo)
+  if (pedida === 'routine') return VIGILANCIA.test(alvo) || Boolean(job.frequency && CADENCIA.test(job.frequency))
+  if (pedida === 'function') return CALCULO.test(alvo)
+  return false
+}
+
+/** As formas que uma pessoa escolhe para um trabalho. `sector` não é uma delas. */
+const FORMAS_ESCOLHIVEIS: readonly ResourceKind[] = ['agent', 'function', 'tool', 'routine']
+
+/**
+ * A escolha da pessoa, se ela for uma das oferecidas.
+ *
+ * A resposta chega pelo mesmo caminho de todas as outras — e esse caminho passa pelo
+ * modelo. Aceitar qualquer texto seria deixar o modelo escolher a forma por escrito, que é
+ * exatamente o que a classificação existe para impedir. Só vale o conjunto fechado.
+ */
+export function formaEscolhida(valor: unknown): ResourceKind | null {
+  const v = String(valor ?? '').trim().toLowerCase()
+  return (FORMAS_ESCOLHIVEIS as readonly string[]).includes(v) ? (v as ResourceKind) : null
+}
+
+export function classifyJob(job: BriefJob, manifest: ArchitectCapabilityManifest | null, escolhida: ResourceKind | null = null): ResourceDecision {
   const alvo = texto(job)
   const temDecisao = Boolean(job.decision && job.decision.trim())
   const rejected: ResourceDecision['rejected'] = []
@@ -129,7 +195,7 @@ export function classifyJob(job: BriefJob, manifest: ArchitectCapabilityManifest
   if (CALCULO.test(alvo) && !temDecisao) {
     const fn = funcaoQueServe(job, manifest)
     rejected.push({ kind: 'agent', because: 'não há julgamento: o resultado é o mesmo toda vez, e um modelo de linguagem só acrescentaria risco de erro' })
-    return {
+    return comEscolhaDaPessoa({
       jobId: job.id,
       jobName: job.name,
       kind: 'function',
@@ -137,7 +203,7 @@ export function classifyJob(job: BriefJob, manifest: ArchitectCapabilityManifest
       rejected,
       ...(fn ? { resourceRef: fn } : {}),
       resolved: Boolean(fn),
-    }
+    }, escolhida, job, manifest)
   }
 
   // 2. Ação em sistema externo é FERRAMENTA — do agente que conduz a conversa, não um
@@ -145,7 +211,7 @@ export function classifyJob(job: BriefJob, manifest: ArchitectCapabilityManifest
   if (ACAO_EXTERNA.test(alvo) && !temDecisao) {
     const app = appQueServe(job, manifest)
     rejected.push({ kind: 'agent', because: 'é uma chamada a um sistema, não uma responsabilidade: vira ferramenta de quem já conversa' })
-    return {
+    return comEscolhaDaPessoa({
       jobId: job.id,
       jobName: job.name,
       kind: 'tool',
@@ -153,13 +219,13 @@ export function classifyJob(job: BriefJob, manifest: ArchitectCapabilityManifest
       rejected,
       ...(app ? { resourceRef: app } : {}),
       resolved: Boolean(app),
-    }
+    }, escolhida, job, manifest)
   }
 
   // 3. Vigiar uma fonte no tempo é ROTINA (com monitor quando há interpretação).
   if (VIGILANCIA.test(alvo) || (job.frequency && CADENCIA.test(job.frequency) && !CONVERSA.test(alvo))) {
     rejected.push({ kind: 'agent', because: 'quem dispara é o tempo ou a condição, não uma pessoa falando' })
-    return {
+    return comEscolhaDaPessoa({
       jobId: job.id,
       jobName: job.name,
       kind: 'routine',
@@ -167,7 +233,7 @@ export function classifyJob(job: BriefJob, manifest: ArchitectCapabilityManifest
       rejected,
       ...(temDecisao ? { suggestedPreset: 'monitor' } : {}),
       resolved: true,
-    }
+    }, escolhida, job, manifest)
   }
 
   // 4. Sobrou julgamento: é AGENTE. O perfil vem do que o trabalho faz.
@@ -188,7 +254,7 @@ export function classifyJob(job: BriefJob, manifest: ArchitectCapabilityManifest
   if (CALCULO.test(alvo)) {
     rejected.push({ kind: 'function', because: 'há cálculo, mas ele acompanha um julgamento — a conta vira função chamada pelo agente' })
   }
-  return {
+  return comEscolhaDaPessoa({
     jobId: job.id,
     jobName: job.name,
     kind: 'agent',
@@ -196,7 +262,49 @@ export function classifyJob(job: BriefJob, manifest: ArchitectCapabilityManifest
     rejected,
     suggestedPreset: preset,
     resolved: true,
+  }, escolhida, job, manifest)
+}
+
+/**
+ * A ESCOLHA DA PESSOA, aplicada sobre a recomendação da regra.
+ *
+ * A regra roda inteira antes: é dela que sai a recomendação, e é ela que continua sendo
+ * mostrada. O que a escolha faz é trocar a SAÍDA, registrando a recomendação em `rejected`
+ * — quem ler a proposta depois vê que houve uma troca e qual era o conselho. Apagar isso
+ * transformaria uma decisão informada numa decisão sem rastro.
+ */
+function comEscolhaDaPessoa(decisao: ResourceDecision, escolhida: ResourceKind | null, job: BriefJob, manifest: ArchitectCapabilityManifest | null): ResourceDecision {
+  if (!escolhida || escolhida === decisao.kind) return decisao
+  const recomendado = { kind: decisao.kind, because: `esta era a recomendação: ${decisao.because}` }
+  const base: ResourceDecision = {
+    jobId: decisao.jobId,
+    jobName: decisao.jobName,
+    kind: escolhida,
+    because: `você escolheu ${NOME_DA_FORMA[escolhida]} — ${decisao.because.startsWith('esta era') ? decisao.because : `a recomendação era ${NOME_DA_FORMA[decisao.kind]}`}`,
+    rejected: [...decisao.rejected.filter((r) => r.kind !== escolhida), recomendado],
+    resolved: true,
   }
+  // Cada forma precisa do que ela precisa para ficar de pé: agente tem perfil, função
+  // precisa de uma função registrada, ferramenta precisa de um App que a sirva.
+  if (escolhida === 'agent') return { ...base, suggestedPreset: decisao.suggestedPreset ?? 'analyst' }
+  if (escolhida === 'function') {
+    const fn = funcaoQueServe(job, manifest)
+    return { ...base, ...(fn ? { resourceRef: fn } : {}), resolved: Boolean(fn) }
+  }
+  if (escolhida === 'tool') {
+    const app = appQueServe(job, manifest)
+    return { ...base, ...(app ? { resourceRef: app } : {}), resolved: Boolean(app) }
+  }
+  return base
+}
+
+/** Como cada forma se chama para quem lê. */
+const NOME_DA_FORMA: Record<ResourceKind, string> = {
+  agent: 'um agente',
+  function: 'uma função',
+  tool: 'uma ferramenta',
+  routine: 'uma rotina',
+  sector: 'um setor',
 }
 
 export interface Classification {
@@ -207,8 +315,13 @@ export interface Classification {
   unresolved: ResourceDecision[]
 }
 
-export function classifyBrief(brief: OperationBrief, manifest: ArchitectCapabilityManifest | null): Classification {
-  const decisions = brief.jobs.map((j) => classifyJob(j, manifest))
+export function classifyBrief(
+  brief: OperationBrief,
+  manifest: ArchitectCapabilityManifest | null,
+  /** O que a pessoa respondeu, por chave de pergunta. `forma:<jobId>` é a escolha de forma. */
+  answers: Record<string, unknown> = {},
+): Classification {
+  const decisions = brief.jobs.map((j) => classifyJob(j, manifest, formaEscolhida(answers[`forma:${j.id}`])))
   return {
     decisions,
     agentCount: decisions.filter((d) => d.kind === 'agent').length,

@@ -10,7 +10,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-const { classifyJob, classifyBrief, classificationForPrompt } = await import('../dist/architect/classify.js')
+const { classifyJob, classifyBrief, classificationForPrompt, formaPedida } = await import('../dist/architect/classify.js')
+const { detectGaps } = await import('../dist/architect/nextQuestion.js')
 const { emptyBrief, applyBriefPatch } = await import('../dist/architect/brief.js')
 
 const job = (over = {}) => ({ id: 'j', name: 'Trabalho', trigger: '', input: '', decision: '', action: '', output: '', ...over })
@@ -198,4 +199,118 @@ test('uma cadência DE VERDADE continua virando rotina', () => {
 test('vigilância continua virando rotina mesmo sem frequência', () => {
   const d = classifyJob(job({ name: 'Monitorar o estoque', action: 'acompanhar o estoque' }), manifesto)
   assert.equal(d.kind, 'routine')
+})
+
+// --- quando o servidor discorda de quem pediu -------------------------------------------
+//
+// A REGRA DECIDE BEM, e mesmo assim decide sozinha. A pessoa escreve "quero um agente que
+// guarde a máxima do dia"; a regra lê "guardar máxima" como cálculo sem julgamento e devolve
+// FUNÇÃO. Ela está certa sobre o custo e errada sobre quem manda: o que sai não é o que foi
+// pedido, e ninguém foi avisado da troca.
+//
+// O desenho é o mesmo de sempre — o código decide, o modelo não —, com um degrau a mais: a
+// divergência vira PERGUNTA, e a resposta MANDA. Não é o modelo escolhendo a forma; é a
+// pessoa, dentro de um conjunto fechado que o servidor ofereceu.
+
+test('a forma PEDIDA é lida da frase — "um agente que…" é um pedido de agente', () => {
+  assert.equal(formaPedida(job({ name: 'quero um agente que guarde a máxima do dia' })), 'agent')
+  assert.equal(formaPedida(job({ name: 'crie uma ferramenta para consultar o pedido' })), 'tool')
+  assert.equal(formaPedida(job({ name: 'uma rotina que roda todo dia' })), 'routine')
+  // Sem pedido explícito, não há divergência a resolver: quem decide é a regra.
+  assert.equal(formaPedida(job({ name: 'guardar a máxima do dia' })), null)
+})
+
+test('ACEITAÇÃO: pedido de AGENTE contra decisão de FUNÇÃO vira pergunta', () => {
+  const j = job({ id: 'j1', name: 'quero um agente que calcule a máxima do dia', action: 'calcular a máxima' })
+  const decisao = classifyJob(j, manifesto)
+  assert.equal(decisao.kind, 'function', 'a regra continua decidindo o que decidia')
+
+  const brief = { ...emptyBrief('guardar a máxima'), jobs: [j] }
+  const gap = detectGaps(brief, manifesto).find((g) => g.id === `forma:${j.id}`)
+  assert.ok(gap, `faltou a pergunta de forma: ${JSON.stringify(detectGaps(brief, manifesto).map((g) => g.id))}`)
+  // As duas saídas, com nome de gente — e a do servidor primeiro, porque ela é a recomendação.
+  assert.deepEqual(gap.choices.map((c) => c.value), ['function', 'agent'])
+  assert.match(gap.why, /determin|mesma entrada|julgamento/i)
+})
+
+test('ACEITAÇÃO: respondida, a escolha da PESSOA manda — o desenho sai como ela pediu', () => {
+  const j = job({ id: 'j1', name: 'quero um agente que calcule a máxima do dia', action: 'calcular a máxima' })
+  const brief = { ...emptyBrief('guardar a máxima'), jobs: [j] }
+
+  const escolhido = classifyBrief(brief, manifesto, { 'forma:j1': 'agent' })
+  assert.equal(escolhido.decisions[0].kind, 'agent')
+  // E o porquê não é apagado: quem lê a proposta vê que houve uma troca e qual era a recomendação.
+  assert.match(escolhido.decisions[0].because, /você escolheu|escolha/i)
+  assert.ok(
+    escolhido.decisions[0].rejected.some((r) => r.kind === 'function'),
+    'a recomendação recusada tem de continuar registrada',
+  )
+})
+
+test('AMEAÇA: uma resposta fora do conjunto fechado é IGNORADA', () => {
+  /**
+   * A resposta chega pelo mesmo caminho de todas as outras, e esse caminho passa pelo
+   * modelo. Aceitar qualquer string seria deixar o modelo escolher a forma por escrito —
+   * exatamente o que a classificação existe para impedir. Só vale o que foi oferecido.
+   */
+  const j = job({ id: 'j1', name: 'quero um agente que calcule a máxima do dia', action: 'calcular a máxima' })
+  const brief = { ...emptyBrief('guardar a máxima'), jobs: [j] }
+  for (const lixo of ['superagente', 'agent; drop table', '', 'sector']) {
+    assert.equal(classifyBrief(brief, manifesto, { 'forma:j1': lixo }).decisions[0].kind, 'function', `aceitou "${lixo}"`)
+  }
+})
+
+test('respondida a favor da regra, nada muda — e a pergunta não volta', () => {
+  const j = job({ id: 'j1', name: 'quero um agente que calcule a máxima do dia', action: 'calcular a máxima' })
+  const brief = { ...emptyBrief('guardar a máxima'), jobs: [j], knownFacts: [{ key: 'forma:j1', value: 'function', source: 'user' }] }
+  assert.equal(classifyBrief(brief, manifesto, { 'forma:j1': 'function' }).decisions[0].kind, 'function')
+  assert.equal(detectGaps(brief, manifesto).find((g) => g.id === 'forma:j1'), undefined, 'a pergunta respondida voltou')
+})
+
+// --- a pergunta só quando há DÚVIDA -----------------------------------------------------
+//
+// Perguntar em toda divergência é quase tão ruim quanto trocar em silêncio: "agente" é
+// como muita gente diz "quero que o sistema faça isso", e transformar cada uso da palavra
+// numa escolha de arquitetura enche a conversa de degraus que não mudam nada.
+//
+// Dúvida é uma coisa MEDÍVEL, e são duas:
+//
+//   1. a recomendação não se sustenta — a regra pede uma função e não existe função
+//      registrada que faça aquilo, ou pede ferramenta e nenhum App serve. Recomendar o que
+//      não dá para construir é o caso em que a alternativa merece ser considerada;
+//   2. a descrição da pessoa APOIA a forma que ela pediu — ela escreveu "agente" e o
+//      trabalho tem julgamento no texto. Aí a palavra foi escolha, não modo de falar.
+//
+// Fora disso a regra decide e segue, e o porquê continua na proposta em `rejected`: não
+// perguntar não é o mesmo que não contar.
+
+test('SEM dúvida: cálculo puro com função registrada não vira pergunta', () => {
+  // A função `lista.ordenar` existe e o trabalho a nomeia; nada no texto sugere julgamento.
+  // A regra está certa e sozinha — perguntar aqui é degrau à toa.
+  const j = job({ id: 'j1', name: 'quero um agente que faça ordenar a lista de preços', action: 'ordenar a lista' })
+  const brief = { ...emptyBrief('médias'), jobs: [j] }
+  assert.equal(classifyJob(j, manifesto).resolved, true, 'a recomendação tinha de estar resolvida')
+  assert.equal(detectGaps(brief, manifesto).find((g) => g.id === 'forma:j1'), undefined)
+})
+
+test('COM dúvida: a recomendação não se sustenta — não há função que faça a conta', () => {
+  const j = job({ id: 'j1', name: 'quero um agente que calcule o índice de satisfação', action: 'calcular o índice de satisfação' })
+  const brief = { ...emptyBrief('satisfação'), jobs: [j] }
+  const decisao = classifyJob(j, manifesto)
+  assert.equal(decisao.kind, 'function')
+  assert.equal(decisao.resolved, false, 'nenhuma função registrada faz isto')
+  assert.ok(detectGaps(brief, manifesto).find((g) => g.id === 'forma:j1'), 'com recomendação sem lastro, tem de perguntar')
+})
+
+test('COM dúvida: o texto da pessoa APOIA a forma que ela pediu', () => {
+  // "avaliar" é julgamento; "quero um agente" deixa de ser modo de falar.
+  const j = job({ id: 'j1', name: 'quero um agente que consulte o pedido e avalie se cabe reembolso', action: 'consultar o pedido' })
+  const brief = { ...emptyBrief('reembolso'), jobs: [j] }
+  assert.ok(detectGaps(brief, manifesto).find((g) => g.id === 'forma:j1'))
+})
+
+test('SEM dúvida: pediu ferramenta e a regra deu ferramenta — nada a perguntar', () => {
+  const j = job({ id: 'j1', name: 'crie uma ferramenta para consultar o pedido na Nuvemshop', action: 'consultar pedido' })
+  const brief = { ...emptyBrief('pedidos'), jobs: [j] }
+  assert.equal(detectGaps(brief, manifesto).find((g) => g.id === 'forma:j1'), undefined)
 })

@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { Button, Field, Icon, Input } from '../ui'
 import { API_URL } from '../lib/api'
+import * as arq from '../lib/architect'
+import type { ArchitectMessage, ArchitectProject, ArchitectQuestion } from '../lib/architect'
 import { useSession } from '../lib/auth-client'
 
 // O ARQUITETO COMO CHAT GLOBAL — uma instância só, montada no layout.
@@ -45,7 +47,21 @@ export const PHASE_LABEL: Record<AssistantPhase, string> = {
 
 interface Mensagem {
   id: string
-  autor: 'pessoa' | 'arquiteto'
+  /**
+   * `aviso` é o `system_notice` da linha gravada — não é o Arquiteto falando, é o SISTEMA.
+   *
+   * Ele carrega coisas como "removi o que parecia uma credencial da sua mensagem" e a
+   * falha de uma aplicação. Desenhá-lo como fala do Arquiteto apagaria a diferença entre
+   * o que o modelo disse e o que o servidor fez.
+   */
+  autor: 'pessoa' | 'arquiteto' | 'aviso'
+  /**
+   * O aviso de falha que uma rodada POSTERIOR resolveu.
+   *
+   * Fica no histórico mas sai do alarme: apagá-lo esconderia que houve um problema, e
+   * deixá-lo em vermelho faria a pessoa procurar um defeito que já não existe.
+   */
+  resolvido?: boolean
   texto: string
   /** Uma pergunta curta do Arquiteto, quando os dois caminhos eram plausíveis. */
   pergunta?: string
@@ -86,6 +102,28 @@ interface AssistantState {
    * projeto errado.
    */
   projetoAtual: string | null
+  /**
+   * O PROJETO em andamento, inteiro.
+   *
+   * Guardado porque a decisão que importa depende dele: "Abrir a proposta" só aparece
+   * quando existe proposta (`hasBlueprint`). Antes o botão aparecia junto com a criação do
+   * projeto — mandando a pessoa para uma sala vazia e deixando a conversa para trás.
+   */
+  projeto: ArchitectProject | null
+  /** A pergunta aberta da rodada do projeto, com as opções que a respondem em um toque. */
+  pergunta: ArchitectQuestion | null
+  /** Responder a pergunta é mandar a resposta como mensagem — o mesmo caminho de sempre. */
+  responder: (texto: string) => Promise<void>
+  /** Pede a primeira proposta sem esperar todas as respostas. */
+  gerarProposta: () => Promise<void>
+  /**
+   * O último erro COM O CÓDIGO.
+   *
+   * `erro` é a frase que o painel mostra; isto é o que permite a tela oferecer a saída
+   * certa — "no_provider_key" leva a Configurações, e uma mensagem sem código deixaria a
+   * pessoa lendo o problema sem nada para clicar.
+   */
+  ultimoErro: { code: string; message: string } | null
   /** Abre a página completa do Arquiteto no modo de montagem. */
   montarOperacao: () => void
 }
@@ -203,6 +241,18 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
    */
   const [enviando, setEnviando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
+  /**
+   * A CONVERSA PASSA A SER A DO PROJETO assim que existe um.
+   *
+   * Antes eram duas: a daqui, que vivia só no `useState` e sumia ao recarregar, e a da
+   * página do projeto, gravada no servidor. A pessoa dizia metade das coisas de um lado e
+   * metade do outro, e a metade daqui não sobrevivia a um F5. Com um projeto aberto, este
+   * painel deixa de falar com `assistant/turn` e passa a ler e escrever na linha gravada
+   * — a mesma que a página da proposta mostra.
+   */
+  const [projeto, setProjeto] = useState<ArchitectProject | null>(null)
+  const [pergunta, setPergunta] = useState<ArchitectQuestion | null>(null)
+  const [ultimoErro, setUltimoErro] = useState<{ code: string; message: string } | null>(null)
 
   const location = useLocation()
   const navigate = useNavigate()
@@ -218,6 +268,41 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
    */
   const uiContext = useMemo(() => idsDoCaminho(location.pathname), [location.pathname])
 
+  /** Uma mensagem gravada, no formato que este painel desenha. */
+  const daLinha = (m: ArchitectMessage): Mensagem => ({
+    id: m.id,
+    autor: m.role === 'user' ? 'pessoa' : m.role === 'system_notice' ? 'aviso' : 'arquiteto',
+    texto: m.content,
+    ...(m.role === 'system_notice' && m.failure === true && m.resolved === true ? { resolvido: true } : {}),
+  })
+
+  /** Passa a mostrar a conversa gravada de um projeto — a partir daqui é ela que vale. */
+  const entrarNoProjeto = useCallback(async (id: string) => {
+    const [p, linhas] = await Promise.all([arq.getProject(id), arq.listMessages(id)])
+    // Sem `id` não é projeto. Adotar o que voltou sem conferir trocava um projeto bom por
+    // um objeto vazio, e o botão de continuar a montagem perdia para onde ir.
+    if (!p?.id) throw new Error('projeto não encontrado')
+    setProjeto(p)
+    // `getProject` não devolve `question` — quem tem pergunta aberta é `pendingQuestion`,
+    // gravada no projeto. É a mesma leitura que a página do projeto faz ao abrir.
+    /**
+     * As OPÇÕES sobrevivem ao recarregamento.
+     *
+     * Antes, reabrir a página no meio de uma pergunta de escolha fechada devolvia o texto
+     * sem os botões — e "agente ou função?" virava um campo aberto onde qualquer frase
+     * responde, inclusive uma que o servidor vai ignorar. `allowUnknown` só continua
+     * valendo quando não há opções: numa escolha entre duas formas, "não sei ainda" não é
+     * resposta, é a proposta parada.
+     */
+    setPergunta(
+      p.pendingQuestion
+        ? { ...p.pendingQuestion, why: '', choices: p.pendingQuestion.choices ?? [], allowUnknown: !p.pendingQuestion.choices?.length }
+        : null,
+    )
+    setMensagens(linhas.map(daLinha))
+    return p
+  }, [])
+
   const enviar = useCallback(async () => {
     const texto = rascunho.trim()
     if (!texto || enviando) return
@@ -228,6 +313,36 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
     setEnviando(true)
     setPhase('answering')
     setErro(null)
+
+    /**
+     * COM PROJETO ABERTO, a rodada é a do projeto.
+     *
+     * `assistant/turn` classifica intenção — é a porta de entrada. Depois que a montagem
+     * começou, quem conduz é a rodada do projeto, que carrega o entendimento, o desenho e
+     * a aplicação. Continuar mandando para a porta de entrada faria o Arquiteto reclassificar
+     * do zero cada frase, e abrir um projeto novo a cada pedido de ajuste.
+     */
+    if (projeto) {
+      try {
+        const r = await arq.sendMessage(projeto.id, texto)
+        setProjeto(r)
+        setPergunta(r.question)
+        setMensagens((await arq.listMessages(projeto.id)).map(daLinha))
+        setPhase(r.hasBlueprint ? 'done' : 'preparing_proposal')
+      } catch (e) {
+        setErro((e as Error).message)
+        setUltimoErro({ code: (e as arq.ArchitectError).code ?? 'error', message: (e as Error).message })
+        setPhase('failed')
+        // A linha gravada é a verdade: recarregá-la desfaz o eco otimista que não virou nada.
+        await arq
+          .listMessages(projeto.id)
+          .then((linhas) => setMensagens(linhas.map(daLinha)))
+          .catch(() => undefined)
+      } finally {
+        setEnviando(false)
+      }
+      return
+    }
 
     try {
       const res = await fetch(`${API_URL}/api/architect/assistant/turn`, {
@@ -261,6 +376,14 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
         },
       ])
       setPhase(corpo?.phase ?? 'done')
+      /**
+       * Criou projeto? A conversa CONTINUA AQUI, agora na linha gravada.
+       *
+       * Este é o ponto que a pessoa reclamou: antes o turno terminava oferecendo "Abrir a
+       * proposta" para uma proposta que ainda não existia, e o que tinha sido dito no
+       * painel ficava para trás. Agora o painel entra no projeto e segue a mesma conversa.
+       */
+      if (corpo?.projectId) await entrarNoProjeto(corpo.projectId).catch(() => undefined)
     } catch (e) {
       setErro((e as Error).message)
       setPhase('failed')
@@ -268,7 +391,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
       // SEMPRE: erro de rede, resposta estranha ou sucesso soltam o campo do mesmo jeito.
       setEnviando(false)
     }
-  }, [rascunho, enviando, uiContext])
+  }, [rascunho, enviando, uiContext, projeto, entrarNoProjeto])
 
   /**
    * O "sim" vai para um endpoint PRÓPRIO, com o id e o hash que o servidor montou.
@@ -316,11 +439,163 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
     }
   }, [mensagens])
 
+  /**
+   * NA PÁGINA DE UM PROJETO, o painel É o chat daquele projeto.
+   *
+   * Antes ele se retirava e a página desenhava a própria caixa de conversa — duas
+   * conversas, dois backends, e o que foi dito num lugar invisível no outro. Agora existe
+   * uma só: ao entrar na página, o painel carrega a linha daquele projeto e se abre, que é
+   * o que a caixa da página fazia.
+   */
+  const idNaUrl = useMemo(() => {
+    const m = location.pathname.match(/^\/architect\/([^/]+)/)
+    // `/architect/new` é redirecionamento antigo, e não um id.
+    return m && m[1] !== 'new' ? m[1] : null
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (!idNaUrl || projeto?.id === idNaUrl) return
+    entrarNoProjeto(idNaUrl)
+      .then((p) => {
+        /**
+         * SEM PROPOSTA, a conversa é o trabalho — e abre sozinha.
+         * COM proposta, ela começa recolhida.
+         *
+         * O painel é uma gaveta encostada à direita: aberto, ele cobre a faixa onde ficam
+         * "Aplicar", "Desfazer a última correção" e os itens da proposta. Quem chega numa
+         * proposta pronta veio ler e decidir, não conversar; o lançador fica ali para
+         * quando quiser pedir a mudança. É a mesma regra que esta tela já seguia — "sem
+         * proposta, ela é a tela; com proposta, ela sai da frente".
+         */
+        if (!p.hasBlueprint) {
+          setAberto(true)
+          setMinimizado(false)
+        }
+        return p
+      })
+      /**
+       * A PRIMEIRA RODADA sai sozinha.
+       *
+       * A descrição que abriu o projeto já é a primeira mensagem; sem esta rodada a tela
+       * abria com o que a pessoa escreveu e um silêncio, e ela teria que reenviar para
+       * começar. Isto vivia na página — mas a página não desenha mais a conversa, e a
+       * pergunta que a rodada devolve precisa chegar a quem a mostra.
+       */
+      .then(async (p) => {
+        if (!p || p.status !== 'discovery' || p.hasBlueprint || p.pendingQuestion) return
+        if (jaIniciou.current === p.id) return
+        const linhas = await arq.listMessages(p.id).catch(() => [])
+        if (linhas.length !== 1) return
+        jaIniciou.current = p.id
+        setEnviando(true)
+        setPhase('answering')
+        try {
+          const r = await arq.advanceTurn(p.id)
+          setProjeto(r)
+          setPergunta(r.question)
+          setMensagens((await arq.listMessages(p.id)).map(daLinha))
+          setPhase(r.hasBlueprint ? 'done' : 'preparing_proposal')
+        } catch (e) {
+          setErro((e as Error).message)
+          setUltimoErro({ code: (e as arq.ArchitectError).code ?? 'error', message: (e as Error).message })
+          setPhase('failed')
+        } finally {
+          setEnviando(false)
+        }
+      })
+      .catch(() => undefined)
+  }, [idNaUrl, projeto?.id, entrarNoProjeto])
+
+  /**
+   * AO ABRIR, o painel retoma o projeto em andamento.
+   *
+   * Sem isto a conversa recomeçava do zero a cada visita — e como o projeto continuava lá,
+   * a pessoa acabava com dois: pedia a mesma coisa de novo porque o painel não lembrava
+   * de nada. Uma vez por sessão, e só quando não há nada em tela para atrapalhar.
+   */
+  /** Um projeto só recebe a rodada de partida uma vez. */
+  const jaIniciou = useRef<string | null>(null)
+  const jaRetomou = useRef(false)
+  useEffect(() => {
+    if (!aberto || jaRetomou.current || projeto || mensagens.length > 0) return
+    jaRetomou.current = true
+    arq
+      .listProjects()
+      .then((lista) => {
+        // "Aberto" é o que ainda se monta. Aplicado e arquivado são histórico, e retomar
+        // um histórico como se fosse o trabalho de agora é pior que começar do zero.
+        const emAndamento = lista.find((p) => p.status === 'discovery' || p.status === 'draft' || p.status === 'ready')
+        if (emAndamento) return entrarNoProjeto(emAndamento.id)
+        return undefined
+      })
+      .catch(() => undefined)
+  }, [aberto, projeto, mensagens.length, entrarNoProjeto])
+
+  /**
+   * Responder a pergunta aberta.
+   *
+   * Passa pelo MESMO `enviar`: uma opção clicada é uma resposta escrita, e ter um segundo
+   * caminho de envio significaria duas chances de divergir do primeiro.
+   */
+  const responder = useCallback(
+    async (texto: string) => {
+      if (!projeto || enviando) return
+      setEnviando(true)
+      setPhase('answering')
+      setErro(null)
+      setUltimoErro(null)
+      setMensagens((m) => [...m, { id: `p-${Date.now()}`, autor: 'pessoa', texto }])
+      try {
+        const r = await arq.sendMessage(projeto.id, texto)
+        setProjeto(r)
+        setPergunta(r.question)
+        setMensagens((await arq.listMessages(projeto.id)).map(daLinha))
+        setPhase(r.hasBlueprint ? 'done' : 'preparing_proposal')
+      } catch (e) {
+        setErro((e as Error).message)
+        setUltimoErro({ code: (e as arq.ArchitectError).code ?? 'error', message: (e as Error).message })
+        setPhase('failed')
+      } finally {
+        setEnviando(false)
+      }
+    },
+    [projeto, enviando],
+  )
+
+  /**
+   * A primeira proposta, agora.
+   *
+   * Nem toda conversa quer responder a tudo antes de ver alguma coisa — e ver o rascunho é,
+   * muitas vezes, o que faz a pessoa saber o que responder.
+   */
+  const gerarProposta = useCallback(async () => {
+    if (!projeto || enviando) return
+    setEnviando(true)
+    setPhase('preparing_proposal')
+    setErro(null)
+    try {
+      const r = await arq.generateProposal(projeto.id)
+      setProjeto(r)
+      setPergunta(r.question)
+      setMensagens((await arq.listMessages(projeto.id)).map(daLinha))
+      setPhase('done')
+    } catch (e) {
+      setErro((e as Error).message)
+      setUltimoErro({ code: (e as arq.ArchitectError).code ?? 'error', message: (e as Error).message })
+      setPhase('failed')
+    } finally {
+      setEnviando(false)
+    }
+  }, [projeto, enviando])
+
   /** O último projeto que esta conversa abriu. Derivado, nunca guardado em paralelo. */
   const projetoAtual = useMemo(() => {
+    if (projeto?.id) return projeto.id
+    // A mensagem que criou o projeto continua sendo a fonte de reserva: se carregar a
+    // linha gravada falhar, ainda se sabe qual projeto foi aberto.
     for (let i = mensagens.length - 1; i >= 0; i -= 1) if (mensagens[i].projectId) return mensagens[i].projectId!
     return null
-  }, [mensagens])
+  }, [mensagens, projeto])
 
   /**
    * "MONTAR OPERAÇÃO" — a mesma sala, pela porta que a pessoa já está usando.
@@ -357,19 +632,16 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
       enviar,
       confirmar,
       projetoAtual,
+      projeto,
+      pergunta,
+      responder,
+      gerarProposta,
+      ultimoErro,
       montarOperacao,
     }),
-    [aberto, minimizado, mensagens, rascunho, phase, enviando, erro, enviar, confirmar, projetoAtual, montarOperacao],
+    [aberto, minimizado, mensagens, rascunho, phase, enviando, erro, enviar, confirmar, projetoAtual, projeto, pergunta, responder, gerarProposta, ultimoErro, montarOperacao],
   )
 
-  /**
-   * Na página de um PROJETO, o chat global se retira.
-   *
-   * Ali existe a conversa do projeto — que carrega o Brief, o Blueprint e a aplicação. Duas
-   * caixas de conversa na mesma tela é a pessoa escrevendo na errada e não entendendo por
-   * que a outra não respondeu.
-   */
-  const naPaginaDeProjeto = /^\/architect\/[^/]+/.test(location.pathname)
 
   /**
    * E ele só existe para quem ENTROU.
@@ -387,7 +659,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
   return (
     <Ctx.Provider value={valor}>
       {children}
-      {naPaginaDeProjeto || !sessao?.user ? null : (
+      {!sessao?.user ? null : (
         <>
           <ArchitectLauncher />
           <ArchitectPanel onAbrirProjeto={(id) => navigate(`/architect/${id}`)} />
@@ -472,8 +744,23 @@ function ArchitectLauncher() {
   )
 }
 
+/** Estamos DENTRO de um projeto? Um teste só, usado pelo provider e pelo painel. */
+const ehPaginaDeProjeto = (pathname: string) => /^\/architect\/[^/]+/.test(pathname)
+
 function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => void }) {
   const a = useArchitectAssistant()
+  /** Quanto tempo esta rodada já leva. Zera a cada rodada nova. */
+  const [segundos, setSegundos] = useState(0)
+  const emVoo = a?.enviando ?? false
+  useEffect(() => {
+    if (!emVoo) return setSegundos(0)
+    const inicio = Date.now()
+    const t = setInterval(() => setSegundos(Math.round((Date.now() - inicio) / 1000)), 1000)
+    return () => clearInterval(t)
+  }, [emVoo])
+  // Dentro do projeto a proposta já está na tela: um botão para abri-la seria um clique
+  // para chegar onde a pessoa já está.
+  const naPaginaDeProjeto = ehPaginaDeProjeto(useLocation().pathname)
   const [largura, setLargura] = useState(() => {
     try {
       return Math.min(LARGURA_MAX, Math.max(LARGURA_MIN, Number(localStorage.getItem(LARGURA_CHAVE)) || 400))
@@ -481,6 +768,31 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
       return 400
     }
   })
+
+  /**
+   * A LARGURA QUE O PAINEL OCUPA, publicada para quem precisa abrir espaço.
+   *
+   * Ele é uma gaveta de altura cheia encostada à direita. Enquanto era um chat que se
+   * abria por cima de qualquer tela, cobrir o conteúdo era o combinado. Agora ele é o chat
+   * DA PÁGINA DO PROJETO — e cobrir a proposta significa cobrir o botão "Aplicar", que
+   * fica exatamente ali. Quem precisa de espaço lê `--arquiteto-largura`; no celular ela é
+   * zero, porque lá o painel é a tela inteira e não há o que reservar.
+   */
+  const larguraAberta = a?.aberto && !a?.minimizado
+  useEffect(() => {
+    const raiz = document.documentElement
+    const aplicar = () => {
+      const cabe = window.matchMedia('(min-width: 1024px)').matches
+      raiz.style.setProperty('--arquiteto-largura', larguraAberta && cabe ? `${largura}px` : '0px')
+    }
+    aplicar()
+    window.addEventListener('resize', aplicar)
+    return () => {
+      window.removeEventListener('resize', aplicar)
+      raiz.style.setProperty('--arquiteto-largura', '0px')
+    }
+  }, [larguraAberta, largura])
+
   const campo = useRef<HTMLTextAreaElement>(null)
   const fim = useRef<HTMLDivElement>(null)
 
@@ -534,9 +846,18 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
       style={{
         position: 'fixed',
         zIndex: 61,
-        right: 0,
-        bottom: 0,
-        top: 0,
+        /**
+         * DENTRO DO PROJETO ele é um CARTÃO DE CANTO, e não uma gaveta de altura cheia.
+         *
+         * A gaveta encosta na direita e cobre 400 px da tela — ali embaixo dela fica o
+         * botão de aplicar. Esta tela já tinha resolvido isso antes: a conversa flutua no
+         * canto justamente para não comer largura da proposta, do fluxo nem da checklist.
+         * Fora do projeto ela continua gaveta, que é o certo para um painel que se abre
+         * por cima de qualquer tela.
+         */
+        ...(naPaginaDeProjeto
+          ? { right: 24, bottom: 24, maxHeight: 'min(70dvh, 640px)', borderRadius: 'var(--radius-panel)', overflow: 'hidden' }
+          : { right: 0, bottom: 0, top: 0 }),
         display: 'flex',
         flexDirection: 'column',
         background: 'var(--surface-card)',
@@ -600,7 +921,7 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
             aria-live="polite"
             aria-atomic="false"
             style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}
-            data-testid="architect-mensagens"
+            data-testid="architect-conversation"
           >
             {a.mensagens.length === 0 ? (
               <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }} data-testid="architect-vazio">
@@ -611,21 +932,26 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
             {a.mensagens.map((m) => (
               <div
                 key={m.id}
-                data-testid={m.autor === 'pessoa' ? 'architect-msg-pessoa' : 'architect-msg-arquiteto'}
+                /* O marcador usa o vocabulário dos DADOS — `user`, `assistant`,
+                   `system_notice` — e não o da tela. Havia dois nomes para a mesma coisa
+                   porque havia duas conversas; com uma só, sobra um nome. */
+                data-testid={`architect-message-${m.autor === 'pessoa' ? 'user' : m.autor === 'aviso' ? 'system_notice' : 'assistant'}`}
+                data-resolved={m.resolvido ? 'sim' : undefined}
                 style={{
                   alignSelf: m.autor === 'pessoa' ? 'flex-end' : 'flex-start',
                   maxWidth: '92%',
                   padding: '8px 12px',
                   borderRadius: 12,
                   fontSize: 13.5,
-                  background: m.autor === 'pessoa' ? 'var(--intent-brand-soft)' : 'var(--surface-sunken)',
+                  background: m.autor === 'pessoa' ? 'var(--intent-brand-soft)' : m.autor === 'aviso' ? 'var(--intent-warning-soft)' : 'var(--surface-sunken)',
                   color: 'var(--text-body)',
                   overflowWrap: 'anywhere',
                 }}
               >
                 {m.texto ? <span>{m.texto}</span> : null}
+                {m.resolvido ? <span style={{ fontSize: 11.5 }}> — já resolvido; a rodada seguinte funcionou.</span> : null}
                 {m.pergunta ? (
-                  <p style={{ margin: '6px 0 0', fontSize: 13, fontWeight: 600 }} data-testid="architect-pergunta">
+                  <p style={{ margin: '6px 0 0', fontSize: 13, fontWeight: 600 }} data-testid="architect-question">
                     {m.pergunta}
                   </p>
                 ) : null}
@@ -635,17 +961,68 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
                     {m.desfecho}
                   </p>
                 ) : null}
-                {m.projectId ? (
-                  <p style={{ margin: '8px 0 0' }}>
-                    <Button variant="secondary" onClick={() => onAbrirProjeto(m.projectId!)} data-testid="architect-abrir-projeto">
-                      Abrir a proposta
-                    </Button>
-                  </p>
-                ) : null}
+
               </div>
             ))}
+            {/* "PENSANDO… Ns", com o relógio andando.
+                Veio junto com a conversa: um "Pensando…" parado por trinta segundos é
+                indistinguível de uma tela travada, e a pessoa recarrega no meio da rodada
+                — que é justamente o que faz o trabalho parecer perdido. `role="status"`
+                porque quem usa leitor de tela precisa saber que ainda está processando. */}
+            {a.enviando ? (
+              <p role="status" data-testid="architect-thinking" style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
+                Pensando… {segundos}s
+              </p>
+            ) : null}
             <div ref={fim} />
           </div>
+
+          {/* A PERGUNTA ABERTA, com as opções que a respondem num toque. Era isto que só
+              existia na página do projeto: quem conversava pelo painel tinha que adivinhar
+              o formato da resposta e digitar por extenso. */}
+          {a.pergunta && !a.enviando ? (
+            <div className="flex flex-col gap-2" style={{ padding: '0 12px 8px' }} data-testid="architect-question">
+              {/* O PORQUÊ da pergunta. Sem ele a pessoa escolhe no escuro: "web ou
+                  whatsapp?" não diz o que muda na operação, e "O canal decide quem recebe
+                  a conversa" diz. */}
+              {a.pergunta.why ? <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>{a.pergunta.why}</p> : null}
+              <div className="flex flex-wrap gap-2">
+              {(a.pergunta.choices ?? []).map((c) => (
+                <Button key={c.value} variant="secondary" size="sm" onClick={() => void a.responder(c.label)} data-testid={`architect-choice-${c.value}`}>
+                  {c.label}
+                </Button>
+              ))}
+              {a.pergunta.allowUnknown ? (
+                <Button variant="ghost" size="sm" onClick={() => void a.responder('Não sei ainda')} data-testid="architect-unknown">
+                  Não sei ainda
+                </Button>
+              ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {/* FORÇAR a primeira proposta. Existe porque nem toda conversa quer responder a
+              todas as perguntas antes de ver alguma coisa — e ver o rascunho é, muitas
+              vezes, o que faz a pessoa saber o que responder. */}
+          {a.projeto && !a.projeto.hasBlueprint && !a.enviando ? (
+            <p style={{ margin: 0, padding: '0 12px 8px' }}>
+              <Button variant="ghost" size="sm" onClick={() => void a.gerarProposta()} data-testid="architect-generate">
+                Gerar uma primeira proposta agora
+              </Button>
+            </p>
+          ) : null}
+
+          {/* A PORTA PARA A PROPOSTA só existe quando há proposta.
+              Antes ela aparecia no mesmo turno em que o projeto era criado — levando a
+              pessoa para uma sala vazia e deixando a conversa para trás. `hasBlueprint` é
+              o servidor dizendo que há algo para ver. */}
+          {a.projeto?.hasBlueprint && !naPaginaDeProjeto ? (
+            <p style={{ margin: 0, padding: '0 12px 10px' }}>
+              <Button variant="secondary" onClick={() => onAbrirProjeto(a.projeto!.id)} data-testid="architect-abrir-projeto">
+                Abrir a proposta
+              </Button>
+            </p>
+          ) : null}
 
           {a.erro ? (
             <p role="alert" data-testid="architect-erro" style={{ margin: 0, padding: '0 12px 8px', fontSize: 12.5, color: 'var(--intent-danger-text)' }}>
@@ -717,6 +1094,7 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
               }}
               rows={2}
               placeholder="Ex: adicione reservas pelo WhatsApp"
+              aria-label="Sua resposta"
               data-testid="architect-input"
               style={{
                 flex: 1,

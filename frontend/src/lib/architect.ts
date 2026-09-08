@@ -100,7 +100,8 @@ export interface ArchitectProject {
   provider?: 'anthropic' | 'openai'
   model?: string | null
   answers?: Record<string, unknown>
-  pendingQuestion?: { key: string; text: string } | null
+  /** `choices` vem quando a pergunta é de escolha fechada; ausente nas antigas. */
+  pendingQuestion?: { key: string; text: string; choices?: { value: string; label: string }[] } | null
   assumptions?: { key: string; text: string; questionKey?: string }[]
   blueprint?: Blueprint | null
   /**

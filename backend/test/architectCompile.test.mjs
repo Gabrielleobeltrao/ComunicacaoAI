@@ -249,3 +249,75 @@ test('Brief vazio compila um desenho vazio — e não quebra', () => {
   assert.equal(r.blueprint.floors.length, 1)
   assert.deepEqual(r.pending, [])
 })
+
+// --- o andar que já existe --------------------------------------------------------------
+//
+// O SINTOMA RELATADO: "cara, ele criou um novo andar". Toda operação abria um andar com o
+// nome do próprio título, sempre, porque `compileBrief` fixava `action: 'create'` e nem
+// recebia o inventário. Guardar a máxima do Bitcoin não é uma área nova da empresa — é
+// trabalho que mora onde a pessoa já trabalha.
+
+const inventarioAndares = (nomes) => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: { id: '000000000000000000000b01', name: 'Prédio' },
+  sections: {
+    floor: {
+      kind: 'floor',
+      total: nomes.length,
+      truncated: false,
+      items: nomes.map((n, i) => ({ id: `00000000000000000000f${String(i).padStart(3, '0')}`, label: n, ownerScope: 'building:000000000000000000000b01', status: 'active' })),
+    },
+  },
+})
+
+test('ACEITAÇÃO: com um andar na conta, a operação MORA nele — não abre outro', () => {
+  const brief = { ...briefCompleto(), businessGoal: 'Guardar a máxima e a mínima do dia do Bitcoin' }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Máxima e mínima do Bitcoin', objective: 'x' }, inventarioAndares(['Operações']))
+  assert.equal(blueprint.floors.length, 1)
+  assert.equal(blueprint.floors[0].action, 'reuse')
+  assert.equal(blueprint.floors[0].resourceId, '00000000000000000000f000')
+  assert.equal(blueprint.floors[0].name, 'Operações')
+})
+
+test('a conta VAZIA continua ganhando o primeiro andar', () => {
+  // O oposto não pode quebrar: quem está começando precisa do andar criado.
+  const { blueprint } = compileBrief(briefCompleto(), manifesto, { title: 'Atendimento', objective: 'x' }, null)
+  assert.equal(blueprint.floors[0].action, 'create')
+})
+
+// --- a escolha da pessoa chega ao DESENHO ------------------------------------------------
+//
+// O classificador já respeita a escolha; o que este caso prova é o caminho inteiro: a
+// resposta entra pelo compilador e sai como recurso no plano. Sem isto, a pergunta seria
+// teatro — perguntar e montar do mesmo jeito é pior que não perguntar.
+
+const trabalhoDeCalculo = () => ({
+  id: 'j1',
+  name: 'quero um agente que calcule a máxima do dia',
+  trigger: 'quando chegar cotação nova',
+  input: 'as cotações do dia',
+  decision: '',
+  action: 'calcular a máxima',
+  output: 'a máxima do dia',
+})
+
+test('ACEITAÇÃO: sem resposta, vale a recomendação — o cálculo NÃO vira agente', () => {
+  const brief = { ...briefCompleto(), jobs: [trabalhoDeCalculo()] }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Máxima do dia', objective: 'x' }, null, {})
+  assert.equal(blueprint.agents.length, 0, `agentes: ${JSON.stringify(blueprint.agents.map((a) => a.name))}`)
+})
+
+test('ACEITAÇÃO: respondida "agente", o plano SAI com o agente que a pessoa pediu', () => {
+  const brief = { ...briefCompleto(), jobs: [trabalhoDeCalculo()] }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Máxima do dia', objective: 'x' }, null, { 'forma:j1': 'agent' })
+  assert.equal(blueprint.agents.length, 1, `agentes: ${JSON.stringify(blueprint.agents.map((a) => a.name))}`)
+})
+
+test('AMEAÇA: uma resposta que não é uma forma não muda nada', () => {
+  // O caminho da resposta passa pelo modelo. Se qualquer texto valesse, o modelo poderia
+  // escolher a forma por escrito — que é o que a classificação existe para impedir.
+  const brief = { ...briefCompleto(), jobs: [trabalhoDeCalculo()] }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Máxima do dia', objective: 'x' }, null, { 'forma:j1': 'superagente' })
+  assert.equal(blueprint.agents.length, 0)
+})

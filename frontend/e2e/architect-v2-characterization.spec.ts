@@ -111,29 +111,83 @@ test('uma PERGUNTA não cria projeto, e a resposta diz por que não deu', async 
   await page.getByTestId('architect-input').fill('Qual o valor do dólar hoje?')
   await page.getByTestId('architect-enviar').click()
 
-  await expect(page.getByTestId('architect-msg-arquiteto')).toContainText('Conecte um App ou uma fonte')
+  await expect(page.getByTestId('architect-message-assistant')).toContainText('Conecte um App ou uma fonte')
   await expect(page.getByTestId('architect-abrir-projeto')).toHaveCount(0)
 })
 
-test('uma PROPOSTA oferece abrir o projeto, e o estado é dito em português', async ({ page }) => {
-  await stub(page, {
-    turno: {
-      intent: { mode: 'propose', changeKind: 'expand', objective: 'reservas' },
-      phase: 'preparing_proposal',
-      text: 'Vou montar isso. Comecei um projeto — nada é aplicado sem a sua aprovação.',
-      question: null,
-      projectId: '000000000000000000000abc',
-      context: { pathname: '/dashboard', rejected: [] },
-    },
-  })
+/**
+ * A PORTA PARA A PROPOSTA SÓ ABRE QUANDO HÁ PROPOSTA.
+ *
+ * Antes, o mesmo turno que criava o projeto já oferecia "Abrir a proposta" — e do outro
+ * lado não havia proposta nenhuma, porque ela é montada depois, dentro do projeto. Pior:
+ * a conversa que levou até ali ficava para trás, no painel, sem nem ser gravada.
+ *
+ * Agora o projeto é só onde a conversa passa a ser gravada. A porta aparece quando o
+ * servidor diz que existe algo para ver (`hasBlueprint`).
+ */
+const PROJETO = (extra: Record<string, unknown> = {}) => ({
+  id: '000000000000000000000abc',
+  title: 'Reservas',
+  objective: 'x',
+  status: 'discovery',
+  locale: 'pt',
+  answers: {},
+  assumptions: [],
+  blueprint: null,
+  hasBlueprint: false,
+  checklist: [],
+  readiness: { requiredDone: 0, requiredTotal: 0, optionalDone: 0, optionalTotal: 0, ready: false, blockers: [] },
+  createdAt: NOW,
+  updatedAt: NOW,
+  appliedAt: null,
+  ...extra,
+})
+
+const TURNO_PROPOE = {
+  intent: { mode: 'propose', changeKind: 'expand', objective: 'reservas' },
+  phase: 'preparing_proposal',
+  text: 'Entendi: reservas. Vou montar isso com você aqui mesmo — quando a proposta estiver de pé eu te mostro.',
+  question: null,
+  projectId: '000000000000000000000abc',
+  context: { pathname: '/dashboard', rejected: [] },
+}
+
+test('um projeto SEM proposta ainda não oferece a porta — a conversa segue no painel', async ({ page }) => {
+  await stub(page, { turno: TURNO_PROPOE })
+  await page.route('**/api/architect/projects/000000000000000000000abc', (r) => r.fulfill({ json: PROJETO() }))
+  await page.route('**/api/architect/projects/*/messages', (r) =>
+    r.fulfill({ json: [{ id: 'm1', role: 'user', content: 'adicione reservas', createdAt: NOW }, { id: 'm2', role: 'assistant', content: 'Entendi: reservas.', createdAt: NOW }] }),
+  )
   await page.goto('/dashboard')
   await page.getByTestId('architect-launcher').click()
   await page.getByTestId('architect-input').fill('adicione reservas ao meu restaurante')
   await page.getByTestId('architect-enviar').click()
 
-  await expect(page.getByTestId('architect-msg-arquiteto')).toContainText('nada é aplicado sem a sua aprovação')
+  await expect(page.getByTestId('architect-message-assistant').last()).toContainText('Entendi')
+  await expect(page.getByTestId('architect-abrir-projeto')).toHaveCount(0)
+})
+
+test('com a proposta de pé, a porta aparece — e a conversa que a montou está gravada', async ({ page }) => {
+  await stub(page, { turno: TURNO_PROPOE })
+  await page.route('**/api/architect/projects/000000000000000000000abc', (r) =>
+    r.fulfill({ json: PROJETO({ hasBlueprint: true, status: 'draft' }) }),
+  )
+  await page.route('**/api/architect/projects/*/messages', (r) =>
+    r.fulfill({
+      json: [
+        { id: 'm1', role: 'user', content: 'adicione reservas ao meu restaurante', createdAt: NOW },
+        { id: 'm2', role: 'assistant', content: 'Entendi: reservas.', createdAt: NOW },
+      ],
+    }),
+  )
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-input').fill('adicione reservas ao meu restaurante')
+  await page.getByTestId('architect-enviar').click()
+
   await expect(page.getByTestId('architect-abrir-projeto')).toBeVisible()
-  await expect(page.getByTestId('architect-phase')).toHaveText('preparando a proposta')
+  // A conversa GRAVADA passa a ser a que o painel mostra: é a mesma que a página abre.
+  await expect(page.getByTestId('architect-message-user').last()).toContainText('adicione reservas ao meu restaurante')
 })
 
 test('o contexto da tela vai como REFERÊNCIA — nunca o conteúdo dela', async ({ page }) => {
@@ -161,7 +215,7 @@ test('teclado: Enter envia, Shift+Enter quebra linha, Esc fecha', async ({ page 
   await expect(campo).toHaveValue('primeira linha\nsegunda linha')
 
   await campo.press('Enter')
-  await expect(page.getByTestId('architect-msg-pessoa')).toContainText('primeira linha')
+  await expect(page.getByTestId('architect-message-user')).toContainText('primeira linha')
 
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('architect-panel')).toHaveCount(0)
@@ -203,32 +257,24 @@ test('o botão fica NO CANTO — e não flutuando no meio do nada', async ({ pag
   }
 })
 
-test('na página de um PROJETO o chat global se retira — uma conversa por tela', async ({ page }) => {
+test('na página de um PROJETO o painel É o chat — uma conversa, duas janelas', async ({ page }) => {
+  /**
+   * O oposto do que valia antes. A página desenhava a própria caixa de conversa e o painel
+   * se retirava: duas conversas contra dois backends, e o que era dito numa não existia na
+   * outra. Agora existe uma linha só, gravada no projeto, e o painel a mostra aqui também.
+   */
   await stub(page)
-  await page.route('**/api/architect/projects/*', (r) =>
-    r.fulfill({
-      json: {
-        id: '000000000000000000000abc',
-        title: 'Reservas',
-        objective: 'x',
-        status: 'discovery',
-        locale: 'pt',
-        answers: {},
-        assumptions: [],
-        blueprint: null,
-        checklist: [],
-        readiness: { requiredDone: 0, requiredTotal: 0, optionalDone: 0, optionalTotal: 0, ready: false, blockers: [] },
-        createdAt: NOW,
-        updatedAt: NOW,
-      },
-    }),
+  await page.route('**/api/architect/projects/000000000000000000000abc', (r) => r.fulfill({ json: PROJETO() }))
+  await page.route('**/api/architect/projects/*/messages', (r) =>
+    r.fulfill({ json: [{ id: 'm1', role: 'user', content: 'quero receber reservas pelo site', createdAt: NOW }] }),
   )
   await page.goto('/architect/000000000000000000000abc')
 
-  // Ali existe a conversa DO PROJETO: duas caixas na mesma tela é a pessoa escrevendo na
-  // errada e não entendendo por que a outra não respondeu.
-  await expect(page.getByTestId('architect-launcher')).toHaveCount(0)
-  await expect(page.getByTestId('architect-panel')).toHaveCount(0)
+  // Ele se abre sozinho: era o que a caixa da página fazia, e a conversa é o trabalho aqui.
+  await expect(page.getByTestId('architect-panel')).toBeVisible()
+  await expect(page.getByTestId('architect-message-user')).toContainText('quero receber reservas pelo site')
+  // E a caixa antiga não existe mais — duas na mesma tela era o defeito original.
+  await expect(page.getByTestId('architect-chat-panel')).toHaveCount(0)
 })
 
 // --- quem não enxerga a tela ---------------------------------------------------------------
@@ -263,11 +309,11 @@ test('o foco vai para o campo ao abrir, e a resposta é anunciada', async ({ pag
 
   await page.getByTestId('architect-input').fill('qual o valor do dólar hoje?')
   await page.getByTestId('architect-input').press('Enter')
-  await expect(page.getByTestId('architect-mensagens')).toContainText('entendi')
+  await expect(page.getByTestId('architect-conversation')).toContainText('entendi')
 
   // A resposta chega sem mudar de página: sem região viva, quem usa leitor de tela não
   // recebe aviso nenhum de que ela chegou.
-  const viva = page.locator('[data-testid="architect-mensagens"][aria-live], [data-testid="architect-mensagens"] [aria-live]')
+  const viva = page.locator('[data-testid="architect-conversation"][aria-live], [data-testid="architect-conversation"] [aria-live]')
   await expect(viva.first()).toHaveCount(1)
 })
 
@@ -322,13 +368,13 @@ test('o texto do painel alcança o contraste mínimo, inclusive o de erro', asyn
   await page.getByTestId('architect-launcher').click()
   await page.getByTestId('architect-input').fill('qual o valor do dólar hoje?')
   await page.getByTestId('architect-input').press('Enter')
-  await expect(page.getByTestId('architect-mensagens')).toContainText('fonte conectada')
+  await expect(page.getByTestId('architect-conversation')).toContainText('fonte conectada')
 
   // A razão WCAG é calculada das cores COMPUTADAS, subindo até o primeiro ancestral que
   // pinta o fundo de verdade — um fundo transparente herda o de trás, e medir contra ele
   // daria um número que a tela não tem.
   const razao = await page.evaluate(() => {
-    const alvo = document.querySelector('[data-testid="architect-mensagens"]') as HTMLElement
+    const alvo = document.querySelector('[data-testid="architect-conversation"]') as HTMLElement
     const ultimo = (alvo.querySelectorAll('p, div, span')[alvo.querySelectorAll('p, div, span').length - 1] as HTMLElement) ?? alvo
     const rgb = (s: string) => (s.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number)
     const lum = ([r, g, b]: number[]) => {
@@ -388,12 +434,12 @@ test('uma fase INESPERADA do servidor não bloqueia o campo para sempre', async 
   await page.getByTestId('architect-launcher').click()
   await page.getByTestId('architect-input').fill('primeira')
   await page.getByTestId('architect-input').press('Enter')
-  await expect(page.getByTestId('architect-mensagens')).toContainText('consultando')
+  await expect(page.getByTestId('architect-conversation')).toContainText('consultando')
 
   // O campo continua utilizável: a segunda mensagem sai.
   await page.getByTestId('architect-input').fill('segunda')
   await page.getByTestId('architect-input').press('Enter')
-  await expect(page.getByTestId('architect-msg-pessoa').last()).toContainText('segunda')
+  await expect(page.getByTestId('architect-message-user').last()).toContainText('segunda')
 })
 
 test('a escrita mostra o IMPACTO e espera o clique — nada acontece antes', async ({ page }) => {

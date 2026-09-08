@@ -43,6 +43,8 @@ export interface CompileV2Input {
    * `resourceMap`. Recebendo os andares prontos, os dois documentos descrevem UM escritório.
    */
   floors?: { key: string; name: string; action?: 'create' | 'reuse'; resourceId?: string | null }[]
+  /** O que a pessoa respondeu — `forma:<jobId>` decide agente x função x ferramenta. */
+  answers?: Record<string, unknown>
 }
 
 export interface CompileV2Result {
@@ -286,7 +288,7 @@ export function areasOf(brief: OperationBrief): string[] {
 
 export function compileBriefV2(input: CompileV2Input): CompileV2Result {
   const { brief, manifest, inventory, base, changeKind } = input
-  const classification = classifyBrief(brief, manifest)
+  const classification = classifyBrief(brief, manifest, input.answers ?? {})
   const bp = emptyBlueprintV2(base.title, brief.businessGoal || base.objective, changeKind)
   const pending: CompileV2Result['pending'] = []
 
@@ -297,7 +299,64 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
   const floorKeyDe = new Map<string, string>()
   // Andares decididos fora: entram como estão, e nenhuma `key` é inventada aqui.
   for (const andar of input.floors ?? []) floorKeyDe.set(andar.name, andar.key)
-  for (const nome of input.floors ? [] : nomes) {
+
+  /**
+   * UM TÍTULO NÃO É UMA ÁREA.
+   *
+   * Sem palavra de área no texto, `nomes` caía para o título da operação — e um título nunca
+   * casa com andar existente, então cada operação abria um andar próprio. "Guardar a máxima
+   * do Bitcoin" não é uma área da empresa: é trabalho que mora num andar que já existe.
+   *
+   * Com a conta vazia, criar continua certo — é o primeiro andar. Com UM andar, ele é o
+   * lugar. Com VÁRIOS e nenhuma área dita, escolher seria adivinhar: vira pendência, e quem
+   * responde é quem sabe. Perguntar é mais barato que desfazer.
+   */
+  const semArea = !input.floors && areas.length === 0
+  const existentes = inventory?.sections.floor?.items ?? []
+  if (semArea && existentes.length > 0) {
+    if (existentes.length === 1) {
+      const unico = existentes[0]
+      floorKeyDe.set(unico.label, slug(unico.label) || 'operacao')
+      bp.organization.floors.push({
+        key: slug(unico.label) || 'operacao',
+        action: 'reuse',
+        resourceId: unico.id,
+        ...ESSENCIAL,
+        rationale: 'este trabalho não descreve uma área nova: ele mora no andar que já existe',
+        dependsOn: [],
+        name: unico.label,
+        workMode: 'organization',
+      })
+    } else {
+      /**
+       * VÁRIOS andares: a pendência é a pergunta, e o plano continua legível.
+       *
+       * Um blueprint sem andar nenhum não compila — agente mora em andar. Então ele é
+       * montado no primeiro e a escolha vira pendência DECLARADA, com o motivo escrito na
+       * própria peça. O que não pode acontecer é o que acontecia: abrir um andar novo e
+       * chamar isso de decisão.
+       */
+      const provisorio = existentes[0]
+      floorKeyDe.set(provisorio.label, slug(provisorio.label) || 'operacao')
+      bp.organization.floors.push({
+        key: slug(provisorio.label) || 'operacao',
+        action: 'reuse',
+        resourceId: provisorio.id,
+        ...ESSENCIAL,
+        rationale: `montado em "${provisorio.label}" por enquanto: falta dizer em qual andar este trabalho mora`,
+        dependsOn: [],
+        name: provisorio.label,
+        workMode: 'organization',
+      })
+      pending.push({
+        kind: 'floor_choice',
+        ref: base.title,
+        because: `em qual andar este trabalho mora? a conta tem ${existentes.length}: ${existentes.slice(0, 6).map((f) => f.label).join(', ')}`,
+      })
+    }
+  }
+
+  for (const nome of (input.floors || (semArea && existentes.length > 0) ? [] : nomes)) {
     const existente = findExistingFloor(inventory, nome)
     const key = slug(nome) || 'operacao'
     floorKeyDe.set(nome, key)
@@ -357,7 +416,7 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
    * históricos que divergem no primeiro erro de rede.
    */
   for (const [i, need] of (brief.liveDataNeeds ?? []).entries()) {
-    compilarFonteDeDado(bp, pending, { need, indice: i, floorKey: andarPadrao, manifest })
+    compilarFonteDeDado(bp, pending, { need, indice: i, floorKey: andarPadrao, manifest, inventory })
   }
 
   // --- 3. as peças, por classificação -------------------------------------------------------
@@ -1015,12 +1074,50 @@ function compilarVigilancia(
 function compilarFonteDeDado(
   bp: OfficeBlueprintV2,
   pending: CompileV2Result['pending'],
-  ctx: { need: { source: string; freshness?: string; required: boolean }; indice: number; floorKey: string; manifest: ArchitectCapabilityManifest | null },
+  ctx: {
+    need: { source: string; freshness?: string; required: boolean }
+    indice: number
+    floorKey: string
+    manifest: ArchitectCapabilityManifest | null
+    inventory: OfficeInventory | null
+  },
 ): void {
   const { need, indice } = ctx
   const raiz = slug(need.source) || `dado-${indice}`
   const fonteKey = `fonte-${raiz}`
   if (bp.operations.sources.some((s) => s.key === fonteKey)) return
+
+  /**
+   * O DADO QUE JÁ CHEGA NA CONTA.
+   *
+   * Andar e Database já sabiam procurar o que existe antes de criar; a fonte de dado, não —
+   * ela nascia com `action: 'create'` fixo e sequer recebia o inventário. Quem tinha uma
+   * Database recebendo cotação a cada quinze segundos e pedia para usá-la ganhava uma fonte
+   * NOVA, vazia, mais a pendência "falta dizer de onde este dado vem". A proposta parecia
+   * completa e ignorava justamente o que a pessoa já tinha montado.
+   *
+   * O casamento é por TERMO DISTINTIVO, o mesmo critério que já decide se duas vigilâncias
+   * compartilham coleta: "bitcoin" casa, "cotação" não. Casar por palavra genérica seria o
+   * erro oposto e pior — gravar o dado de um assunto dentro da base de outro, com a
+   * proposta dizendo "estou reusando o que você já tem".
+   */
+  const jaExiste = baseQueJaServe(ctx.inventory, need.source)
+  if (jaExiste) {
+    if (!bp.resources.databases.some((d) => d.resourceId === jaExiste.id)) {
+      bp.resources.databases.push({
+        key: `base-${slug(jaExiste.label) || raiz}`,
+        action: 'reuse',
+        resourceId: jaExiste.id,
+        layer: need.required ? 'essential' : 'recommended',
+        rationale: `"${jaExiste.label}" já recebe este dado: a proposta lê dela em vez de abrir outra coleta`,
+        dependsOn: [],
+        name: jaExiste.label,
+        owner: { ownerType: 'account' },
+        adapterKind: 'data_history',
+      })
+    }
+    return
+  }
 
   bp.operations.sources.push({
     key: fonteKey,
@@ -1092,6 +1189,25 @@ function fonteQueJaServe(bp: OfficeBlueprintV2, texto: string): string | null {
   for (const fonte of bp.operations.sources) {
     const dela = termosDistintivos(`${fonte.name} ${fonte.rationale ?? ''}`)
     if (dela.some((t) => termos.includes(t))) return fonte.key
+  }
+  return null
+}
+
+/**
+ * A Database DA CONTA que já guarda este dado, se houver.
+ *
+ * Mesmo critério de `fonteQueJaServe`, contra o inventário em vez do plano: o nome da base
+ * e o dos conjuntos dela contam, porque quem batiza a base de "Cripto" costuma batizar o
+ * conjunto de "bitcoin".
+ */
+function baseQueJaServe(inventory: OfficeInventory | null, texto: string): { id: string; label: string } | null {
+  const termos = termosDistintivos(texto)
+  if (!termos.length) return null
+  const bases = inventory?.sections.database?.items ?? []
+  const conjuntos = inventory?.sections.dataset?.items ?? []
+  for (const base of bases) {
+    const rotulos = [base.label, ...conjuntos.filter((d) => d.meta?.dataStoreId === base.id).map((d) => d.label)]
+    if (rotulos.some((r) => termosDistintivos(r).some((t) => termos.includes(t)))) return { id: base.id, label: base.label }
   }
   return null
 }

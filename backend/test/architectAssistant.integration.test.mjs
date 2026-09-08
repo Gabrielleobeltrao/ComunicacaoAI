@@ -101,7 +101,33 @@ test('PROPOR é o único modo que cria projeto', async () => {
   // que nunca resolvia, e o campo bloqueado.
   assert.equal(r.phase, 'done')
   assert.equal(await projetos(), 1)
-  assert.match(r.text, /nada é aplicado sem a sua aprovação/)
+  assert.match(r.text, /nada é aplicado sem a sua aprovação/i)
+
+  /**
+   * O PROJETO É A CASA DA CONVERSA, e não uma proposta pronta.
+   *
+   * A frase anterior era "Comecei um projeto para X" e a tela oferecia "Abrir a proposta"
+   * no mesmo turno — mandando a pessoa para uma sala onde ainda não havia nada, e deixando
+   * para trás a conversa que a levou até ali. Prometer proposta antes de ter uma é o que
+   * este caso impede.
+   */
+  assert.doesNotMatch(r.text, /a proposta está pronta|abra a proposta/i)
+
+  /**
+   * E A RESPOSTA FICA GRAVADA.
+   *
+   * Antes só a frase da pessoa entrava no projeto: quem reabrisse a conversa via o próprio
+   * pedido e nenhuma resposta, como se o Arquiteto tivesse ignorado.
+   */
+  const linhas = await db
+    .collection('architect_messages')
+    .find({ ownerId: DONO })
+    .sort({ createdAt: 1 })
+    .toArray()
+  assert.equal(linhas.length, 2, 'a pergunta e a resposta ficam na linha do projeto')
+  assert.equal(linhas[0].role, 'user')
+  assert.equal(linhas[1].role, 'assistant')
+  assert.equal(linhas[1].content, r.text)
 })
 
 test('OPERAR de escrita espera aprovação; de leitura, executa', async () => {

@@ -41,7 +41,10 @@ export interface ArchitectProject {
    * redescobrir a cada rodada o que já foi perguntado, e a mesma pergunta voltaria.
    * Guardando a chave, a resposta vira resposta — registrada, e não perguntada de novo.
    */
-  pendingQuestion: { key: string; text: string } | null
+  /** As OPÇÕES, quando a pergunta é de escolha fechada. Opcional: perguntas gravadas
+   *  antes desta versão não têm o campo, e continuam válidas — o cliente cai no campo
+   *  aberto, que é como elas sempre funcionaram. */
+  pendingQuestion: { key: string; text: string; choices?: { value: string; label: string }[] } | null
   assumptions: ArchitectAssumption[]
   /** A constituição vigente quando a proposta foi montada. Ausente nos projetos antigos. */
   architectConstitutionVersion?: number

@@ -19,7 +19,7 @@ import { applyBriefPatch, briefForPrompt, emptyBrief, resolveIntegrations } from
 import type { OperationBrief } from './brief.js'
 import type { ArchitectCapabilityManifest } from './capabilities.js'
 import { gapsForPrompt, nextQuestions } from './nextQuestion.js'
-import { classifyBrief, classificationForPrompt } from './classify.js'
+import { classifyBrief, classificationForPrompt, formaEscolhida } from './classify.js'
 import { runCritic } from './critic.js'
 import { runSimulation } from './simulate.js'
 import { ARCHITECT_CONSTITUTION_VERSION } from './constitution.js'
@@ -198,7 +198,7 @@ async function runTurn(
    * agente por microetapa). O servidor decide o que é agente, o que é função e o que é
    * ferramenta; o modelo desenha em cima disso.
    */
-  const classificacao = classifyBrief(briefAtual, manifesto)
+  const classificacao = classifyBrief(briefAtual, manifesto, respondidas)
 
   const resultado = await runArchitectTurn({
     ownerId,
@@ -236,6 +236,19 @@ async function runTurn(
   for (const [k, v] of Object.entries(turno.answerPatch)) answers[k] = v
 
   /**
+   * A ESCOLHA DE FORMA vira fato do entendimento.
+   *
+   * Sem isto a pergunta voltaria a cada rodada: `detectGaps` pergunta enquanto o assunto
+   * não é `jaSabido`, e "sabido" se lê do Brief — não do dicionário de respostas. Uma
+   * pergunta que reaparece depois de respondida é o jeito mais rápido de a pessoa parar de
+   * acreditar que o sistema está ouvindo.
+   */
+  const formasEscolhidas = Object.entries(answers)
+    .filter(([k]) => k.startsWith('forma:'))
+    .map(([k, v]) => ({ key: k, value: String(v ?? ''), source: 'user' as const }))
+    .filter((f) => formaEscolhida(f.value))
+
+  /**
    * O que dá para consertar sozinho é consertado ANTES de virar proposta.
    *
    * Delegação "só estes" com lista vazia, etapa de rotina sem forma, reaproveitamento de
@@ -266,7 +279,15 @@ async function runTurn(
    */
   const legadoDoModelo = Boolean(projeto.blueprint) && !projeto.compiled
   const compilar = briefNovo.jobs.length > 0 && !legadoDoModelo && Boolean(turno.blueprintPatch || (turno.briefPatch && projeto.compiled))
-  const compilado = compilar ? compileBrief(briefNovo, manifesto, { title: projeto.title, objective: projeto.objective }) : null
+  /**
+   * O INVENTÁRIO é lido UMA vez e serve aos dois compiladores.
+   *
+   * Sem ele o V1 abria um andar por operação — `action: 'create'` fixo, nome tirado do
+   * título — e o V2 recebia esse andar pronto e o repetia. A escolha entre expandir e criar
+   * precisa do que a conta tem, e é aqui que ela passa a ter.
+   */
+  const inventario = compilar || architectV2Enabled() ? await loadOfficeInventory(ownerId).catch(() => null) : null
+  const compilado = compilar ? compileBrief(briefNovo, manifesto, { title: projeto.title, objective: projeto.objective }, inventario, answers) : null
 
   /**
    * O plano V2 é compilado do MESMO Brief, e só quando a flag está ligada.
@@ -283,12 +304,13 @@ async function runTurn(
       ? compileBriefV2({
           brief: briefNovo,
           manifest: manifesto,
-          inventory: await loadOfficeInventory(ownerId).catch(() => null),
+          inventory: inventario,
           base: { title: projeto.title, objective: projeto.objective },
           changeKind: projeto.status === 'applied' ? 'expand' : 'create',
           // Os andares vêm do plano V1: é ele que a saga aplica, e é dele que sai a `key`
           // que o `resourceMap` vai conhecer.
           floors: compilado.blueprint.floors.map((f) => ({ key: f.key, name: f.name, action: f.action === 'reuse' ? ('reuse' as const) : ('create' as const), resourceId: f.resourceId ?? null })),
+          answers,
         })
       : null
 
@@ -315,8 +337,23 @@ async function runTurn(
   // Os avisos do conserto entram JUNTO dos do modelo: quem lê a proposta lê tudo num
   // lugar só, e não descobre a mudança comparando duas versões.
   if (blueprint) {
-    const avisos = [...(consertoDoPatch?.warnings ?? []), ...(consertoDoReuso?.warnings ?? [])]
+    /**
+     * AS PENDÊNCIAS DO COMPILADOR viram aviso — antes elas eram CALCULADAS E JOGADAS FORA.
+     *
+     * `compileBriefV2` já apurava o que falta para o plano funcionar: "falta dizer de onde
+     * este dado vem", "nenhuma função registrada faz este cálculo", "em qual andar este
+     * trabalho mora". Nada disso era lido por ninguém. A pessoa recebia uma proposta de
+     * aparência completa, aplicava, e descobria o buraco depois — sem nunca ter visto a
+     * frase que o descrevia.
+     */
+    const pendencias = (compiladoV2?.pending ?? []).map((p) => ({ path: p.kind, message: `${p.ref}: ${p.because}` }))
+    const avisos = [...pendencias, ...(consertoDoPatch?.warnings ?? []), ...(consertoDoReuso?.warnings ?? [])]
     if (avisos.length) blueprint.warnings = [...(blueprint.warnings ?? []), ...avisos].slice(0, L.MAX_WARNINGS)
+  }
+
+  if (formasEscolhidas.length) {
+    const semAsAntigas = briefNovo.knownFacts.filter((f) => !formasEscolhidas.some((e) => e.key === f.key))
+    briefNovo.knownFacts = [...semAsAntigas, ...formasEscolhidas]
   }
 
   const assumptions = mesclarSuposicoes(projeto.assumptions, turno.assumptions, answers)
@@ -343,13 +380,34 @@ async function runTurn(
     (turno.blueprintPatch && projeto.status === 'applied' ? await marcarOQueJaExisteV2(ownerId, projeto, v2Recompilado) : v2Recompilado) ??
     projeto.blueprintV2
   const hash = recorte ? computeBlueprintHash(recorte, v2Vigente) : null
+  /**
+   * A PERGUNTA DE FORMA É DO SERVIDOR — ela não pode depender de o modelo lembrar de fazê-la.
+   *
+   * Todas as outras perguntas o modelo redige a partir das lacunas, e isso é bom: ele
+   * escreve melhor em linguagem de negócio. Esta é diferente porque a RESPOSTA dela manda
+   * no desenho: se o modelo escolhe outra chave, ou simplesmente não pergunta, a escolha da
+   * pessoa nunca chega ao classificador e a troca volta a acontecer em silêncio — que é o
+   * defeito que esta pergunta existe para acabar.
+   *
+   * As opções são as mesmas de sempre, com a recomendação primeiro, e é o servidor que
+   * carimba a `key`.
+   */
+  const daForma = nextQuestions(briefNovo, manifesto, 2).find((g) => g.id.startsWith('forma:'))
+  const pergunta = daForma
+    ? { key: daForma.id, text: daForma.question, why: daForma.why, choices: daForma.choices ?? [], allowUnknown: false }
+    : turno.question
+
   const patch: Partial<ArchitectProject> = {
     // Qual constituição valia quando esta proposta foi feita. Sem isso, mudar o texto
     // das regras torna uma decisão antiga inexplicável — e impossível de reproduzir.
     architectConstitutionVersion: ARCHITECT_CONSTITUTION_VERSION,
     ...(turno.briefPatch ? { brief: briefNovo, previousBrief: projeto.brief ?? null } : {}),
     answers,
-    pendingQuestion: turno.question ? { key: turno.question.key, text: turno.question.text } : null,
+    // As OPÇÕES são gravadas junto. Sem elas, recarregar a página no meio de uma pergunta
+    // devolvia o texto sem os botões — e a escolha fechada virava campo aberto.
+    pendingQuestion: pergunta
+      ? { key: pergunta.key, text: pergunta.text, ...(pergunta.choices?.length ? { choices: pergunta.choices } : {}) }
+      : null,
     assumptions,
     blueprint,
     blueprintHash: hash,
@@ -396,7 +454,7 @@ async function runTurn(
   }
   const atualizado = (await repo.patchProject(ownerId, projeto._id, patch)) ?? projeto
 
-  return { project: atualizado, assistantText: turno.assistantText, question: turno.question, secretMasked: opts.secretMasked }
+  return { project: atualizado, assistantText: turno.assistantText, question: pergunta, secretMasked: opts.secretMasked }
 }
 
 /**
@@ -985,7 +1043,9 @@ export async function undoBrief(ownerId: string, projectId: ObjectId): Promise<A
  */
 function recompilar(projeto: ArchitectProject, brief: OperationBrief, manifesto: ArchitectCapabilityManifest | null): Partial<ArchitectProject> {
   if (!projeto.compiled || brief.jobs.length === 0) return {}
-  const { blueprint } = compileBrief(brief, manifesto, { title: projeto.title, objective: projeto.objective })
+  // As respostas seguem junto: a escolha de forma feita na conversa não pode ser perdida
+  // porque alguém corrigiu o entendimento à mão.
+  const { blueprint } = compileBrief(brief, manifesto, { title: projeto.title, objective: projeto.objective }, null, projeto.answers ?? {})
   const recorte = selectLayer(blueprint, camadaDe(projeto))
   const hash = computeBlueprintHash(recorte, projeto.blueprintV2)
   if (hash === projeto.blueprintHash) return { blueprint }

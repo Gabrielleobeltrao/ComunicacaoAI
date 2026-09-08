@@ -1,5 +1,6 @@
 import type { ArchitectCapabilityManifest } from './capabilities.js'
 import type { OperationBrief } from './brief.js'
+import { classifyJob, formaPedida, haDuvidaDeForma } from './classify.js'
 
 // QUAL pergunta fazer agora — decidido pelo servidor, não pelo modelo.
 //
@@ -29,6 +30,22 @@ export interface BriefGap {
 
 const temTexto = (v: string | undefined | null): boolean => Boolean(v && v.trim())
 
+/** Como cada forma se chama, e por que ela é a recomendada. */
+const NOME_DA_FORMA: Record<string, string> = {
+  agent: 'um agente',
+  function: 'uma função',
+  tool: 'uma ferramenta',
+  routine: 'uma rotina',
+  sector: 'um setor',
+}
+const PORQUE_DA_FORMA: Record<string, string> = {
+  agent: 'Eu recomendo um agente: o trabalho exige interpretar e decidir, e isso não cabe numa regra fixa.',
+  function: 'Eu recomendo uma função: o resultado é o mesmo toda vez, e sai determinístico, barato e sem risco de o modelo errar a conta.',
+  tool: 'Eu recomendo uma ferramenta: é uma chamada a um sistema com contrato definido, usada por quem já conversa — e não um cargo à parte.',
+  routine: 'Eu recomendo uma rotina: quem dispara é o horário ou a condição, não uma pessoa falando.',
+  sector: 'Eu recomendo um setor: é trabalho de mais de um agente coordenado.',
+}
+
 /** O que a conta JÁ responde sozinha não é pergunta. */
 const jaSabido = (brief: OperationBrief, chave: string): boolean =>
   brief.knownFacts.some((f) => f.key === chave) || brief.assumptions.some((a) => a.id === chave && a.status === 'accepted')
@@ -41,6 +58,43 @@ const jaSabido = (brief: OperationBrief, chave: string): boolean =>
  */
 export function detectGaps(brief: OperationBrief, manifest: ArchitectCapabilityManifest | null): BriefGap[] {
   const lacunas: BriefGap[] = []
+
+  /**
+   * QUANDO O SERVIDOR DISCORDA DE QUEM PEDIU, ele PERGUNTA.
+   *
+   * A regra de classificação é boa e continua valendo: cálculo sem julgamento é função,
+   * ação em sistema é ferramenta, agente é o mais caro e só entra quando há julgamento. O
+   * que faltava era o degrau final — a pessoa escreve "quero um AGENTE que guarde a máxima
+   * do dia", a regra devolve FUNÇÃO, e a troca acontecia em silêncio. O que sai não é o que
+   * foi pedido, e ninguém foi avisado.
+   *
+   * Prioridade alta, mas abaixo do objetivo: sem saber o que a operação resolve, escolher a
+   * forma do trabalho é escolher a forma de um trabalho que ainda não existe.
+   */
+  for (const job of brief.jobs) {
+    const pedida = formaPedida(job)
+    if (!pedida) continue
+    const decisao = classifyJob(job, manifest)
+    const decidida = decisao.kind
+    if (decidida === pedida) continue
+    if (jaSabido(brief, `forma:${job.id}`)) continue
+    // E só quando a decisão é DE FATO apertada — ver `haDuvidaDeForma`.
+    if (!haDuvidaDeForma(job, decisao, pedida)) continue
+    lacunas.push({
+      id: `forma:${job.id}`,
+      question: `Para "${job.name.slice(0, 60)}": ${NOME_DA_FORMA[decidida]} ou ${NOME_DA_FORMA[pedida]}?`,
+      // A recomendação e o custo dela, em uma frase — é o que permite escolher com
+      // informação em vez de escolher o que soa melhor.
+      why: `${PORQUE_DA_FORMA[decidida]} Você pediu ${NOME_DA_FORMA[pedida]}; a escolha é sua e eu monto do jeito que você decidir.`,
+      impact: 'Muda o que é criado para este trabalho.',
+      priority: 88,
+      // A recomendação vem PRIMEIRO — a ordem é a do conselho, não a do pedido.
+      choices: [
+        { value: decidida, label: `${NOME_DA_FORMA[decidida]} (recomendado)` },
+        { value: pedida, label: NOME_DA_FORMA[pedida] },
+      ],
+    })
+  }
 
   if (!temTexto(brief.businessGoal)) {
     lacunas.push({
