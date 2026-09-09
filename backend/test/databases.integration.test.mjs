@@ -22,7 +22,7 @@ const { ensureDatabaseIndexes, createDataStore, createDataset, putGrant, getData
 const { resolveDatabaseAccess, assertMutationAllowed } = await import('../dist/databases/access.js')
 const { parseQuery, toMongoFilter, QueryDslError } = await import('../dist/databases/queryDsl.js')
 const { validateAgainstSchema } = await import('../dist/databases/schemaValidation.js')
-const { runQuery, runInsert } = await import('../dist/databases/adapters.js')
+const { runQuery, runInsert, runUpdate, runDelete } = await import('../dist/databases/adapters.js')
 const { databaseToolsFor } = await import('../dist/databases/agentTools.js')
 const { createAgent } = await import('../dist/agents.js')
 const { createSector } = await import('../dist/sectors.js')
@@ -485,4 +485,102 @@ test('AMEAÇA: uma linha fora do schema é recusada COM o motivo', async () => {
   const r = await gravar.run({ databaseId: cena.store._id.toString(), datasetKey: 'ordens', rows: [{ preco: 1 }] })
   assert.equal(r.ok, false)
   assert.match(r.result, /obrigat/i)
+})
+
+// --- controle até o VALOR ----------------------------------------------------------------
+//
+// DO RELATO: "quero conseguir editar, deletar e mais também nos arquivos dentro da pasta e
+// nos valores todos também."
+//
+// O Database tinha criar, consultar e inserir. Editar e apagar UMA LINHA não existiam em
+// lugar nenhum — nem rota, nem adapter. Quem gravou um valor errado convivia com ele.
+//
+// A trava de mutabilidade continua valendo por baixo, e é ela que dá sentido ao resto: uma
+// série `append_only` recusa alterar e apagar, porque mudar o passado de uma série é o
+// mesmo que perder o passado. Quem quiser mudar isso muda a REGRA do conjunto, e aí sim
+// mexe nas linhas — a decisão fica declarada, e não escondida numa exceção.
+
+test('ACEITAÇÃO: numa base mutável, dá para corrigir uma linha errada', async () => {
+  await db.collection('dataset_definitions').updateOne({ ownerId: DONO, key: 'ordens' }, { $set: { mutability: 'mutable' } })
+  await inserirRegistro({ ticker: 'PETR4', preco: 30 })
+  const antes = await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: {} })
+  const id = String(antes.rows[0].rowId)
+
+  const r = await runUpdate({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', rowId: id, row: { ticker: 'PETR4', preco: 31.5 } })
+  assert.equal(r.updated, 1)
+
+  const depois = await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: {} })
+  assert.equal(depois.rows.length, 1, 'a correção duplicou a linha')
+  assert.equal(depois.rows[0].preco, 31.5)
+})
+
+test('ACEITAÇÃO: e dá para apagar uma linha', async () => {
+  await db.collection('dataset_definitions').updateOne({ ownerId: DONO, key: 'ordens' }, { $set: { mutability: 'mutable' } })
+  await inserirRegistro({ ticker: 'VALE3', preco: 60 })
+  const antes = await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: {} })
+  const id = String(antes.rows[0].rowId)
+
+  assert.equal((await runDelete({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', rowId: id })).deleted, 1)
+  assert.equal((await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: {} })).rows.length, 0)
+})
+
+test('AMEAÇA: uma série que SÓ ACRESCENTA recusa alterar e apagar — com o motivo', async () => {
+  // O `append_only` do conjunto do bitcoin existe por isto: mudar o valor de ontem faria o
+  // gráfico mudar sem que nada registre a mudança.
+  await inserirRegistro({ ticker: 'PETR4', preco: 30 })
+  const linhas = await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: {} })
+  const id = String(linhas.rows[0].rowId)
+
+  await assert.rejects(
+    () => runUpdate({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', rowId: id, row: { ticker: 'PETR4', preco: 99 } }),
+    /só aceita novos registros|append/i,
+  )
+  await assert.rejects(() => runDelete({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', rowId: id }), /só aceita novos registros|append/i)
+  assert.equal((await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: {} })).rows[0].preco, 30)
+})
+
+test('AMEAÇA: a linha de OUTRA conta não é alcançada', async () => {
+  await db.collection('dataset_definitions').updateOne({ ownerId: DONO, key: 'ordens' }, { $set: { mutability: 'mutable' } })
+  await inserirRegistro({ ticker: 'PETR4', preco: 30 })
+  const linhas = await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: {} })
+  const id = String(linhas.rows[0].rowId)
+
+  await assert.rejects(() => runDelete({ accountId: 'vizinho', dataStoreId: cena.store._id, datasetKey: 'ordens', rowId: id }), /não encontrado|not_found/i)
+  assert.equal((await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: {} })).rows.length, 1)
+})
+
+test('AMEAÇA: um campo de negócio chamado "id" não rouba a identidade da linha', async () => {
+  /**
+   * O schema é escrito por quem usa, e "id" é nome de campo comum — o número do pedido, a
+   * matrícula. Se a identidade da linha viesse antes do valor, ela seria sobrescrita por
+   * esse campo, e o conjunto que mais tem o que corrigir seria justamente o que não dá
+   * para corrigir.
+   */
+  await db.collection('dataset_definitions').updateOne(
+    { ownerId: DONO, key: 'ordens' },
+    { $set: { mutability: 'mutable', schema: { type: 'object', properties: { id: { type: 'string' }, preco: { type: 'number' } }, required: ['id'] } } },
+  )
+  await inserirRegistro({ id: 'PEDIDO-7', preco: 10 })
+  const r = await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: {} })
+  assert.equal(r.rows[0].id, 'PEDIDO-7', 'o campo de negócio sumiu')
+  assert.match(String(r.rows[0].rowId), /^[a-f0-9]{24}$/, 'a linha ficou sem identidade')
+
+  // E a identidade serve: dá para apagar por ela.
+  assert.equal((await runDelete({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', rowId: String(r.rows[0].rowId) })).deleted, 1)
+})
+
+test('AMEAÇA: nem um campo chamado "rowId" rouba a identidade da linha', async () => {
+  /**
+   * O nome `rowId` foi escolhido por ser improvável num schema de negócio — mas improvável
+   * não é impossível, e quem escreve o schema não sabe que este nome é reservado. A ordem
+   * do espalhamento é o que decide: a identidade vem DEPOIS do valor, sempre.
+   */
+  await db.collection('dataset_definitions').updateOne(
+    { ownerId: DONO, key: 'ordens' },
+    { $set: { mutability: 'mutable', schema: { type: 'object', properties: { rowId: { type: 'string' }, preco: { type: 'number' } }, required: ['rowId'] } } },
+  )
+  await inserirRegistro({ rowId: 'ESCRITO-A-MAO', preco: 10 })
+  const r = await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: {} })
+  assert.match(String(r.rows[0].rowId), /^[a-f0-9]{24}$/, 'o campo do schema virou a identidade da linha')
+  assert.equal((await runDelete({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', rowId: String(r.rows[0].rowId) })).deleted, 1)
 })

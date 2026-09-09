@@ -50,7 +50,14 @@ async function queryDataHistory(store: DataStore, dataset: DataSetDefinition, sp
 
   const [linhas, total, ultimo] = await Promise.all([
     records
-      .find(filtro, { projection: projecao ? { ...projecao, occurredAt: 1, _id: 0 } : { value: 1, occurredAt: 1, _id: 0 } })
+      /**
+       * O `_id` VOLTA na resposta.
+       *
+       * Ele era descartado, e sem ele não há como apontar QUAL linha corrigir ou apagar: a
+       * tela mostrava valores sem identidade. É acréscimo — quem já lia a resposta continua
+       * lendo o mesmo, com um campo a mais.
+       */
+      .find(filtro, { projection: projecao ? { ...projecao, occurredAt: 1, _id: 1 } : { value: 1, occurredAt: 1, _id: 1 } })
       .sort(Object.keys(toMongoSort(spec.sort)).length ? toMongoSort(spec.sort) : { occurredAt: -1 })
       .skip(spec.skip ?? 0)
       .limit(spec.limit ?? 50)
@@ -60,7 +67,16 @@ async function queryDataHistory(store: DataStore, dataset: DataSetDefinition, sp
   ])
 
   return {
-    rows: linhas.map((l) => ({ ...(l.value as Record<string, unknown>), occurredAt: l.occurredAt })),
+    /**
+     * A IDENTIDADE da linha vai junto do valor — e depois dele.
+     *
+     * Sem ela a tela mostra números sem identidade, e não há como dizer QUAL corrigir ou
+     * apagar. O nome é `rowId`, e não `id`: o schema do conjunto é escrito por quem usa, e
+     * um campo de negócio chamado "id" — o número do pedido, por exemplo — é comum. Escrito
+     * ANTES do `value`, ele seria sobrescrito por esse campo e a linha perderia a identidade
+     * justamente nos conjuntos que mais têm o que corrigir.
+     */
+    rows: linhas.map((l) => ({ ...(l.value as Record<string, unknown>), rowId: String(l._id), occurredAt: l.occurredAt })),
     total,
     freshness: (ultimo?.occurredAt as Date) ?? null,
     truncated: total > (spec.skip ?? 0) + linhas.length,
@@ -284,4 +300,91 @@ export async function runInsert(input: RunQueryInput & { rows: Record<string, un
     ok: true,
   })
   return { inserted: docs.length }
+}
+
+/**
+ * CORRIGIR e APAGAR uma linha.
+ *
+ * O Database tinha criar, consultar e inserir. Alterar e remover UM registro não existiam
+ * em lugar nenhum — quem gravou um valor errado convivia com ele para sempre.
+ *
+ * A trava de mutabilidade continua valendo por baixo, e é ela que dá sentido ao resto: uma
+ * série `append_only` recusa as duas, porque mudar o passado de uma série é o mesmo que
+ * perder o passado — o gráfico muda e nada registra a mudança. Quem quiser mexer muda a
+ * REGRA do conjunto primeiro, e aí a decisão fica declarada em vez de escondida.
+ *
+ * O `ownerId` está no filtro das duas, junto do id: sem ele, um id vazado de outra conta
+ * seria suficiente para alterar dado alheio.
+ */
+export async function runUpdate(
+  input: RunQueryInput & { rowId: string; row: Record<string, unknown> },
+): Promise<{ updated: number }> {
+  const { store, dataset } = await prepararMutacao(input, 'update')
+  const { validateAgainstSchema } = await import('./schemaValidation.js')
+  const erro = validateAgainstSchema(input.row, dataset.schema)
+  if (erro) throw new AdapterError(erro, 'schema_violation')
+  if (!ObjectId.isValid(input.rowId)) throw new AdapterError('registro não encontrado', 'not_found')
+
+  const r = await records.updateOne(
+    { _id: new ObjectId(input.rowId), ...escopoDoHistorico(store, dataset) },
+    { $set: { value: input.row, recordedAt: new Date() } },
+  )
+  if (r.matchedCount === 0) throw new AdapterError('registro não encontrado', 'not_found')
+  await logQuery({
+    ownerId: input.accountId,
+    dataStoreId: input.dataStoreId,
+    datasetKey: input.datasetKey,
+    agentId: input.agentId ?? null,
+    capability: 'update',
+    durationMs: 0,
+    rows: r.modifiedCount,
+    ok: true,
+  })
+  return { updated: r.matchedCount }
+}
+
+export async function runDelete(input: RunQueryInput & { rowId: string }): Promise<{ deleted: number }> {
+  const { store, dataset } = await prepararMutacao(input, 'delete')
+  if (!ObjectId.isValid(input.rowId)) throw new AdapterError('registro não encontrado', 'not_found')
+
+  const r = await records.deleteOne({ _id: new ObjectId(input.rowId), ...escopoDoHistorico(store, dataset) })
+  if (r.deletedCount === 0) throw new AdapterError('registro não encontrado', 'not_found')
+  await logQuery({
+    ownerId: input.accountId,
+    dataStoreId: input.dataStoreId,
+    datasetKey: input.datasetKey,
+    agentId: input.agentId ?? null,
+    capability: 'delete',
+    durationMs: 0,
+    rows: r.deletedCount,
+    ok: true,
+  })
+  return { deleted: r.deletedCount }
+}
+
+/**
+ * O MESMO ESCOPO que a consulta usa — `ownerId` e `recorderId`.
+ *
+ * Filtrar por outra coisa faria as mutações alcançarem um conjunto diferente do que a
+ * consulta mostra: a pessoa apagaria uma linha e veria a lista igual, ou pior, apagaria
+ * outra. E o `ownerId` no filtro é o que impede um id vazado de alcançar dado alheio.
+ */
+function escopoDoHistorico(store: { ownerId: string; adapterConfig: Record<string, unknown> }, dataset: { key: string }) {
+  const recorderId = String(store.adapterConfig.recorderId ?? dataset.key)
+  if (!ObjectId.isValid(recorderId)) throw new AdapterError('este database não aponta para um histórico válido', 'bad_config')
+  return { ownerId: store.ownerId, recorderId: new ObjectId(recorderId) }
+}
+
+/** As conferências que valem para as duas: existe, aceita escrita, e a regra permite. */
+async function prepararMutacao(input: RunQueryInput, capacidade: 'update' | 'delete') {
+  const store = await getDataStore(input.accountId, input.dataStoreId)
+  if (!store) throw new AdapterError('database não encontrado', 'not_found')
+  if (store.adapterKind !== 'data_history') throw new AdapterError('este database não aceita escrita', 'read_only')
+  const dataset = await getDataset(input.accountId, input.dataStoreId, input.datasetKey)
+  if (!dataset) throw new AdapterError('dataset não encontrado', 'not_found')
+
+  const { assertMutationAllowed } = await import('./access.js')
+  const permitido = await assertMutationAllowed(input.accountId, input.dataStoreId, input.datasetKey, capacidade)
+  if (!permitido.ok) throw new AdapterError(permitido.reason, 'read_only')
+  return { store, dataset }
 }

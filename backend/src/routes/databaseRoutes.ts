@@ -262,6 +262,44 @@ databaseRouter.post('/:id/datasets/:key/rows', async (req, res, next) => {
 
 // --- grants ------------------------------------------------------------------------------------
 
+
+/**
+ * CORRIGIR e APAGAR uma linha.
+ *
+ * As duas capacidades já existiam no modelo de concessão (`update`, `delete`) e não tinham
+ * rota: quem gravou um valor errado convivia com ele. A regra do conjunto continua mandando
+ * por baixo — uma série `append_only` recusa as duas, e a recusa diz por quê.
+ */
+databaseRouter.patch('/:id/datasets/:key/rows/:rowId', async (req, res, next) => {
+  const id = oid(String(req.params.id))
+  if (!id) return notFound(res)
+  try {
+    const key = String(req.params.key)
+    const body = (req.body ?? {}) as { row?: unknown }
+    const row = body.row && typeof body.row === 'object' && !Array.isArray(body.row) ? (body.row as Record<string, unknown>) : null
+    if (!row) return void res.status(400).json({ code: 'invalid', message: 'envie a linha nova em "row"' })
+    const { runUpdate } = await import('../databases/adapters.js')
+    const r = await runUpdate({ accountId: res.locals.userId, dataStoreId: id, datasetKey: key, query: {}, rowId: String(req.params.rowId), row })
+    res.json(r)
+  } catch (erro) {
+    if (recusa(res, erro)) return
+    next(erro as Error)
+  }
+})
+
+databaseRouter.delete('/:id/datasets/:key/rows/:rowId', async (req, res, next) => {
+  const id = oid(String(req.params.id))
+  if (!id) return notFound(res)
+  try {
+    const { runDelete } = await import('../databases/adapters.js')
+    await runDelete({ accountId: res.locals.userId, dataStoreId: id, datasetKey: String(req.params.key), query: {}, rowId: String(req.params.rowId) })
+    res.status(204).end()
+  } catch (erro) {
+    if (recusa(res, erro)) return
+    next(erro as Error)
+  }
+})
+
 databaseRouter.get('/:id/grants', async (req, res) => {
   const id = oid(String(req.params.id))
   if (!id || !(await getDataStore(res.locals.userId, id))) return notFound(res)
