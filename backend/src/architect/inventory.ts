@@ -112,7 +112,24 @@ export async function loadOfficeInventory(ownerId: string): Promise<OfficeInvent
         id: `${s._id.toString()}:${d.key}`,
         label: rotulo(d.name),
         ownerScope: `database:${s._id.toString()}`,
-        meta: { dataStoreId: s._id.toString(), key: d.key, mutability: String(d.mutability ?? '') },
+        meta: {
+          dataStoreId: s._id.toString(),
+          key: d.key,
+          mutability: String(d.mutability ?? ''),
+          /**
+           * OS CAMPOS que o conjunto declara.
+           *
+           * Sem eles o Arquiteto recebia "Bitcoin" e não tinha como saber que ali dentro
+           * existe `preco_bitcoin` — nem para reconhecer a base certa, nem para perguntar
+           * "é dela que eu leio?", nem para dizer que o campo de que a operação precisa não
+           * está lá. Campo é ESTRUTURA, não conteúdo, e não é id: descreve a forma do dado
+           * sem entregar dado nenhum, na mesma linha em que o resumo já manda o nome do
+           * recurso e não o ObjectId dele.
+           */
+          fields: Object.keys((d.schema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {})
+            .slice(0, 12)
+            .join(', '),
+        },
       })
     }
     for (const g of await listGrants(ownerId, s._id).catch(() => [])) {
@@ -303,7 +320,14 @@ export function summarizeInventory(inv: OfficeInventory): OfficeInventorySummary
 
   for (const [kind, s] of Object.entries(inv.sections)) {
     counts[kind] = s.total
-    if (s.items.length) samples[kind] = s.items.slice(0, INVENTORY_LIMITS.summaryPerKind).map((i) => i.label)
+    if (s.items.length) {
+      // O conjunto vai com a FORMA dele; os outros tipos continuam sendo só o nome, porque
+      // é o nome que a pessoa usa para falar deles.
+      samples[kind] = s.items.slice(0, INVENTORY_LIMITS.summaryPerKind).map((i) => {
+        const campos = String(i.meta?.fields ?? '')
+        return kind === 'dataset' && campos ? `${i.label} (campos: ${campos})` : i.label
+      })
+    }
   }
 
   /**

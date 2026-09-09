@@ -189,8 +189,10 @@ async function runTurn(
    * deduzir — e as duas custam a mesma coisa, que é a pessoa parar de acreditar que o
    * sistema está entendendo.
    */
+  // O inventário é lido UMA vez e serve às perguntas e aos dois compiladores.
+  const inventario = await loadOfficeInventory(ownerId).catch(() => null)
   const briefAtual = resolveIntegrations(projeto.brief ?? emptyBrief(projeto.objective), manifesto)
-  const lacunas = nextQuestions(briefAtual, manifesto)
+  const lacunas = nextQuestions(briefAtual, manifesto, 2, inventario)
   /**
    * A classificação vem ANTES do desenho, e vai junto no prompt.
    *
@@ -245,9 +247,9 @@ async function runTurn(
    * acreditar que o sistema está ouvindo.
    */
   const formasEscolhidas = Object.entries(answers)
-    .filter(([k]) => k.startsWith('forma:'))
+    .filter(([k]) => k.startsWith('forma:') || k.startsWith('origem:'))
     .map(([k, v]) => ({ key: k, value: String(v ?? ''), source: 'user' as const }))
-    .filter((f) => formaEscolhida(f.value))
+    .filter((f) => (f.key.startsWith('origem:') ? f.value === 'usar' || f.value === 'criar' : Boolean(formaEscolhida(f.value))))
 
   /**
    * O que dá para consertar sozinho é consertado ANTES de virar proposta.
@@ -287,7 +289,6 @@ async function runTurn(
    * título — e o V2 recebia esse andar pronto e o repetia. A escolha entre expandir e criar
    * precisa do que a conta tem, e é aqui que ela passa a ter.
    */
-  const inventario = compilar || architectV2Enabled() ? await loadOfficeInventory(ownerId).catch(() => null) : null
   const compilado = compilar ? compileBrief(briefNovo, manifesto, { title: projeto.title, objective: projeto.objective }, inventario, answers) : null
 
   /**
@@ -419,7 +420,7 @@ async function runTurn(
    * As opções são as mesmas de sempre, com a recomendação primeiro, e é o servidor que
    * carimba a `key`.
    */
-  const daForma = nextQuestions(briefNovo, manifesto, 2).find((g) => g.id.startsWith('forma:'))
+  const daForma = nextQuestions(briefNovo, manifesto, 2, inventario).find((g) => g.id.startsWith('forma:') || g.id.startsWith('origem:'))
   const pergunta = daForma
     ? { key: daForma.id, text: daForma.question, why: daForma.why, choices: daForma.choices ?? [], allowUnknown: false }
     : turno.question

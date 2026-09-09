@@ -168,3 +168,37 @@ test('Fase 4: o catálogo cita MONITOR e FONTE — e diz o que o Arquiteto NÃO 
   // Cada recusa com o caminho de resolver.
   assert.match(texto, /anexa|conhecimento do agente/i)
 })
+
+test('o resumo do inventário mostra O QUE TEM DENTRO de um conjunto, não só o nome', async () => {
+  /**
+   * O QUE O DONO PEDIU, depois de um teste real: "ele não viu que eu tenho uma database
+   * chamada bitcoin. Não sei se ele consegue identificar que lá tem o valor, ou se ele
+   * pergunta… e vê o que tem nessa database, se é valor, se é volume".
+   *
+   * Hoje o resumo que vai ao modelo é `samples[kind] = items.map(i => i.label)` — só o
+   * NOME. Ele recebe "Bitcoin" e não tem como saber que ali dentro existe `preco_bitcoin`.
+   * Sem isso ele não consegue nem reconhecer a base certa, nem perguntar "é dela que eu
+   * leio?", nem dizer que o campo que a operação precisa não está lá.
+   *
+   * Campo é ESTRUTURA, não conteúdo — e não é id. Mandar o nome do campo descreve a forma
+   * do dado sem entregar nenhum dado, que é a mesma linha que o resumo já segue ao mandar
+   * o nome do recurso e não o ObjectId dele.
+   */
+  const { summarizeInventory } = await import('../dist/architect/inventory.js')
+  const resumo = summarizeInventory({
+    ownerId: DONO,
+    at: new Date(),
+    building: null,
+    sections: {
+      dataset: {
+        kind: 'dataset',
+        total: 1,
+        truncated: false,
+        items: [{ id: 'db1:btc', label: 'Bitcoin', ownerScope: 'database:db1', meta: { dataStoreId: 'db1', key: 'btc', fields: 'preco_bitcoin, volume' } }],
+      },
+    },
+  })
+  const linha = (resumo.samples.dataset ?? []).join(' | ')
+  assert.match(linha, /Bitcoin/, 'o nome do conjunto sumiu')
+  assert.match(linha, /preco_bitcoin/, `o resumo não diz o que tem dentro: ${linha}`)
+})

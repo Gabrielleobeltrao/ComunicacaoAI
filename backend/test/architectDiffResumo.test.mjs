@@ -96,3 +96,36 @@ test('o resumo de uma repetição sem efeito DIZ que está travado', () => {
   const r = resumoDaMudanca([], [], { repetido: true })
   assert.match(r, /pediu isto de novo|já tinha pedido|não mudou/i)
 })
+
+// --- a repetição que NÃO era repetição --------------------------------------------------
+//
+// DE UM TESTE REAL, e é um defeito meu. O dono escreveu "quero montar um agente" e, na
+// mensagem seguinte, "Quero criar um agente para salvar em uma nova database o valor mínimo
+// do dia do bitcoin" — um pedido novo, com todo o conteúdo. E recebeu de volta:
+//
+//   "Você pediu isto de novo e o plano continua igual"
+//
+// A conta era `comuns / Math.min(a, b)`: a frase curta anterior tinha duas palavras
+// significativas, "agente" aparecia nas duas, e 1/2 já batia o limiar. Uma abertura vaga
+// passava a "contaminar" qualquer pedido seguinte que repetisse uma só palavra dela.
+//
+// Acusar repetição onde houve pedido novo é pior que não acusar nenhuma: o sistema diz que
+// não vai fazer nada logo na primeira vez que a pessoa explica o que quer.
+
+test('AMEAÇA: uma abertura vaga não transforma o pedido seguinte em repetição', () => {
+  assert.equal(
+    ehRepeticaoSemEfeito('Quero criar um agente para salvar em uma nova database o valor mínimo do dia do bitcoin', ['quero montar um agente'], []),
+    false,
+  )
+})
+
+test('AMEAÇA: frase curta demais não serve de base para acusar', () => {
+  // "ok", "isso", "sim" repetidos não são o mesmo pedido feito de novo.
+  assert.equal(ehRepeticaoSemEfeito('isso mesmo', ['isso'], []), false)
+})
+
+test('e a repetição de VERDADE continua sendo vista', () => {
+  const mesma = 'E pq está com web-chat, não vamos precisar disso'
+  assert.equal(ehRepeticaoSemEfeito(mesma, ['oi', mesma], []), true)
+  assert.equal(ehRepeticaoSemEfeito('e por que está com web chat? não vamos precisar dele', [mesma], []), true)
+})

@@ -861,3 +861,30 @@ test('ACEITAÇÃO: a fonte que já existe vira base de LEITURA no plano, com ace
   assert.ok(escrita, 'sem base de destino, não há onde gravar')
   assert.ok((leitura.agentKeys ?? []).length > 0, 'a leitura precisa dizer de quem é')
 })
+
+test('ACEITAÇÃO: respondida "é outra origem", ele NÃO reusa — abre a coleta nova', () => {
+  /**
+   * A pergunta só vale se a resposta mandar. Se a pessoa disse que a base que ele achou não
+   * é a dela, insistir no reuso seria pior que nunca ter perguntado: ela responderia e veria
+   * a proposta ignorar a resposta.
+   */
+  const inventario = {
+    ownerId: 'dono',
+    at: new Date(),
+    building: { id: '000000000000000000000b01', name: 'Prédio' },
+    sections: {
+      database: { kind: 'database', total: 1, truncated: false, items: [{ id: '000000000000000000000db1', label: 'Históricos', ownerScope: 'account:', meta: { adapterKind: 'data_history' } }] },
+      source: { kind: 'source', total: 1, truncated: false, items: [{ id: '000000000000000000000f01', label: 'Bitcoin', ownerScope: 'account:', meta: { kind: 'api_polling', dataStoreId: '000000000000000000000db1' } }] },
+    },
+  }
+  const brief = { ...soRotina(), liveDataNeeds: [{ source: 'valor do bitcoin', freshness: '15s', required: true }] }
+
+  // Sem resposta: ele reusa e declara a leitura.
+  const reusa = compilar(brief, { inventory: inventario })
+  assert.ok(reusa.blueprint.resources.databases.some((d) => d.agentAccess === 'read'))
+
+  // "é outra origem": ele volta a criar a coleta, e a pendência honesta reaparece.
+  const cria = compilar(brief, { inventory: inventario, answers: { 'origem:valor-do-bitcoin': 'criar' } })
+  assert.equal(cria.blueprint.resources.databases.some((d) => d.agentAccess === 'read'), false, 'ignorou a resposta e reusou assim mesmo')
+  assert.ok(cria.pending.some((p) => p.kind === 'source_config'))
+})
