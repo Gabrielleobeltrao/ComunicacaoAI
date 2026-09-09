@@ -3,7 +3,7 @@ import type { Classification, ResourceDecision } from './classify.js'
 import { mergeSplitRationale } from './architecture.js'
 import { emptyBlueprint } from './blueprint.js'
 import type { ArchitectCapabilityManifest } from './capabilities.js'
-import type { OperationBrief } from './brief.js'
+import type { BriefJob, OperationBrief } from './brief.js'
 import { areasOf, findExistingFloor } from './compileV2.js'
 import type { OfficeInventory } from './inventory.js'
 import type { BlueprintAgent, BlueprintLayer, OfficeBlueprintV1 } from './types.js'
@@ -90,6 +90,71 @@ const CAMADA_ORDEM: Record<BlueprintLayer, number> = { essential: 0, recommended
  * A ordem importa: os trabalhos são percorridos na ordem do Brief, e cada agente ganha
  * o nome da posição dele. Isso é o que torna as chaves estáveis entre revisões.
  */
+/**
+ * Alguém FALA com este agente?
+ *
+ * O gatilho é o que decide: um trabalho que começa quando uma pessoa escreve precisa de
+ * porta; um que começa no horário, não. O texto do trabalho conta junto, porque "responder
+ * a dúvida" é conversa mesmo quando o gatilho não diz quem falou.
+ */
+function ehConversa(job: BriefJob): boolean {
+  const t = `${job.trigger ?? ''} ${job.name ?? ''} ${job.action ?? ''} ${job.input ?? ''}`.toLowerCase()
+  return /(cliente|pessoa|usuário|usuario|visitante|lead|conversa|mensagem|whatsapp|chat|responder|atender|dúvida|duvida|pergunta)/.test(t)
+}
+
+/**
+ * A ROTINA de um trabalho agendado.
+ *
+ * Mesma forma da rotina que o classificador já produzia — inclusive a etapa, que existe
+ * porque rotina sem etapa é recusada pelo validador. O que muda é a origem: aqui o
+ * trabalho é de um AGENTE, e a rotina só o aciona.
+ */
+function rotinaPara(job: BriefJob, agentKey: string, floorKey: string, layer: BlueprintLayer, layerReason: string): OfficeBlueprintV1['routines'][number] {
+  const quando = [job.trigger, job.frequency].filter((t) => t && t.trim()).join(' · ')
+  return {
+    key: slug(`rotina-${job.id}`),
+    action: 'create',
+    floorKey,
+    ownerAgentKey: agentKey,
+    name: job.name,
+    // O QUE A PESSOA DISSE, escrito. O `cron` abaixo é um padrão para a rotina poder
+    // nascer; é esta frase que diz o que ela pediu de verdade.
+    ...(quando ? { description: `Quando: ${quando}` } : {}),
+    triggerType: 'schedule',
+    cron: '0 8 * * *',
+    timezone: 'America/Sao_Paulo',
+    steps: [
+      {
+        id: 'executar',
+        type: 'agent.execute',
+        config: { agentKey, instruction: job.action ? `${job.name}. ${job.action}.` : job.name },
+      },
+    ],
+    layer,
+    layerReason,
+    rationale: 'este trabalho acontece por horário: a rotina é quem o aciona',
+  }
+}
+
+/**
+ * Este trabalho acontece SOZINHO, por horário?
+ *
+ * Lê o `trigger` e a `frequency` — as duas frases que falam de quando. `CADENCIA` é a mesma
+ * família de palavras que o classificador usa; o que muda aqui é onde ela é procurada.
+ */
+function ehAgendado(job: BriefJob): boolean {
+  const quando = `${job.trigger ?? ''} ${job.frequency ?? ''}`.toLowerCase()
+  if (!quando.trim()) return false
+  // Uma pessoa escrevendo não é um horário, mesmo que a frase tenha "todo": "todo cliente
+  // que escreve" é conversa, e conversa não vira rotina.
+  if (/(cliente|pessoa|usuário|usuario|alguém|alguem)\s+(escreve|manda|pergunta|chama)/.test(quando)) return false
+  return CADENCIA_DE_ROTINA.test(quando)
+}
+
+/** A mesma família de palavras do classificador — ver `CADENCIA` em `classify.ts`. */
+const CADENCIA_DE_ROTINA =
+  /(\bdiári|\bdiario|\bsemanal|\bmensal|\banual|\bhora\b|\bhoras\b|\bminuto|\bdia\b|\bdias\b|\bsemana|\bmês\b|\bmes\b|\bmeses|\btoda\s|\btodo\s|\btodos\s|\bcada\s+\d|\bmanhã|\bmanha|\btarde|\bnoite|\bmadrugada|\bútil|\butil|\bsegunda|\bterça|\bterca|\bquarta|\bquinta|\bsexta|\bsábado|\bsabado|\bdomingo|\bcron|\bfim do dia|\bfinal do dia)/i
+
 export function compileBrief(
   brief: OperationBrief,
   manifest: ArchitectCapabilityManifest | null,
@@ -123,6 +188,23 @@ export function compileBrief(
   const daArea = areas.length ? findExistingFloor(inventory, areas[0]) : null
   const existentes = inventory?.sections.floor?.items ?? []
   const anfitriao = daArea ?? (areas.length === 0 ? (existentes[0] ?? null) : null)
+  /**
+   * COM VÁRIOS ANDARES e nenhuma área dita, a escolha é da pessoa.
+   *
+   * Pegar o primeiro é adivinhar onde o trabalho mora, e a proposta sai montada no lugar
+   * errado parecendo certa — foi assim que guardar o máximo do Bitcoin nasceu no "Salão",
+   * que é o andar do restaurante, só por ser o primeiro da lista.
+   *
+   * O plano continua montado no primeiro para permanecer válido (agente mora em andar), e
+   * a escolha vira pendência declarada. Perguntar é mais barato que desfazer.
+   */
+  if (!daArea && areas.length === 0 && existentes.length > 1) {
+    pending.push({
+      kind: 'floor_choice',
+      ref: base.title,
+      because: `em qual andar este trabalho mora? montei em "${existentes[0].label}" por enquanto; a conta tem ${existentes.length}: ${existentes.slice(0, 6).map((f) => f.label).join(', ')}`,
+    })
+  }
   /**
    * A KEY NÃO MUDA — ela é o que liga a proposta ao recurso aplicado.
    *
@@ -190,6 +272,25 @@ export function compileBrief(
       }
       bp.agents.push(agente)
       indiceDeAgente += 1
+
+      /**
+       * QUEM DISPARA, quando o trabalho acontece sozinho.
+       *
+       * Agente e rotina não competem: um é o TRABALHADOR, a outra é o GATILHO. Um trabalho
+       * que exige julgamento E acontece no fim do dia precisa dos dois — sem a rotina ele
+       * nasce pronto esperando uma conversa, que é justamente o que a pessoa disse que não
+       * queria.
+       *
+       * A cadência é lida do TRIGGER, e essa era a causa: `texto(job)` junta nome, ação,
+       * decisão e saída — a frase que diz QUANDO a coisa acontece era a única que ninguém
+       * lia.
+       */
+      if (job && ehAgendado(job)) {
+        bp.routines.push(rotinaPara(job, key, floorKey, layer, reason))
+        // O HORÁRIO EXATO é da pessoa, não meu. O padrão existe para a rotina poder nascer;
+        // inventá-lo em silêncio é entregar um alarme que toca na hora errada.
+        pending.push({ kind: 'routine_time', ref: job.name, because: `confirme o horário: "${job.trigger}" — a rotina nasce com um horário padrão até você ajustar` })
+      }
       continue
     }
 
@@ -258,10 +359,21 @@ export function compileBrief(
     }
   }
 
-  // O canal: a porta de entrada vai para o primeiro agente, que é quem recebe.
+  /**
+   * O CANAL só existe onde alguém ENTRA.
+   *
+   * Uma porta de entrada é para uma pessoa FALAR com o agente. Numa operação que roda
+   * sozinha no fim do dia não há quem fale — e abrir a porta assim mesmo é prometer um
+   * atendimento que ninguém vai atender.
+   *
+   * Isto acontecia porque `brief.channels` ACUMULA: o modelo escreveu "web_chat" numa
+   * rodada e a pessoa disse "não quero conversa" na seguinte, sem que a lista fosse
+   * retratada. O entendimento guarda o que foi dito; quem decide o que vira recurso é aqui.
+   */
+  const alguemFala = brief.jobs.some((j) => ehConversa(j))
   const canalConectado = (manifest?.channels ?? []).find((c) => c.connected)
   const canalCitado = brief.channels[0]
-  if (bp.agents[0]) {
+  if (bp.agents[0] && alguemFala) {
     const chave = canalConectado?.key ?? (manifest?.channels ?? []).find((c) => canalCitado && c.key.includes(slug(canalCitado)))?.key
     if (chave) {
       bp.appRequirements.unshift({

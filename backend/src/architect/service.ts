@@ -346,7 +346,12 @@ async function runTurn(
      * aparência completa, aplicava, e descobria o buraco depois — sem nunca ter visto a
      * frase que o descrevia.
      */
-    const pendencias = (compiladoV2?.pending ?? []).map((p) => ({ path: p.kind, message: `${p.ref}: ${p.because}` }))
+    // Os DOIS compiladores. O V1 é quem decide andares e agentes, e as pendências dele
+    // ficavam tão caladas quanto as do V2 — a escolha de andar era calculada e engolida.
+    const pendencias = [...(compilado?.pending ?? []), ...(compiladoV2?.pending ?? [])].map((p) => ({
+      path: p.kind,
+      message: `${p.ref}: ${p.because}`,
+    }))
     const avisos = [...pendencias, ...(consertoDoPatch?.warnings ?? []), ...(consertoDoReuso?.warnings ?? [])]
     if (avisos.length) blueprint.warnings = [...(blueprint.warnings ?? []), ...avisos].slice(0, L.MAX_WARNINGS)
   }
