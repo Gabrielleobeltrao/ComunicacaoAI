@@ -602,3 +602,42 @@ test('sem `agentKeys`, nada é concedido — planos antigos continuam como eram'
   const store = await db.collection('data_stores').findOne({ ownerId: DONO, name: 'Sem dono' })
   assert.equal(await db.collection('data_store_grants').countDocuments({ ownerId: DONO, dataStoreId: store._id }), 0)
 })
+
+test('ACEITAÇÃO: a chave do PLANO muda, a do conjunto não — e ele reaproveita', async () => {
+  /**
+   * ERRO REAL, na tela de aplicar:
+   *
+   *   dataset "conjunto-historico-diario-do-valor-minimo-do-bitc": já existe um dataset
+   *   com esta chave
+   *
+   * O `resourceMap` guarda `dataset:<chave DO PLANO>`. Quando a pessoa manda refazer a
+   * proposta e o texto do assunto muda um pouco, a chave do PLANO muda junto — mas a
+   * `datasetKey`, derivada do mesmo assunto, cai no mesmo valor truncado. Resultado: o mapa
+   * não reconhece o item, a saga tenta criar, e o banco recusa porque a chave já existe.
+   *
+   * A saga morria no meio: parte criada, parte não. E reaplicar é o caminho NORMAL — é o
+   * que se faz depois de resolver uma pendência.
+   *
+   * A primeira versão deste caso reaplicava o MESMO plano, e passava sem o conserto: com a
+   * chave igual, o mapa reconhecia o item e pulava o passo antes de chegar no defeito.
+   */
+  const bp = base()
+  bp.resources.databases = [item({ key: 'base', name: 'Máximos', owner: { ownerType: 'account' }, adapterKind: 'data_history' })]
+  bp.resources.datasets = [
+    item({ key: 'conjunto-v1', dependsOn: ['base'], databaseKey: 'base', datasetKey: 'diario', name: 'Diário', schema: { type: 'object', properties: { maximo: { type: 'number' } } }, mutability: 'append_only' }),
+  ]
+
+  const mapa = mapaInicial()
+  const primeira = await applyV2Resources({ ownerId: DONO, blueprint: bp, resourceMap: mapa, approvedKeys: new Set(chavesDe(bp)) })
+  assert.deepEqual(primeira.map((p) => [p.kind, p.status]), [['database', 'created'], ['dataset', 'created']])
+
+  // A proposta é refeita: a chave do PLANO muda, a do conjunto continua a mesma.
+  const refeito = base()
+  refeito.resources.databases = bp.resources.databases
+  refeito.resources.datasets = [{ ...bp.resources.datasets[0], key: 'conjunto-v2' }]
+
+  const segunda = await applyV2Resources({ ownerId: DONO, blueprint: refeito, resourceMap: mapa, approvedKeys: new Set(chavesDe(refeito)) })
+  const passo = segunda.find((p) => p.kind === 'dataset')
+  assert.notEqual(passo.status, 'failed', `estourou: ${JSON.stringify(passo)}`)
+  assert.equal(await db.collection('dataset_definitions').countDocuments({ ownerId: DONO, key: 'diario' }), 1, 'duplicou o conjunto')
+})

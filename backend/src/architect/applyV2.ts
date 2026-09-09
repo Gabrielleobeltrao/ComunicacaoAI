@@ -289,9 +289,25 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
   if (kind === 'dataset') {
     const storeId = idDe('database', item.databaseKey)
     if (!storeId) throw new Error(`o Database "${String(item.databaseKey)}" não foi criado`)
-    const { createDataset } = await import('../databases/store.js')
+    const { createDataset, listDatasets } = await import('../databases/store.js')
+    const chave = String(item.datasetKey ?? item.key)
+    /**
+     * REAPLICAR TEM QUE SER SEGURO.
+     *
+     * A segunda aplicação do mesmo plano estourava com "já existe um dataset com esta
+     * chave" e derrubava a saga no meio — deixando parte criada e parte não. E reaplicar é
+     * o caminho NORMAL: é o que a pessoa faz depois de resolver uma pendência, e toda
+     * proposta que nasce com item pendente passa por aqui duas vezes.
+     *
+     * Andar e agente já sabiam reaproveitar. O conjunto não sabia, e a chave dele é
+     * determinística — o mesmo plano produz a mesma chave, de propósito, para que o
+     * recurso seja reencontrado em vez de duplicado.
+     */
+    const jaExiste = (await listDatasets(ownerId, new ObjectId(storeId)).catch(() => [])).find((x) => x.key === chave)
+    if (jaExiste) return { id: `${storeId}:${jaExiste.key}`, message: `conjunto "${jaExiste.key}" já existe: reaproveitado` }
+
     const d = await createDataset(ownerId, new ObjectId(storeId), {
-      key: String(item.datasetKey ?? item.key),
+      key: chave,
       name: String(item.name ?? item.key),
       // Sem `properties` o domínio recusa, e é o certo: um dataset que não declara campos
       // não pode ser consultado nem observado. Um default aqui só adiaria a recusa.
