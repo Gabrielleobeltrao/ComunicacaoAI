@@ -230,3 +230,62 @@ test('AMEAÇA: todo campo do Brief que o compilador usa está no contrato do mod
   assert.deepEqual(ausentes, [], `campos que o compilador lê e o modelo nunca vê: ${ausentes.join(', ')}`)
 })
 
+
+// --- A ENTREVISTA NÃO ANDA EM CÍRCULO --------------------------------------------------------
+//
+// Do banco real do dono: cinco rodadas, a mesma pergunta ("é de lá que eu leio o Bitcoin?"),
+// e ele respondendo "Sim, ler de Bitcoin" três vezes. As respostas estavam guardadas — sob
+// QUATRO chaves diferentes, porque a chave saía do texto que o modelo reescrevia a cada
+// rodada — e quem escolhe a próxima pergunta nunca olhava o mapa de respostas.
+const inventarioComFonte = (label, fields = 'price,ts') => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: { id: 'b1', name: 'Prédio' },
+  sections: { source: { kind: 'source', total: 1, truncated: false, items: [{ id: 's1', label, ownerScope: 'account', meta: { fields } }] } },
+})
+
+const briefDeOrigem = (texto) =>
+  applyBriefPatch(emptyBrief(), {
+    businessGoal: 'monitorar o preço do bitcoin',
+    jobs: [{ id: 'ler', name: 'Ler preço do bitcoin' }],
+    liveDataNeeds: [{ source: texto, use: 'calcular min e max' }],
+  })
+
+test('a pergunta de origem NÃO volta depois de respondida', () => {
+  const inv = inventarioComFonte('Bitcoin')
+  const brief = briefDeOrigem('preço do bitcoin em tempo real')
+  const gap = detectGaps(brief, null, inv).find((g) => g.id.startsWith('origem:'))
+  assert.ok(gap, 'a pergunta de origem tem de existir antes de ser respondida')
+
+  const depois = detectGaps(brief, null, inv, { [gap.id]: 'Sim, ler de "Bitcoin"' })
+  assert.equal(depois.some((g) => g.id === gap.id), false, 'respondida, ela não pode voltar')
+})
+
+test('a chave da pergunta de origem NÃO muda quando o modelo reescreve o pedido', () => {
+  // As quatro formas que o modelo usou na conversa real, para a MESMA fonte da conta.
+  const inv = inventarioComFonte('Bitcoin')
+  const chaves = new Set(
+    ['preço do bitcoin em tempo real', 'origem atual do preço do bitcoin', 'fonte externa atual do preço do bitcoin', 'Bitcoin'].map((t) => {
+      const g = detectGaps(briefDeOrigem(t), null, inv).find((x) => x.id.startsWith('origem:'))
+      return g?.id
+    }),
+  )
+  assert.equal(chaves.size, 1, `a mesma fonte tem de dar a mesma chave, e deu: ${[...chaves].join(', ')}`)
+  assert.equal([...chaves][0], 'origem:bitcoin')
+})
+
+test('nextQuestions também respeita o que já foi respondido', () => {
+  const inv = inventarioComFonte('Bitcoin')
+  const brief = briefDeOrigem('preço do bitcoin em tempo real')
+  const antes = nextQuestions(brief, null, 2, inv).map((g) => g.id)
+  assert.ok(antes.includes('origem:bitcoin'))
+  const depois = nextQuestions(brief, null, 2, inv, { 'origem:bitcoin': 'Sim, ler de "Bitcoin"' }).map((g) => g.id)
+  assert.equal(depois.includes('origem:bitcoin'), false)
+})
+
+test('uma resposta em branco não conta como respondida', () => {
+  const inv = inventarioComFonte('Bitcoin')
+  const brief = briefDeOrigem('preço do bitcoin em tempo real')
+  const depois = detectGaps(brief, null, inv, { 'origem:bitcoin': '   ' })
+  assert.ok(depois.some((g) => g.id === 'origem:bitcoin'), 'espaço em branco não é resposta')
+})

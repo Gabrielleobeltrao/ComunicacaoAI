@@ -108,8 +108,18 @@ const PORQUE_DA_FORMA: Record<string, string> = {
 }
 
 /** O que a conta JÁ responde sozinha não é pergunta. */
-const jaSabido = (brief: OperationBrief, chave: string): boolean =>
-  brief.knownFacts.some((f) => f.key === chave) || brief.assumptions.some((a) => a.id === chave && a.status === 'accepted')
+/**
+ * O QUE JÁ SE SABE — inclusive o que a pessoa acabou de responder.
+ *
+ * As respostas ficavam num mapa que só o compilador lia. Quem escolhe a próxima pergunta
+ * nunca as via, então a mesma lacuna voltava rodada após rodada: a pessoa respondia, o
+ * desenho até mudava, e a pergunta reaparecia igual. Responder e continuar sendo
+ * perguntado é a forma mais rápida de alguém parar de acreditar que o sistema entendeu.
+ */
+const jaSabido = (brief: OperationBrief, chave: string, answers: Record<string, unknown> = {}): boolean =>
+  brief.knownFacts.some((f) => f.key === chave) ||
+  brief.assumptions.some((a) => a.id === chave && a.status === 'accepted') ||
+  String(answers[chave] ?? '').trim() !== ''
 
 /**
  * As lacunas do Brief, em ordem de impacto.
@@ -122,6 +132,8 @@ export function detectGaps(
   manifest: AssistantCapabilityManifest | null,
   /** O que a conta tem. Sem ele, "você já tem uma base que serve" não é uma pergunta possível. */
   inventory: OfficeInventory | null = null,
+  /** O que a pessoa já respondeu nesta conversa. Sem isto, a entrevista anda em círculo. */
+  answers: Record<string, unknown> = {},
 ): BriefGap[] {
   const lacunas: BriefGap[] = []
 
@@ -147,7 +159,7 @@ export function detectGaps(
    * Quem NOMEIA uma área já respondeu: "montar o atendimento" diz onde mora.
    */
   const andares = inventory?.sections.floor?.items ?? []
-  if (andares.length > 1 && brief.jobs.length > 0 && !jaSabido(brief, 'andar') && areasCitadas(brief).length === 0) {
+  if (andares.length > 1 && brief.jobs.length > 0 && !jaSabido(brief, 'andar', answers) && areasCitadas(brief).length === 0) {
     lacunas.push({
       id: 'andar',
       question: 'Em qual andar este trabalho mora?',
@@ -160,10 +172,19 @@ export function detectGaps(
 
   for (const [i, need] of (brief.liveDataNeeds ?? []).entries()) {
     if (!need.source?.trim()) continue
-    const chave = `origem:${slugDeAssunto(need.source)}` || `origem:${i}`
-    if (jaSabido(brief, chave)) continue
     const achado = conjuntoQueServe(inventory, need.source)
     if (!achado) continue
+    /**
+     * A CHAVE É O QUE FOI ACHADO, e não como o modelo escreveu o pedido.
+     *
+     * A chave saía do texto da necessidade — texto que o modelo reescreve a cada rodada:
+     * "fonte de preço do bitcoin em tempo real", depois "origem atual do preço", depois
+     * "Bitcoin". Três chaves para a mesma pergunta, então a resposta guardada na primeira
+     * nunca casava com a segunda, e a pergunta voltava para sempre. O recurso da conta não
+     * é reescrito por ninguém: é ele que identifica a pergunta.
+     */
+    const chave = `origem:${slugDeAssunto(achado.label)}` || `origem:${i}`
+    if (jaSabido(brief, chave, answers)) continue
     lacunas.push({
       id: chave,
       question: `Você já tem "${achado.label}" nesta conta. É de lá que eu leio "${need.source.slice(0, 60)}"?`,
@@ -195,7 +216,7 @@ export function detectGaps(
     const decisao = classifyJob(job, manifest)
     const decidida = decisao.kind
     if (decidida === pedida) continue
-    if (jaSabido(brief, `forma:${job.id}`)) continue
+    if (jaSabido(brief, `forma:${job.id}`, answers)) continue
     // E só quando a decisão é DE FATO apertada — ver `haDuvidaDeForma`.
     if (!haDuvidaDeForma(job, decisao, pedida)) continue
     lacunas.push({
@@ -235,7 +256,7 @@ export function detectGaps(
   }
 
   // O canal é a porta de entrada: sem ele a operação não tem por onde ser acionada.
-  if (brief.channels.length === 0 && !jaSabido(brief, 'canal')) {
+  if (brief.channels.length === 0 && !jaSabido(brief, 'canal', answers)) {
     const conectados = (manifest?.channels ?? []).filter((c) => c.connected)
     lacunas.push({
       id: 'canal',
@@ -310,8 +331,14 @@ export function detectGaps(
  * Duas e não cinco porque uma entrevista de cinco perguntas por turno é um formulário
  * com outro nome, e porque a segunda resposta costuma mudar a terceira pergunta.
  */
-export function nextQuestions(brief: OperationBrief, manifest: AssistantCapabilityManifest | null, limite = 2, inventory: OfficeInventory | null = null): BriefGap[] {
-  const lacunas = detectGaps(brief, manifest, inventory)
+export function nextQuestions(
+  brief: OperationBrief,
+  manifest: AssistantCapabilityManifest | null,
+  limite = 2,
+  inventory: OfficeInventory | null = null,
+  answers: Record<string, unknown> = {},
+): BriefGap[] {
+  const lacunas = detectGaps(brief, manifest, inventory, answers)
   if (lacunas.length === 0) return []
   /**
    * Quando a primeira lacuna é FUNDACIONAL, ela vai sozinha.

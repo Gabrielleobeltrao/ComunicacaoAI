@@ -192,7 +192,7 @@ async function runTurn(
   // O inventário é lido UMA vez e serve às perguntas e aos dois compiladores.
   const inventario = await loadOfficeInventory(ownerId).catch(() => null)
   const briefAtual = resolveIntegrations(projeto.brief ?? emptyBrief(projeto.objective), manifesto)
-  const lacunas = nextQuestions(briefAtual, manifesto, 2, inventario)
+  const lacunas = nextQuestions(briefAtual, manifesto, 2, inventario, respondidas)
   /**
    * A classificação vem ANTES do desenho, e vai junto no prompt.
    *
@@ -420,7 +420,7 @@ async function runTurn(
    * As opções são as mesmas de sempre, com a recomendação primeiro, e é o servidor que
    * carimba a `key`.
    */
-  const daForma = nextQuestions(briefNovo, manifesto, 2, inventario).find((g) => g.id.startsWith('forma:') || g.id.startsWith('origem:') || g.id === 'andar')
+  const daForma = nextQuestions(briefNovo, manifesto, 2, inventario, respondidas).find((g) => g.id.startsWith('forma:') || g.id.startsWith('origem:') || g.id === 'andar')
   const pergunta = daForma
     ? { key: daForma.id, text: daForma.question, why: daForma.why, choices: daForma.choices ?? [], allowUnknown: false }
     : turno.question
