@@ -1,6 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { resolveDatabaseAccess } from './access.js'
-import { runQuery, AdapterError } from './adapters.js'
+import { runQuery, runInsert, AdapterError } from './adapters.js'
 import { listDatasets, listDataStores } from './store.js'
 import { QueryDslError } from './queryDsl.js'
 import type { Agent } from '../agents.js'
@@ -141,5 +141,72 @@ export async function databaseToolsFor(ctx: DatabaseToolContext): Promise<Resolv
     },
   }
 
-  return [listar, consultar]
+  /**
+   * GRAVAR — a metade que faltava.
+   *
+   * O agente sabia ler e não sabia escrever, e por isso uma operação que lê uma série e
+   * anota o resultado parava no meio: ele calculava e não tinha onde pôr. Toda a cadeia de
+   * "observe isto e registre aquilo" dependia de alguém fazer a última etapa à mão.
+   *
+   * Três coisas a separam da leitura, e as três são de propósito:
+   *
+   *   • a capacidade é `insert`. Quem concedeu leitura não concedeu escrita, e derivar uma
+   *     da outra seria conceder no lugar do dono;
+   *   • ela só aparece para quem tem `insert` — ferramenta visível que recusa toda chamada
+   *     gasta contexto para nada e ensina o modelo a insistir;
+   *   • a recusa VOLTA com o motivo. Uma linha fora do schema recusada em silêncio faz o
+   *     modelo repetir a mesma linha errada até acabar o orçamento.
+   *
+   * O teto de linhas é o do adapter, e o schema do dataset é quem valida cada uma: aqui não
+   * se decide o que é uma linha válida, só se pede que ela seja escrita.
+   */
+  const podeGravar: { id: string; name: string }[] = []
+  for (const store of alcancaveis) {
+    const d = await resolveDatabaseAccess({
+      accountId: ctx.accountId,
+      dataStoreId: new ObjectId(store.id),
+      agentId: ctx.agent._id,
+      capability: 'insert',
+    })
+    if (d.allowed) podeGravar.push(store)
+  }
+
+  if (podeGravar.length === 0) return [listar, consultar]
+
+  const gravar: ResolvedDatabaseTool = {
+    name: 'database_insert_rows',
+    description: `Grava novos registros num dataset. Cada linha precisa respeitar o schema do conjunto. Databases em que dá para gravar: ${podeGravar.map((s) => `${s.name} (${s.id})`).join(', ')}`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        databaseId: { type: 'string' },
+        datasetKey: { type: 'string' },
+        rows: { type: 'array', items: { type: 'object' }, description: 'As linhas a gravar, cada uma com os campos declarados no schema do conjunto.' },
+      },
+      required: ['databaseId', 'datasetKey', 'rows'],
+    },
+    run: async (args) => {
+      const id = String(args.databaseId ?? '')
+      if (!ObjectId.isValid(id)) return recusa('database não encontrado')
+      const dataStoreId = new ObjectId(id)
+      const datasetKey = String(args.datasetKey ?? '')
+      const linhas = Array.isArray(args.rows) ? (args.rows as Record<string, unknown>[]) : []
+      if (linhas.length === 0) return responder(false, { error: 'sem_linhas', message: 'nenhuma linha para gravar' })
+
+      // Conferida AGORA, com o dataset na mão: entre montar a lista e o modelo chamar cabe
+      // uma revogação, e numa escrita esse intervalo é a diferença entre um dado e um dado falso.
+      const d = await resolveDatabaseAccess({ accountId: ctx.accountId, dataStoreId, datasetKey, agentId: ctx.agent._id, capability: 'insert' })
+      if (!d.allowed) return recusa(d.reason)
+
+      try {
+        const r = await runInsert({ accountId: ctx.accountId, dataStoreId, datasetKey, agentId: ctx.agent._id, query: {}, rows: linhas })
+        return responder(true, { inserted: r.inserted })
+      } catch (erro) {
+        if (erro instanceof AdapterError) return responder(false, { error: erro.code, message: erro.message })
+        return responder(false, { error: 'erro', message: 'não foi possível gravar agora' })
+      }
+    },
+  }
+
+  return [listar, consultar, gravar]
 }

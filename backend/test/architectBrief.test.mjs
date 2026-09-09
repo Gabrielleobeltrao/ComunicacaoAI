@@ -201,3 +201,32 @@ test('uma retenção inválida NÃO vira "apague já"', () => {
   const teto = applyBriefPatch(emptyBrief('x'), { recordsToKeep: [{ subject: 'A', fields: ['a'], retentionDays: 99999 }] })
   assert.equal(teto.recordsToKeep[0].retentionDays, 3650)
 })
+
+// --- o CONTRATO do modelo contra o que o compilador LÊ ------------------------------------
+//
+// O DEFEITO QUE ESTE CASO EXISTE PARA IMPEDIR, encontrado numa conversa real:
+//
+// A pessoa disse "já tenho uma base com o valor do bitcoin, quero usar essa" e depois
+// "quero criar uma nova base só para o máximo diário". As duas frases foram entendidas —
+// estão gravadas em `answers`. E a proposta saiu com ZERO Databases.
+//
+// Porque `liveDataNeeds` e `recordsToKeep` — os dois únicos campos de onde o compilador
+// tira fonte de dado e base de destino — NÃO ESTAVAM no esquema do `briefPatch` que o
+// prompt entrega ao modelo. Ele nunca soube que esses campos existiam, então nunca os
+// preencheu, e o compilador leu duas listas sempre vazias.
+//
+// Um campo que o compilador lê e o contrato não oferece é um campo morto: ninguém percebe,
+// porque a proposta continua saindo — só sai sem a metade que dependia dele.
+import { readFileSync } from 'node:fs'
+
+test('AMEAÇA: todo campo do Brief que o compilador usa está no contrato do modelo', () => {
+  const prompt = readFileSync(new URL('../src/architect/prompt.ts', import.meta.url), 'utf8')
+  const esquema = prompt.slice(prompt.indexOf('"briefPatch"'), prompt.indexOf('"blueprintPatch"'))
+
+  // Os campos que o compilador consulta para criar recurso. Se um deles não é oferecido ao
+  // modelo, o recurso correspondente nunca nasce.
+  const lidosPeloCompilador = ['jobs', 'channels', 'integrations', 'knowledgeNeeds', 'liveDataNeeds', 'recordsToKeep', 'humanApprovals']
+  const ausentes = lidosPeloCompilador.filter((campo) => !esquema.includes(`"${campo}"`))
+  assert.deepEqual(ausentes, [], `campos que o compilador lê e o modelo nunca vê: ${ausentes.join(', ')}`)
+})
+

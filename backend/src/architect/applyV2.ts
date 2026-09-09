@@ -229,6 +229,44 @@ const marcaDe = (ctx: ApplyV2Context, key: string) =>
   ctx.operationId ? { projectId: ctx.projectId ?? '', operationId: ctx.operationId, blueprintKey: key } : undefined
 
 /** Cria UM item pelo serviço canônico do domínio dele. */
+/**
+ * A CONCESSÃO da base aos agentes que o plano declarou.
+ *
+ * O plano criava a base, criava o agente, e o agente não a alcançava: a operação nascia
+ * montada e muda, com a última etapa sobrando para alguém fazer à mão sem saber que
+ * precisava. Quem aprova continua sendo o dono — ele aprova o plano, e o plano diz isto por
+ * escrito, com quem e para quê.
+ *
+ * `read` não vira `write`. Quem consome de uma base que já existe não ganha permissão de
+ * escrever nela: derivar uma da outra seria conceder no lugar do dono, e o dado errado
+ * entraria sem ninguém ter aprovado a entrada.
+ *
+ * Sem `agentKeys` nada é concedido — é o que mantém os planos anteriores a este campo
+ * exatamente como eram.
+ */
+async function concederBase(
+  ownerId: string,
+  dataStoreId: ObjectId,
+  item: Record<string, unknown>,
+  idDe: (kind: string, key: unknown) => string | null | undefined,
+): Promise<void> {
+  const chaves = (item.agentKeys as string[] | undefined) ?? []
+  if (chaves.length === 0) return
+  const escreve = item.agentAccess === 'write'
+  const capacidades = escreve ? (['discover', 'query', 'insert'] as const) : (['discover', 'query'] as const)
+  const { putGrant } = await import('../databases/store.js')
+  for (const chave of chaves) {
+    const id = idDe('agent', chave)
+    if (!id || !ObjectId.isValid(id)) continue
+    await putGrant(
+      ownerId,
+      dataStoreId,
+      { subjectType: 'agent', subjectId: new ObjectId(id), capabilities: [...capacidades] as never },
+      ownerId,
+    ).catch(() => undefined)
+  }
+}
+
 type Criacao = { id: string; message?: string } | { pendency: string } | null
 
 async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string, unknown>, key: string): Promise<Criacao> {
@@ -244,6 +282,7 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
       adapterKind: String(item.adapterKind ?? 'data_history') as never,
       ...(item.retentionDays ? { retention: { mode: 'days', days: Number(item.retentionDays) } as never } : {}),
     })
+    await concederBase(ownerId, store._id, item, idDe)
     return { id: store._id.toString() }
   }
 

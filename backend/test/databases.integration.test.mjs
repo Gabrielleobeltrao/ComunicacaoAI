@@ -428,3 +428,61 @@ test('a flag desligada NEGA a rota', async () => {
     delete process.env.DATABASES_ENABLED
   }
 })
+
+// --- gravar: a metade que faltava -------------------------------------------------------
+//
+// O agente sabia LER um Database e não sabia ESCREVER. Numa conversa real, o dono pediu
+// "todo fim de dia pegue o maior valor do bitcoin e grave numa base só com data e máximo",
+// e o Arquiteto respondeu que não dava — porque de fato não havia por onde gravar. A
+// operação inteira parava na metade: ele lia a série e não tinha onde pôr o resultado.
+//
+// A escrita é mais perigosa que a leitura, então ela carrega as mesmas três travas da
+// leitura e mais uma: a capacidade é `insert`, e não `query`.
+
+test('sem a capacidade insert, o agente NÃO recebe a ferramenta de gravar', async () => {
+  await putGrant(DONO, cena.store._id, { subjectType: 'agent', subjectId: cena.marina._id, capabilities: ['discover', 'query'] }, DONO)
+  const tools = await databaseToolsFor({ accountId: DONO, agent: cena.marina })
+  assert.ok(tools.find((t) => t.name === 'database_query'), 'a leitura continua')
+  assert.equal(tools.find((t) => t.name === 'database_insert_rows'), undefined, 'quem só pode ler não pode ver a ferramenta de gravar')
+})
+
+test('ACEITAÇÃO: com insert, o agente grava — e o registro entra de verdade', async () => {
+  await putGrant(DONO, cena.store._id, { subjectType: 'agent', subjectId: cena.marina._id, capabilities: ['discover', 'query', 'insert'] }, DONO)
+  const tools = await databaseToolsFor({ accountId: DONO, agent: cena.marina })
+  const gravar = tools.find((t) => t.name === 'database_insert_rows')
+  assert.ok(gravar, `ferramentas: ${tools.map((t) => t.name).join(', ')}`)
+
+  const r = await gravar.run({ databaseId: cena.store._id.toString(), datasetKey: 'ordens', rows: [{ ticker: 'BTC', preco: 71234.5 }] })
+  assert.equal(r.ok, true, r.result)
+  assert.match(r.result, /"inserted":1/)
+
+  const lido = await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: { filter: { field: 'ticker', op: 'eq', value: 'BTC' } } })
+  assert.equal(lido.rows.length, 1)
+  assert.equal(lido.rows[0].preco, 71234.5)
+})
+
+test('AMEAÇA: revogar o insert bloqueia a PRÓXIMA gravação da ferramenta já montada', async () => {
+  /**
+   * Entre montar a lista e o modelo decidir chamar cabe uma revogação — e é justamente
+   * nesse intervalo que uma permissão retirada precisa valer. Vale para gravar ainda mais
+   * que para ler: uma leitura a mais é um vazamento, uma escrita a mais é um dado falso.
+   */
+  await putGrant(DONO, cena.store._id, { subjectType: 'agent', subjectId: cena.marina._id, capabilities: ['discover', 'query', 'insert'] }, DONO)
+  const gravar = (await databaseToolsFor({ accountId: DONO, agent: cena.marina })).find((t) => t.name === 'database_insert_rows')
+  await putGrant(DONO, cena.store._id, { subjectType: 'agent', subjectId: cena.marina._id, capabilities: ['discover', 'query'] }, DONO)
+
+  const r = await gravar.run({ databaseId: cena.store._id.toString(), datasetKey: 'ordens', rows: [{ ticker: 'XPTO', preco: 1 }] })
+  assert.equal(r.ok, false)
+  assert.match(r.result, /sem_permissao/)
+  const lido = await runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: { filter: { field: 'ticker', op: 'eq', value: 'XPTO' } } })
+  assert.equal(lido.rows.length, 0, 'gravou apesar da recusa')
+})
+
+test('AMEAÇA: uma linha fora do schema é recusada COM o motivo', async () => {
+  // Recusar em silêncio faria o modelo repetir a mesma linha errada até acabar o orçamento.
+  await putGrant(DONO, cena.store._id, { subjectType: 'agent', subjectId: cena.marina._id, capabilities: ['discover', 'query', 'insert'] }, DONO)
+  const gravar = (await databaseToolsFor({ accountId: DONO, agent: cena.marina })).find((t) => t.name === 'database_insert_rows')
+  const r = await gravar.run({ databaseId: cena.store._id.toString(), datasetKey: 'ordens', rows: [{ preco: 1 }] })
+  assert.equal(r.ok, false)
+  assert.match(r.result, /obrigat/i)
+})
