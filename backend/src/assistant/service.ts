@@ -367,6 +367,9 @@ async function runTurn(
   const repetido = doDono.length > 1 && ehRepeticaoSemEfeito(doDono[doDono.length - 1], doDono.slice(0, -1), mudancas)
   const resumo = resumoDaMudanca(mudancas, [...(compilado?.pending ?? []), ...(compiladoV2?.pending ?? [])], { repetido })
   const textoFinal = resumo ? `${turno.assistantText}\n\n${resumo}` : turno.assistantText
+  // O "já volto" some quando a resposta de verdade chega: ele existia só para o caso de ela
+  // não chegar. Deixá-lo ali gasta um turno da conversa dizendo o que o próximo turno diz.
+  await repo.clearProvisionalMessages(ownerId, projeto._id).catch(() => undefined)
   await repo.appendMessage(ownerId, projeto._id, 'assistant', textoFinal)
 
   // Os avisos do conserto entram JUNTO dos do modelo: quem lê a proposta lê tudo num

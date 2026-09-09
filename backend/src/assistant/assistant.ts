@@ -297,8 +297,20 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
    * e o campo bloqueado: a pessoa não conseguia nem continuar a conversa nem abrir o projeto.
    * Montar a proposta é o próximo passo, dentro do projeto, e ele tem estado próprio.
    */
+  /**
+   * O "JÁ VOLTO" — e por que ele é PROVISÓRIO.
+   *
+   * Ele ecoava o TÍTULO do projeto, que é cortado em 60 caracteres: a pessoa lia de volta a
+   * própria frase truncada no meio ("…que registre e salve o valo…"), o que parece defeito
+   * antes de parecer resposta. E a montagem de verdade chega segundos depois, então o aviso
+   * ficava para sempre entre o pedido e a resposta, ocupando um turno sem dizer nada.
+   *
+   * Ele continua sendo gravado porque a montagem pode falhar, e um pedido sem nenhuma
+   * resposta parece que o Assistente ignorou. Mas nasce marcado: quando a resposta real for
+   * gravada, ele sai.
+   */
   const resposta = maskSecretsDeep(
-    `Entendi: ${tituloDe(intent.objective)}. Vou montar isso com você aqui mesmo — quando a proposta estiver de pé eu te mostro. Nada é aplicado sem a sua aprovação.`,
+    'Abri a conversa desta operação. Estou montando a proposta agora — nada é criado nem aplicado sem a sua aprovação.',
   ) as string
   /**
    * A RESPOSTA também é gravada.
@@ -307,7 +319,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
    * pedido e nenhuma resposta, como se o Assistente tivesse ignorado. Uma conversa pela
    * metade é pior que nenhuma, porque parece um defeito.
    */
-  await appendMessage(input.ownerId, projeto._id, 'assistant', resposta).catch(() => undefined)
+  await appendMessage(input.ownerId, projeto._id, 'assistant', resposta, { provisional: true }).catch(() => undefined)
   return {
     intent,
     phase: 'done',

@@ -101,7 +101,8 @@ test('PROPOR é o único modo que cria projeto', async () => {
   // que nunca resolvia, e o campo bloqueado.
   assert.equal(r.phase, 'done')
   assert.equal(await projetos(), 1)
-  assert.match(r.text, /nada é aplicado sem a sua aprovação/i)
+  // A GARANTIA, e não a redação: nada acontece sem aprovação.
+  assert.match(r.text, /nada é (criado nem )?aplicado sem a sua aprovação/i)
 
   /**
    * O PROJETO É A CASA DA CONVERSA, e não uma proposta pronta.
@@ -453,4 +454,46 @@ test('AMEAÇA: o agente de OUTRA conta não é descrito', async () => {
     ask: provedorQueResponde({ mode: 'explain', question: 'o que ele faz?' }),
   })
   assert.equal(/Segredo|Alheio/.test(r.text), false, 'descrever o agente do vizinho é vazamento')
+})
+
+// --- O "JÁ VOLTO" NÃO OCUPA UM TURNO DA CONVERSA ---------------------------------------------
+//
+// Do banco real do dono, a primeira troca inteira:
+//
+//   ele:  "então tem como criar um agente ou uma ferramenta para salvar o valor mínimo e
+//          máximo de bitcoin em um intervalo de 5 minutos?"
+//   ele:  "Entendi: criar um agente ou ferramenta que registre e salve o valo…"
+//
+// Duas coisas erradas numa frase só: ela devolvia o TÍTULO do projeto, que é cortado em 60
+// caracteres, então ele lia a própria frase truncada no meio; e a proposta de verdade chegava
+// segundos depois, deixando esse aviso para sempre entre o pedido e a resposta.
+
+test('a primeira resposta não devolve a frase da pessoa cortada no meio', async () => {
+  const r = await assistente.runAssistantTurn({
+    ownerId: DONO,
+    message: 'então tem como criar um agente ou uma ferramenta para salvar o valor mínimo e máximo de bitcoin em um intervalo de 5 minutos?',
+  })
+  assert.equal(r.intent.mode, 'propose')
+  assert.doesNotMatch(r.text, /…/, 'reticências de corte no meio da frase parecem defeito, não resposta')
+  assert.doesNotMatch(r.text, /Entendi:/, 'ecoar o pedido não é responder')
+  // Ela ainda diz o que está acontecendo e o que NÃO acontece sem aprovação.
+  assert.match(r.text, /aprova/i)
+})
+
+test('ACEITAÇÃO: o "já volto" é gravado, e sai quando a resposta de verdade chega', async () => {
+  const r = await assistente.runAssistantTurn({ ownerId: DONO, message: 'Automatize atendimento e reservas pelo WhatsApp' })
+  const projectId = new ObjectId(r.projectId)
+
+  // Fica gravado: se a montagem falhar, um pedido sem nenhuma resposta parece que o
+  // Assistente ignorou.
+  const antes = await db.collection('assistant_messages').find({ projectId }).sort({ createdAt: 1 }).toArray()
+  assert.equal(antes.at(-1).role, 'assistant')
+  assert.equal(antes.at(-1).provisional, true, 'ele nasce marcado — não é uma resposta, é um aviso')
+
+  const { clearProvisionalMessages } = await import('../dist/assistant/repository.js')
+  await clearProvisionalMessages(DONO, projectId)
+
+  const depois = await db.collection('assistant_messages').find({ projectId }).toArray()
+  assert.equal(depois.some((m) => m.provisional), false, 'ele tem de sair, e não acumular')
+  assert.equal(depois.some((m) => m.role === 'user'), true, 'o pedido original continua lá')
 })
