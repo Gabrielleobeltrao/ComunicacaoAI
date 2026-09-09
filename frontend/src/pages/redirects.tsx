@@ -47,19 +47,36 @@ export function LegacyChannelRedirect({ to, whatsappTo }: { to: string; whatsapp
 }
 
 /**
- * As rotas antigas do Arquiteto — e a query que elas carregam.
+ * As rotas antigas do Assistente — e a query que elas carregam.
  *
- * `/architect/new` redirecionava com `<Navigate to="/architect">` fixo, o que DESCARTA a query.
+ * `/assistant/new` redirecionava com `<Navigate to="/assistant">` fixo, o que DESCARTA a query.
  * Um favorito com `?objetivo=…` — que é exatamente o que o botão "Montar operação" do chat
  * produz — chegava do outro lado com o campo vazio, e a pessoa redigitava sem entender por quê.
  *
- * A rota canônica é `/architect`, que pertence ao Arquiteto e sempre pertenceu. O que muda aqui
+ * A rota canônica é `/assistant`, que pertence ao Assistente e sempre pertenceu. O que muda aqui
  * é só isto: o que veio junto continua vindo.
  */
-export function ArchitectLegacyRedirect() {
+/**
+ * /architect — o endereço que o Assistente tinha quando se chamava Arquiteto.
+ *
+ * O nome mudou porque o que ele faz mudou: ele deixou de só desenhar operações e passou a
+ * apagar, editar e responder sobre o que existe. O caminho antigo continua chegando — quem
+ * salvou o link de um projeto não pode encontrar 404 por causa de uma decisão de nome
+ * nossa. O `projectId` vai junto: redirecionar para a lista perderia o projeto que a pessoa
+ * queria abrir.
+ */
+export function RotaAntigaDoAssistente() {
+  const { projectId } = useParams<{ projectId?: string }>()
   const [params] = useSearchParams()
   const query = params.toString()
-  return <Navigate to={query ? `/architect?${query}` : '/architect'} replace />
+  const destino = projectId ? `/assistant/${projectId}` : '/assistant'
+  return <Navigate to={query ? `${destino}?${query}` : destino} replace />
+}
+
+export function AssistantLegacyRedirect() {
+  const [params] = useSearchParams()
+  const query = params.toString()
+  return <Navigate to={query ? `/assistant?${query}` : '/assistant'} replace />
 }
 
 /**

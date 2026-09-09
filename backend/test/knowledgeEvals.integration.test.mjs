@@ -17,7 +17,7 @@ process.env.VOYAGE_API_KEY = ''
 const { mongoClient, db } = await import('../dist/db.js')
 const { ensureKnowledgeIndexes, createDocumentFor } = await import('../dist/knowledge.js')
 const { runContextEvals, compareRuns } = await import('../dist/knowledgeEvals.js')
-const { cleanupMigratedMemories, migrateArchitectKnowledge, ensureKnowledgeMigrationIndexes, auditArchitectMemoryMigration } = await import('../dist/knowledgeMigration.js')
+const { cleanupMigratedMemories, migrateAssistantKnowledge, ensureKnowledgeMigrationIndexes, auditAssistantMemoryMigration } = await import('../dist/knowledgeMigration.js')
 const { ensureContextManifestIndexes } = await import('../dist/contextManifest.js')
 const { ensureKnowledgeGapIndexes } = await import('../dist/knowledgeGaps.js')
 const { ensureKnowledgeConflictIndexes } = await import('../dist/knowledgeConflicts.js')
@@ -132,19 +132,19 @@ test('vazamento na expansão REPROVA a flag, mesmo acertando mais', () => {
 
 // --- a limpeza -----------------------------------------------------------------------------
 
-const memoriaDoArquiteto = (titulo, conteudo) =>
+const memoriaDoAssistente = (titulo, conteudo) =>
   writeMemory({
     tenantId: DONO,
     target: { scope: 'floor', floorId: cena.andar._id },
-    key: `arquiteto:${titulo}`,
+    key: `assistente:${titulo}`,
     payload: { titulo, conteudo },
     strategy: 'upsert',
-    sourceType: 'architect',
+    sourceType: 'assistant',
   })
 
 test('a limpeza é SIMULAÇÃO por padrão — e não apaga nada', async () => {
-  await memoriaDoArquiteto('Horários', 'Aberto das 11h às 23h')
-  await migrateArchitectKnowledge({ tenantId: DONO })
+  await memoriaDoAssistente('Horários', 'Aberto das 11h às 23h')
+  await migrateAssistantKnowledge({ tenantId: DONO })
 
   const simulacao = await cleanupMigratedMemories(DONO)
   assert.equal(simulacao.dryRun, true)
@@ -154,9 +154,9 @@ test('a limpeza é SIMULAÇÃO por padrão — e não apaga nada', async () => {
 })
 
 test('com confirmação, só sai o que tem cópia conferida NA HORA', async () => {
-  await memoriaDoArquiteto('Horários', 'Aberto das 11h às 23h')
-  await memoriaDoArquiteto('Cardápio', 'Pizza 40 reais')
-  await migrateArchitectKnowledge({ tenantId: DONO })
+  await memoriaDoAssistente('Horários', 'Aberto das 11h às 23h')
+  await memoriaDoAssistente('Cardápio', 'Pizza 40 reais')
+  await migrateAssistantKnowledge({ tenantId: DONO })
 
   // Alguém apagou UM dos documentos depois de migrado: aquela memória volta a ser a
   // única cópia que resta, e não pode sair.
@@ -170,9 +170,9 @@ test('com confirmação, só sai o que tem cópia conferida NA HORA', async () =
 })
 
 test('a limpeza é retomável: rodar de novo termina o que faltou', async () => {
-  await memoriaDoArquiteto('A', 'texto A')
-  await memoriaDoArquiteto('B', 'texto B')
-  await migrateArchitectKnowledge({ tenantId: DONO })
+  await memoriaDoAssistente('A', 'texto A')
+  await memoriaDoAssistente('B', 'texto B')
+  await migrateAssistantKnowledge({ tenantId: DONO })
 
   const docs = await db.collection('knowledge_documents').find({}).toArray()
   const removido = docs[0]
@@ -188,10 +188,10 @@ test('a limpeza é retomável: rodar de novo termina o que faltou', async () => 
 })
 
 test('nada é apagado automaticamente em lugar nenhum', async () => {
-  await memoriaDoArquiteto('Horários', 'Aberto das 11h às 23h')
-  await migrateArchitectKnowledge({ tenantId: DONO })
-  await migrateArchitectKnowledge({ tenantId: DONO })
-  await auditArchitectMemoryMigration(DONO)
-  await auditArchitectMemoryMigration(DONO)
+  await memoriaDoAssistente('Horários', 'Aberto das 11h às 23h')
+  await migrateAssistantKnowledge({ tenantId: DONO })
+  await migrateAssistantKnowledge({ tenantId: DONO })
+  await auditAssistantMemoryMigration(DONO)
+  await auditAssistantMemoryMigration(DONO)
   assert.equal(await db.collection('memories').countDocuments({ tenantId: DONO }), 1, 'só o comando explícito apaga')
 })

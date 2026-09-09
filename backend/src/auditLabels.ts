@@ -27,7 +27,7 @@ const SOURCES: Partial<Record<AuditEntityType, { collection: string; field: stri
   routine: { collection: 'automations', field: 'name' },
   event_trigger: { collection: 'automations', field: 'name' },
   automation: { collection: 'automations', field: 'name' },
-  architect_project: { collection: 'architect_projects', field: 'title' },
+  assistant_project: { collection: 'assistant_projects', field: 'title' },
   // "Você pôs de plantão o monitor RSI sobrevendido" — o nome vem do próprio monitor.
   monitor: { collection: 'monitors', field: 'name' },
   extension: { collection: 'extension_packages', field: 'name' },

@@ -52,7 +52,7 @@ export interface ContextManifest {
   _id: ObjectId
   ownerId: string
   executionId: string
-  /** De onde veio esta execução: chat, playground, setor, rotina, canal, arquiteto. */
+  /** De onde veio esta execução: chat, playground, setor, rotina, canal, assistente. */
   executionKind: string
   agentId: ObjectId | null
   version: number

@@ -433,7 +433,7 @@ test('a flag desligada NEGA a rota', async () => {
 //
 // O agente sabia LER um Database e não sabia ESCREVER. Numa conversa real, o dono pediu
 // "todo fim de dia pegue o maior valor do bitcoin e grave numa base só com data e máximo",
-// e o Arquiteto respondeu que não dava — porque de fato não havia por onde gravar. A
+// e o Assistente respondeu que não dava — porque de fato não havia por onde gravar. A
 // operação inteira parava na metade: ele lia a série e não tinha onde pôr o resultado.
 //
 // A escrita é mais perigosa que a leitura, então ela carrega as mesmas três travas da

@@ -127,7 +127,7 @@ const ROUTER_PREFIX = {
   'routes/websocketRoutes.ts': '/api/websocket',
   'routes/realtimeSourceRoutes.ts': '/api/realtime-sources',
   'routes/dataHistoryRoutes.ts': '/api/data-history',
-  'routes/architectRoutes.ts': '/api/architect',
+  'routes/assistantRoutes.ts': '/api/assistant',
   'routes/knowledgeRoutes.ts': '/api/knowledge',
   'routes/knowledgeAccessRoutes.ts': '/api/agents/:agentId',
   'routes/resourceRoutes.ts': '/api/resources',

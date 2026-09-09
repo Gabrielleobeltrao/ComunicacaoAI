@@ -1,5 +1,5 @@
 import { ObjectId } from 'mongodb'
-import type { ArchitectStamp } from '../architectStamp.js'
+import type { AssistantStamp } from '../assistantStamp.js'
 import { resolveOwnedSectorId } from '../sectors.js'
 import { ensureDefaultBuilding, ValidationError } from '../building.js'
 import { encrypt } from '../crypto.js'
@@ -52,8 +52,8 @@ export interface CreateAutomationInput {
   description?: string
   definition?: AutomationDefinition
   agentId?: ObjectId // set when this automation is an agent routine
-  /** A marca do Arquiteto, quando foi ele que criou. Ver `architectStamp.ts`. */
-  architect?: ArchitectStamp
+  /** A marca do Assistente, quando foi ele que criou. Ver `assistantStamp.ts`. */
+  assistant?: AssistantStamp
 }
 
 export async function createAutomation(ownerId: string, input: CreateAutomationInput): Promise<Automation> {
@@ -69,7 +69,7 @@ export async function createAutomation(ownerId: string, input: CreateAutomationI
     buildingId: building._id,
     floorId,
     ...(input.agentId ? { agentId: input.agentId } : {}),
-    ...(input.architect ? { architect: input.architect } : {}),
+    ...(input.assistant ? { assistant: input.assistant } : {}),
     name,
     description: String(input.description ?? '').slice(0, 2000),
     status: 'draft',

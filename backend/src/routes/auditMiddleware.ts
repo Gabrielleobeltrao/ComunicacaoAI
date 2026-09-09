@@ -197,7 +197,7 @@ const RULES: Rule[] = [
   // Conferir um endereço e testar uma assinatura não mudam nada.
   R('POST', 'api/websocket/check-url', null),
   R('POST', 'api/websocket/subscriptions/:/test', null),
-  // --- Arquiteto do Escritório -------------------------------------------------------
+  // --- Assistente do Escritório -------------------------------------------------------
   // O que fica registrado é o que MUDA a conta: criar o projeto, editá-lo, aplicá-lo,
   // retomar e arquivar. A conversa não: ela é a fala da pessoa, e o log de auditoria
   // não é lugar de guardar conteúdo.
@@ -320,43 +320,43 @@ const RULES: Rule[] = [
   R('POST', 'api/databases/:/datasets/:/rows', { entityType: 'database', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/databases/:/datasets/:/query', null, { why: 'read, not a change' }),
 
-  R('POST', 'api/architect/projects', { entityType: 'architect_project', action: 'create' }),
-  R('PATCH', 'api/architect/projects/:', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
-  R('PATCH', 'api/architect/projects/:/links', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/assistant/projects', { entityType: 'assistant_project', action: 'create' }),
+  R('PATCH', 'api/assistant/projects/:', { entityType: 'assistant_project', action: 'update' }, { idAt: 3 }),
+  R('PATCH', 'api/assistant/projects/:/links', { entityType: 'assistant_project', action: 'update' }, { idAt: 3 }),
   // Correção à mão na proposta: muda o plano que a confirmação vai aplicar, e por isso
   // entra no registro como qualquer outra alteração do projeto.
-  R('PATCH', 'api/architect/projects/:/blueprint', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  R('PATCH', 'api/assistant/projects/:/blueprint', { entityType: 'assistant_project', action: 'update' }, { idAt: 3 }),
   // Trocar a camada muda o que vai ser escrito no escritório: é uma revisão da proposta.
-  R('PATCH', 'api/architect/projects/:/layer', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  R('PATCH', 'api/assistant/projects/:/layer', { entityType: 'assistant_project', action: 'update' }, { idAt: 3 }),
   // O entendimento do negócio corrigido à mão: muda o que a proposta seguinte assume.
-  R('PATCH', 'api/architect/projects/:/brief', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
-  R('POST', 'api/architect/projects/:/archive', { entityType: 'architect_project', action: 'archive' }, { idAt: 3 }),
+  R('PATCH', 'api/assistant/projects/:/brief', { entityType: 'assistant_project', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/assistant/projects/:/archive', { entityType: 'assistant_project', action: 'archive' }, { idAt: 3 }),
   // Apagar a CONVERSA. O que ela criou continua de pé — ver `deleteProject`.
-  R('DELETE', 'api/architect/projects/:', { entityType: 'architect_project', action: 'delete' }, { idAt: 3 }),
+  R('DELETE', 'api/assistant/projects/:', { entityType: 'assistant_project', action: 'delete' }, { idAt: 3 }),
   // Conversar não é auditado: é a fala da pessoa, e o log não guarda conteúdo. Gerar e
   // revisar, sim — os dois mudam a PROPOSTA, que é o que vai ser aplicado, e sem eles
   // no log não dá para contar a história de como o projeto chegou onde chegou. O que
   // fica registrado é a ação e o projeto; nunca o prompt, a conversa ou o blueprint.
-  R('POST', 'api/architect/projects/:/messages', null, { why: 'conversation traffic' }),
+  R('POST', 'api/assistant/projects/:/messages', null, { why: 'conversation traffic' }),
   // A rodada do assistente é conversa: responder e explicar não mudam nada. Quando ela vira
   // proposta, quem registra a criação é o próprio `POST /projects`, chamado por dentro — e
   // registrar aqui também contaria a mesma criação duas vezes.
-  R('POST', 'api/architect/assistant/turn', null, { why: 'conversation traffic' }),
+  R('POST', 'api/assistant/assistant/turn', null, { why: 'conversation traffic' }),
   // A confirmação de uma escrita preparada pelo chat registra a si mesma, com o resultado —
   // inclusive a recusa por hash vencido, que é justamente o que alguém vai querer investigar.
-  R('POST', 'api/architect/assistant/confirm', null, { why: 'audita a si mesma, com o desfecho' }),
-  R('POST', 'api/architect/projects/:/turn', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
-  R('POST', 'api/architect/projects/:/generate', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
-  R('POST', 'api/architect/projects/:/validate', { entityType: 'architect_project', action: 'test' }, { idAt: 3 }),
+  R('POST', 'api/assistant/assistant/confirm', null, { why: 'audita a si mesma, com o desfecho' }),
+  R('POST', 'api/assistant/projects/:/turn', { entityType: 'assistant_project', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/assistant/projects/:/generate', { entityType: 'assistant_project', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/assistant/projects/:/validate', { entityType: 'assistant_project', action: 'test' }, { idAt: 3 }),
   // Marcar um item da checklist é anotação do dono sobre o próprio projeto.
-  R('PATCH', 'api/architect/projects/:/checklist/:', null, { why: 'owner note on the project' }),
+  R('PATCH', 'api/assistant/projects/:/checklist/:', null, { why: 'owner note on the project' }),
   // Aplicar é a mudança real: é aqui que andares, agentes e setores passam a existir.
   // Cada um deles também é auditado como ele mesmo, pelo caminho de sempre.
-  R('POST', 'api/architect/projects/:/apply', { entityType: 'architect_project', action: 'publish' }, { idAt: 3 }),
-  R('POST', 'api/architect/projects/:/resume', { entityType: 'architect_project', action: 'publish' }, { idAt: 3 }),
-  R('POST', 'api/architect/projects/:/rollback', { entityType: 'architect_project', action: 'delete' }, { idAt: 3 }),
+  R('POST', 'api/assistant/projects/:/apply', { entityType: 'assistant_project', action: 'publish' }, { idAt: 3 }),
+  R('POST', 'api/assistant/projects/:/resume', { entityType: 'assistant_project', action: 'publish' }, { idAt: 3 }),
+  R('POST', 'api/assistant/projects/:/rollback', { entityType: 'assistant_project', action: 'delete' }, { idAt: 3 }),
   // Reconferir a checklist é leitura do estado real.
-  R('POST', 'api/architect/projects/:/recheck', null, { why: 'read-only check' }),
+  R('POST', 'api/assistant/projects/:/recheck', null, { why: 'read-only check' }),
 
   // Granting or revoking an App on an agent changes what that agent may do.
   R('PATCH', 'api/agents/:/app-grants', { entityType: 'agent', action: 'update' }, { idAt: 2 }),

@@ -29,8 +29,8 @@
           "resumo": "A estrutura do escritório, e os três mecanismos de dados que o sistema separa de propósito."
         },
         {
-          "slug": "arquiteto",
-          "titulo": "O Arquiteto e o Blueprint",
+          "slug": "assistente",
+          "titulo": "O Assistente e o Blueprint",
           "resumo": "Como uma operação inteira é montada em conversa, com prévia, confirmação e reversão."
         }
       ]

@@ -1,4 +1,4 @@
-// TEMPLATE — um blueprint congelado, aplicado pelo Arquiteto que já existe.
+// TEMPLATE — um blueprint congelado, aplicado pelo Assistente que já existe.
 //
 // Instalar um template não pode criar nada no escritório por conta própria: o efeito
 // passa pela prévia, pelo diff e pela aprovação de sempre. E o que ele traz é FORMA —
@@ -58,7 +58,7 @@ after(async () => {
 })
 
 beforeEach(async () => {
-  for (const c of ['extension_packages', 'extension_versions', 'extension_installations', 'architect_projects', 'offices', 'agents', 'buildings'])
+  for (const c of ['extension_packages', 'extension_versions', 'extension_installations', 'assistant_projects', 'offices', 'agents', 'buildings'])
     await db.collection(c).deleteMany({})
 })
 
@@ -117,7 +117,7 @@ test('template que não é blueprint válido não publica', async () => {
 
 // --- a instalação -------------------------------------------------------------------------
 
-test('instalar um template NÃO cria nada no escritório — ele abre a prévia do Arquiteto', async () => {
+test('instalar um template NÃO cria nada no escritório — ele abre a prévia do Assistente', async () => {
   const p = await publicado()
   const r = await tpl.installTemplate(QUEM_INSTALA, p._id)
 
@@ -135,9 +135,9 @@ test('instalar um template NÃO cria nada no escritório — ele abre a prévia 
 test('o projeto criado é de QUEM INSTALA, e não do autor', async () => {
   const p = await publicado()
   const r = await tpl.installTemplate(QUEM_INSTALA, p._id)
-  const projeto = await db.collection('architect_projects').findOne({ _id: r.project._id })
+  const projeto = await db.collection('assistant_projects').findOne({ _id: r.project._id })
   assert.equal(projeto.ownerId, QUEM_INSTALA)
-  assert.equal(await db.collection('architect_projects').countDocuments({ ownerId: AUTOR }), 0)
+  assert.equal(await db.collection('assistant_projects').countDocuments({ ownerId: AUTOR }), 0)
 })
 
 test('um pacote que não é template não instala por este caminho', async () => {
@@ -156,7 +156,7 @@ test('instalar duas vezes não cria dois projetos: a instalação é única por 
   const p = await publicado(BLUEPRINT, 'duas-vezes')
   await tpl.installTemplate(QUEM_INSTALA, p._id)
   await assert.rejects(() => tpl.installTemplate(QUEM_INSTALA, p._id), /já está instalado/)
-  assert.equal(await db.collection('architect_projects').countDocuments({ ownerId: QUEM_INSTALA }), 1)
+  assert.equal(await db.collection('assistant_projects').countDocuments({ ownerId: QUEM_INSTALA }), 1)
 })
 
 // --- o template como proposta V2 -----------------------------------------------------------
@@ -165,21 +165,21 @@ test('instalar duas vezes não cria dois projetos: a instalação é única por 
 // conversão preserva `key` e `resourceId`, e o que o V1 não diz ela não inventa.
 
 test('DESLIGADA: o template continua chegando como proposta V1', async () => {
-  process.env.ARCHITECT_BLUEPRINT_V2 = '0'
+  process.env.ASSISTANT_BLUEPRINT_V2 = '0'
   const p = await publicado(BLUEPRINT, 'v1-puro')
   const r = await tpl.installTemplate(QUEM_INSTALA, p._id)
-  const projeto = await db.collection('architect_projects').findOne({ _id: r.project._id })
+  const projeto = await db.collection('assistant_projects').findOne({ _id: r.project._id })
   assert.equal(projeto.blueprintV2, undefined)
   assert.equal(projeto.blueprintVersion, 1)
-  delete process.env.ARCHITECT_BLUEPRINT_V2
+  delete process.env.ASSISTANT_BLUEPRINT_V2
 })
 
 test('LIGADA: o template vira proposta V2 preservando as `key`s', async () => {
-  process.env.ARCHITECT_BLUEPRINT_V2 = '1'
+  process.env.ASSISTANT_BLUEPRINT_V2 = '1'
   try {
     const p = await publicado(BLUEPRINT, 'convertido')
     const r = await tpl.installTemplate(QUEM_INSTALA, p._id)
-    const projeto = await db.collection('architect_projects').findOne({ _id: r.project._id })
+    const projeto = await db.collection('assistant_projects').findOne({ _id: r.project._id })
 
     assert.equal(projeto.blueprintVersion, 2)
     assert.equal(projeto.blueprintV2.version, 2)
@@ -197,20 +197,20 @@ test('LIGADA: o template vira proposta V2 preservando as `key`s', async () => {
     assert.equal(projeto.status, 'draft')
     assert.equal(await db.collection('agents').countDocuments({ ownerId: QUEM_INSTALA }), 0)
   } finally {
-    delete process.env.ARCHITECT_BLUEPRINT_V2
+    delete process.env.ASSISTANT_BLUEPRINT_V2
   }
 })
 
 test('LIGADA: o hash cobre os dois planos', async () => {
-  process.env.ARCHITECT_BLUEPRINT_V2 = '1'
+  process.env.ASSISTANT_BLUEPRINT_V2 = '1'
   try {
     const p = await publicado(BLUEPRINT, 'hash-dos-dois')
     const r = await tpl.installTemplate(QUEM_INSTALA, p._id)
-    const { computeBlueprintHash } = await import('../dist/architect/blueprint.js')
-    const projeto = await db.collection('architect_projects').findOne({ _id: r.project._id })
+    const { computeBlueprintHash } = await import('../dist/assistant/blueprint.js')
+    const projeto = await db.collection('assistant_projects').findOne({ _id: r.project._id })
     assert.equal(projeto.blueprintHash, computeBlueprintHash(projeto.blueprint, projeto.blueprintV2))
     assert.notEqual(projeto.blueprintHash, computeBlueprintHash(projeto.blueprint))
   } finally {
-    delete process.env.ARCHITECT_BLUEPRINT_V2
+    delete process.env.ASSISTANT_BLUEPRINT_V2
   }
 })

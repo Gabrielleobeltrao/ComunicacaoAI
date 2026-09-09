@@ -7,7 +7,7 @@ import type { KnowledgeOwner } from './knowledge.js'
 
 // A MUDANÇA DE CASA do conhecimento de andar e prédio.
 //
-// Enquanto a base aceitava só `agent` e `sector`, o que o Arquiteto gravava para um
+// Enquanto a base aceitava só `agent` e `sector`, o que o Assistente gravava para um
 // andar ou para o prédio caía na memória determinística — um registro com chave, ao
 // lado de fatos de execução. Ele existia, mas não era encontrado por busca semântica e
 // não aparecia em base nenhuma. Agora que os quatro escopos têm dono, esses itens
@@ -43,7 +43,7 @@ const memories = db.collection('memories')
 const documentsCollection = db.collection('knowledge_documents')
 const migrations = db.collection<MigrationRecord>('knowledge_migrations')
 
-export const MIGRATION_SOURCE = 'architect-memory'
+export const MIGRATION_SOURCE = 'assistant-memory'
 
 /** A marca estável desta cópia. Deriva do id do registro — não do título, que muda. */
 export const sourceRefFor = (memoryId: ObjectId): string => `memory:${memoryId.toString()}`
@@ -60,14 +60,14 @@ export interface MigrationResult {
   errors: { memoryId: string; error: string }[]
 }
 
-/** O texto de um payload de memória do Arquiteto: `{ titulo, conteudo }`. */
+/** O texto de um payload de memória do Assistente: `{ titulo, conteudo }`. */
 function textoDe(payload: unknown): { title: string; content: string } | null {
   if (!payload || typeof payload !== 'object') return null
   const p = payload as Record<string, unknown>
   const content = typeof p.conteudo === 'string' ? p.conteudo : typeof p.content === 'string' ? p.content : ''
   const title = typeof p.titulo === 'string' ? p.titulo : typeof p.title === 'string' ? p.title : ''
   if (!content.trim()) return null
-  return { title: title.trim() || 'Conhecimento do Arquiteto', content }
+  return { title: title.trim() || 'Conhecimento do Assistente', content }
 }
 
 /**
@@ -93,15 +93,15 @@ async function donoDe(registro: Record<string, unknown>): Promise<KnowledgeOwner
 }
 
 /**
- * Copia para a base canônica o conhecimento de andar/prédio que o Arquiteto gravou.
+ * Copia para a base canônica o conhecimento de andar/prédio que o Assistente gravou.
  *
  * `tenantId` opcional: sem ele, roda para a instalação inteira (é o script de migração);
  * com ele, para uma conta só (é o que o teste exercita e o que uma reexecução dirigida
  * usaria).
  */
-export async function migrateArchitectKnowledge(opts: { tenantId?: string; limit?: number } = {}): Promise<MigrationResult> {
+export async function migrateAssistantKnowledge(opts: { tenantId?: string; limit?: number } = {}): Promise<MigrationResult> {
   const filtro: Record<string, unknown> = {
-    sourceType: 'architect',
+    sourceType: 'assistant',
     scope: { $in: ['floor', 'building'] },
     ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
   }
@@ -181,7 +181,7 @@ export const listMigrationRecords = (tenantId: string) => migrations.find({ tena
 // passada é apostar que a cópia deu certo, e uma aposta dessas só é descoberta quando
 // alguém procura o texto e ele não está em lugar nenhum.
 //
-// O que existe aqui é a CONFERÊNCIA: para cada memória do Arquiteto, onde ela foi parar,
+// O que existe aqui é a CONFERÊNCIA: para cada memória do Assistente, onde ela foi parar,
 // se a cópia está lá para ser lida, e se o conteúdo bate. Nada é removido — nem por esta
 // função, nem por engano: ela não escreve.
 
@@ -221,8 +221,8 @@ export interface MigrationAudit {
  * depois — alguém pode tê-lo apagado, e nesse caso a memória original é a única cópia
  * que resta.
  */
-export async function auditArchitectMemoryMigration(tenantId: string): Promise<MigrationAudit> {
-  const registros = await memories.find({ tenantId, sourceType: 'architect', scope: { $in: ['floor', 'building'] } }).toArray()
+export async function auditAssistantMemoryMigration(tenantId: string): Promise<MigrationAudit> {
+  const registros = await memories.find({ tenantId, sourceType: 'assistant', scope: { $in: ['floor', 'building'] } }).toArray()
   const items: MigrationAuditItem[] = []
 
   for (const registro of registros) {
@@ -294,7 +294,7 @@ export interface CleanupResult {
 }
 
 export async function cleanupMigratedMemories(tenantId: string, opts: { confirm?: boolean; limit?: number } = {}): Promise<CleanupResult> {
-  const auditoria = await auditArchitectMemoryMigration(tenantId)
+  const auditoria = await auditAssistantMemoryMigration(tenantId)
   const candidatos = auditoria.items.filter((i) => i.safeToClean).slice(0, opts.limit ?? 1000)
   const fora: CleanupResult = { dryRun: !opts.confirm, eligible: candidatos.length, deleted: 0, skipped: [] }
 

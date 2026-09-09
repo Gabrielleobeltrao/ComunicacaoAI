@@ -66,7 +66,7 @@ export async function askAux(): Promise<string> {
 /**
  * O dublê da chamada estruturada.
  *
- * Devolve uma resposta DETERMINÍSTICA e válida para o Arquiteto quando o prompt é
+ * Devolve uma resposta DETERMINÍSTICA e válida para o Assistente quando o prompt é
  * dele, e vazio para o resto — o mesmo contrato de `askAux`. É isto que permite a
  * jornada inteira (perguntar, propor, aplicar) rodar no teste sem chave, sem rede e
  * sem depender do que um modelo resolveu responder naquele dia.
@@ -95,9 +95,9 @@ function respostaDoDuble(prompt: string): string {
       return ''
     }
   }
-  if (prompt.includes(INTENT_MARKER)) return architectIntent(prompt)
-  if (prompt.includes(CRITIQUE_MARKER)) return architectCritique()
-  return prompt.includes(ARCHITECT_MARKER) ? architectTurn(prompt) : ''
+  if (prompt.includes(INTENT_MARKER)) return assistantIntent(prompt)
+  if (prompt.includes(CRITIQUE_MARKER)) return assistantCritique()
+  return prompt.includes(ASSISTANT_MARKER) ? assistantTurn(prompt) : ''
 }
 
 /**
@@ -107,7 +107,7 @@ function respostaDoDuble(prompt: string): string {
  * outro não é o que faz a cadeia existir — um dado que chega continuamente, uma condição
  * sobre esse dado, e um limiar.
  */
-function architectTurnVigilancia(prompt: string): string {
+function assistantTurnVigilancia(prompt: string): string {
   const jaPerguntou = prompt.includes('cadencia-da-vigilancia')
   if (!jaPerguntou) {
     return JSON.stringify({
@@ -181,14 +181,14 @@ function architectTurnVigilancia(prompt: string): string {
   })
 }
 
-/** A marca que o prompt do Arquiteto carrega. Ver `architect/prompt.ts`. */
-export const ARCHITECT_MARKER = '[[ARQUITETO_V1]]'
+/** A marca que o prompt do Assistente carrega. Ver `assistant/prompt.ts`. */
+export const ASSISTANT_MARKER = '[[ASSISTENTE_V1]]'
 
-/** A do crítico auxiliar. Ver `architect/criticLlm.ts`. */
-export const CRITIQUE_MARKER = '[[ARQUITETO_CRITICA_V1]]'
+/** A do crítico auxiliar. Ver `assistant/criticLlm.ts`. */
+export const CRITIQUE_MARKER = '[[ASSISTENTE_CRITICA_V1]]'
 
-/** A do roteador de intenção. Ver `architect/classifyIntent.ts`. */
-export const INTENT_MARKER = '[[ARQUITETO_INTENCAO_V1]]'
+/** A do roteador de intenção. Ver `assistant/classifyIntent.ts`. */
+export const INTENT_MARKER = '[[ASSISTENTE_INTENCAO_V1]]'
 
 /**
  * A classificação do dublê — por forma da frase, sempre igual.
@@ -198,7 +198,7 @@ export const INTENT_MARKER = '[[ARQUITETO_INTENCAO_V1]]'
  * regras aqui são grosseiras de propósito — quem precisa acertar de verdade é o modelo, e
  * quem protege contra o erro dele é `parseIntent`.
  */
-function architectIntent(prompt: string): string {
+function assistantIntent(prompt: string): string {
   const msg = (/Mensagem: "([\s\S]*)"\s*$/.exec(prompt)?.[1] ?? '').toLowerCase()
   if (/\b(observe|monitore|acompanhe|me avise|vigie|automatize|crie|monte|adicione)\b/.test(msg)) {
     return JSON.stringify({ mode: 'propose', changeKind: /\b(adicione|expanda|também)\b/.test(msg) ? 'expand' : 'create', objective: msg.slice(0, 200) })
@@ -220,7 +220,7 @@ function architectIntent(prompt: string): string {
  * Sem `agentKey` de propósito — o desenho é compilado, e um dublê que fixasse uma
  * chave passaria a testar o compilador em vez do caminho do crítico.
  */
-function architectCritique(): string {
+function assistantCritique(): string {
   return JSON.stringify({
     findings: [
       {
@@ -240,7 +240,7 @@ function architectCritique(): string {
  * feita, é hora de propor. Nada de contador escondido: o teste consegue reproduzir a
  * jornada mandando as mensagens na ordem.
  */
-function architectTurn(prompt: string): string {
+function assistantTurn(prompt: string): string {
   /**
    * O dublê responde ao QUE FOI PEDIDO — e não a um roteiro fixo.
    *
@@ -257,7 +257,7 @@ function architectTurn(prompt: string): string {
    * na vigilância assim que a função entrou no manifesto: o dublê passava a responder ao
    * texto do sistema em vez de responder à pessoa.
    */
-  if (/cxse3/i.test(prompt)) return architectTurnVigilancia(prompt)
+  if (/cxse3/i.test(prompt)) return assistantTurnVigilancia(prompt)
   const jaPerguntou = prompt.includes('canais-de-atendimento')
   if (!jaPerguntou) {
     return JSON.stringify({

@@ -16,12 +16,12 @@ muito tempo.
 
 ## 3. Montar a operação em conversa
 
-Abra o Arquiteto pelo botão flutuante e descreva o que você precisa, em português:
+Abra o Assistente pelo botão flutuante e descreva o que você precisa, em português:
 
 > Quero um time de atendimento que responda dúvidas sobre entrega e devolução, com base
 > na nossa política de trocas, e que me avise quando alguém pedir reembolso.
 
-O Arquiteto **não cria nada ainda**. Ele monta uma proposta com setores, agentes,
+O Assistente **não cria nada ainda**. Ele monta uma proposta com setores, agentes,
 responsabilidades, conhecimento e monitores, e mostra a prévia. Você lê, ajusta o que
 estiver errado e só então confirma. Depois de aplicada, a operação pode ser desfeita.
 

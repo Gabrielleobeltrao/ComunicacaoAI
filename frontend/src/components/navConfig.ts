@@ -36,12 +36,12 @@ export const NAV_V2: NavItemDef[] = [
    *
    * Ela viveu na navegação porque parecia um lugar: uma tela com endereço próprio, ao lado de
    * Agentes e Setores. Só que ela não é um produto irmão desses — é um MODO DE TRABALHO do
-   * Arquiteto, o mesmo assistente que responde no chat flutuante. Listada aqui, ela fazia
-   * "Arquiteto", "Blueprint" e "Montar operação" parecerem três coisas diferentes, e a pessoa
+   * Assistente, o mesmo assistente que responde no chat flutuante. Listada aqui, ela fazia
+   * "Assistente", "Blueprint" e "Montar operação" parecerem três coisas diferentes, e a pessoa
    * tinha que descobrir sozinha que eram a mesma.
    *
    * A porta agora é uma só e está onde a conversa acontece: o botão "Montar operação" dentro do
-   * chat, que abre a página completa já no modo de montagem. A rota `/architect` continua
+   * chat, que abre a página completa já no modo de montagem. A rota `/assistant` continua
    * existindo inteira — deep link, favorito e projeto antigo não perdem nada.
    */
   // Operation surfaces: the floor overview + the teams that staff it (kept together).

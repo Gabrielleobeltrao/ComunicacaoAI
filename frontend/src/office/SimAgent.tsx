@@ -40,7 +40,7 @@ export function SimAgent({ agentId, name, character, status, view, initialX, ini
   /**
    * Sem ação, não é botão — mesma regra do `MapAgent`.
    *
-   * Na prévia do Arquiteto os agentes são rascunho: eles continuam aparecendo e
+   * Na prévia do Assistente os agentes são rascunho: eles continuam aparecendo e
    * andando, mas não param o Tab nem prometem um clique que não leva a lugar nenhum.
    */
   const interativo = typeof onOpen === 'function'

@@ -272,7 +272,7 @@ import { dataHistoryRouter } from './routes/dataHistoryRoutes.js'
 import { realtimeSourceRouter } from './routes/realtimeSourceRoutes.js'
 import { policyRouter } from './routes/policyRoutes.js'
 import { websocketRouter } from './routes/websocketRoutes.js'
-import { architectRouter } from './routes/architectRoutes.js'
+import { assistantRouter } from './routes/assistantRoutes.js'
 import { appGrantRouter } from './routes/appGrantRoutes.js'
 import { knowledgeAccessRouter } from './routes/knowledgeAccessRoutes.js'
 import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
@@ -552,7 +552,18 @@ app.use('/api/data-history', requireAuth, dataHistoryRouter)
 app.use('/api/realtime-sources', requireAuth, realtimeSourceRouter)
 app.use('/api/trading-policies', requireAuth, policyRouter)
 app.use('/api/websocket', requireAuth, websocketRouter)
-app.use('/api/architect', requireAuth, architectRouter)
+app.use('/api/assistant', requireAuth, assistantRouter)
+/**
+ * O ENDEREÇO ANTIGO continua respondendo.
+ *
+ * O Arquiteto virou Assistente, e o caminho junto. Trocar e pronto quebraria a janela do
+ * deploy: enquanto o backend novo sobe, o navegador de quem já estava com a tela aberta
+ * continua chamando `/api/architect` — e o que ele receberia é 404 no meio de uma conversa.
+ *
+ * Fica como APELIDO, não como segunda implementação: é o mesmo roteador. Some quando não
+ * houver mais cliente antigo no ar.
+ */
+app.use('/api/architect', requireAuth, assistantRouter)
 app.use('/api/agents/:agentId', requireAuth, appGrantRouter)
 // O que este agente pode LER: a política de acesso ao conhecimento.
 app.use('/api/agents/:agentId', requireAuth, knowledgeAccessRouter)
@@ -5472,7 +5483,7 @@ async function start() {
   settlePendingCharges()
     .then((n) => n && console.log(`Settled ${n} pending token charge(s)`))
     .catch((error) => console.error('settlePendingCharges failed:', error))
-  // Só ÍNDICES. A migração do conhecimento do Arquiteto não roda aqui: um servidor que
+  // Só ÍNDICES. A migração do conhecimento do Assistente não roda aqui: um servidor que
   // sobe reescrevendo dados faz, num reinício automático de madrugada, uma migração que
   // ninguém está olhando. Ela é um script, e é chamada à mão.
   ensureExtensionIndexes().catch((error) => {

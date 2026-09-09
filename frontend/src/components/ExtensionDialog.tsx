@@ -199,7 +199,7 @@ export function ExtensionDialog({ item, onClose, onChanged }: { item: ItemDeComu
                 acao(
                   () => (item.kind === 'template' ? api.installTemplate(item.id) : api.installPackage(item.id)),
                   item.kind === 'template'
-                    ? 'Template instalado. Ele abriu uma proposta no Arquiteto: nada foi criado até você revisar e aplicar.'
+                    ? 'Template instalado. Ele abriu uma proposta no Assistente: nada foi criado até você revisar e aplicar.'
                     : 'Instalado. Conecte o que ele pede antes de usar.',
                 )
               }

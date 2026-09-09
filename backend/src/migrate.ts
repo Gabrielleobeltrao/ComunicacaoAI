@@ -24,7 +24,7 @@ import { ensureMarketStateIndexes } from './marketData/state.js'
 import { ensureTickCollection } from './marketData/ticks.js'
 import { ensurePolicyIndexes } from './policies/repository.js'
 import { ensureWebSocketIndexes } from './integrations/websocket/repository.js'
-import { ensureArchitectIndexes } from './architect/repository.js'
+import { ensureAssistantIndexes } from './assistant/repository.js'
 import { ensureLiveDataIndexes } from './integrations/websocket/liveData.js'
 import { migrateAppsAndInstallations } from './apps/migration.js'
 
@@ -140,7 +140,7 @@ export async function runMigrations(): Promise<void> {
   await ensureTickCollection()
   await ensurePolicyIndexes()
   await ensureWebSocketIndexes()
-  await ensureArchitectIndexes()
+  await ensureAssistantIndexes()
   await ensureLiveDataIndexes()
 
   // Apps: connections learn their appKey, Google gains an installation, and every

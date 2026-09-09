@@ -1,5 +1,5 @@
 import type { ObjectId } from 'mongodb'
-import type { ArchitectStamp } from '../architectStamp.js'
+import type { AssistantStamp } from '../assistantStamp.js'
 import type { Retention } from '../dataHistory/types.js'
 
 // DATABASE — o sistema de registros do escritório.
@@ -35,12 +35,12 @@ export type DatasetMutability = 'append_only' | 'mutable' | 'read_only'
 
 export interface DataStore {
   /**
-   * De onde ele veio, quando veio do Arquiteto.
+   * De onde ele veio, quando veio do Assistente.
    *
    * Fecha a janela entre criar e registrar o passo: com a marca, a retomada PROCURA antes de
    * criar e encontra o que ficou de pé. Opcional — quem cria pela tela não tem origem.
    */
-  architect?: ArchitectStamp
+  assistant?: AssistantStamp
   _id: ObjectId
   ownerId: string
   buildingId: ObjectId | null

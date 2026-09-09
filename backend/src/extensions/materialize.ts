@@ -19,7 +19,7 @@ import type { ExtensionInstallation, ExtensionPackage, ExtensionVersion } from '
 // nome preenchido e o valor vazio, porque é assim que a pessoa sabe o que falta.
 
 export interface CreatedRef {
-  kind: 'app_definition' | 'tool' | 'architect_project'
+  kind: 'app_definition' | 'tool' | 'assistant_project'
   id: string
   /** O que precisa ser feito por quem instalou antes de a coisa funcionar. */
   pending?: string
@@ -46,7 +46,7 @@ const tools = db.collection<Tool>('tools')
 export async function materializeInstall(ownerId: string, pacote: ExtensionPackage, versao: ExtensionVersion): Promise<CreatedRef[]> {
   if (pacote.kind === 'app') return [await criarApp(ownerId, versao)]
   if (pacote.kind === 'tool') return [await criarFerramenta(ownerId, pacote, versao)]
-  // Template não materializa aqui: ele vira PROPOSTA do Arquiteto, e o efeito só acontece
+  // Template não materializa aqui: ele vira PROPOSTA do Assistente, e o efeito só acontece
   // depois de alguém revisar a prévia. Ver extensions/templates.ts.
   return []
 }
@@ -174,7 +174,7 @@ export async function installImpact(ownerId: string, instalacao: ExtensionInstal
       const doc = await tools.findOne({ _id: oid, ownerId })
       itens.push({ ref: ref as CreatedRef, exists: Boolean(doc), edited: foiEditado(doc?.updatedAt, ref, instalacao), name: doc?.name ?? null })
     } else {
-      const doc = await db.collection('architect_projects').findOne({ _id: oid, ownerId }, { projection: { title: 1 } })
+      const doc = await db.collection('assistant_projects').findOne({ _id: oid, ownerId }, { projection: { title: 1 } })
       itens.push({ ref: ref as CreatedRef, exists: Boolean(doc), edited: false, name: (doc?.title as string) ?? null })
     }
   }
@@ -211,7 +211,7 @@ export async function dematerialize(ownerId: string, instalacao: ExtensionInstal
       await tools.updateOne({ _id: new ObjectId(item.ref.id), ownerId }, { $set: { enabled: false, updatedAt: new Date() } })
       saida.disabled.push(item.ref)
     } else {
-      // App privado e projeto do Arquiteto não têm "desligado": eles ficam, e a instalação
+      // App privado e projeto do Assistente não têm "desligado": eles ficam, e a instalação
       // pausada é o que diz que não vêm mais do pacote.
       saida.kept.push(item.ref)
     }

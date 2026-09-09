@@ -1,0 +1,49 @@
+import type { AssistantStatus } from './types.js'
+
+// A máquina de estados do projeto, escrita como tabela.
+//
+// Ela existe para uma pergunta ter uma resposta só: "dá para aplicar agora?". Espalhada
+// por `if`s nas rotas, a resposta mudaria de rota para rota — e a que esquecesse de
+// conferir `applying` deixaria duas aplicações correrem juntas.
+
+const TRANSICOES: Record<AssistantStatus, AssistantStatus[]> = {
+  // Enquanto pergunta, pode virar proposta ou ser arquivado.
+  discovery: ['draft', 'archived'],
+  // Proposta na mesa: pode ser revisada (volta para discovery), validada ou arquivada.
+  draft: ['discovery', 'draft', 'ready', 'archived'],
+  // Validada. Daqui sai a aplicação — e só daqui.
+  ready: ['discovery', 'draft', 'applying', 'archived'],
+  // Aplicando: só termina, falha, ou (retomada) continua aplicando.
+  applying: ['applied', 'failed', 'applying'],
+  // Aplicado NÃO é o fim da conversa: continuar falando abre uma rodada nova, e a
+  // proposta seguinte vem apoiada no que já foi criado (ver `rebaseSobreAplicado`).
+  // Sem esta transição, ajustar depois de aplicar exigia começar outro projeto do zero.
+  applied: ['draft', 'archived'],
+  // Falhou no meio: retomar volta para applying; revisar volta para draft.
+  failed: ['applying', 'draft', 'archived'],
+  archived: [],
+}
+
+export const canTransition = (de: AssistantStatus, para: AssistantStatus): boolean => (TRANSICOES[de] ?? []).includes(para)
+
+/** Os estados a partir dos quais `apply` pode começar. Retomar entra por `applying`. */
+export const APPLY_FROM: AssistantStatus[] = ['ready']
+/** Retomar só faz sentido no que ficou pelo caminho. */
+export const RESUME_FROM: AssistantStatus[] = ['applying', 'failed']
+
+/** Estados em que a proposta ainda pode ser MEXIDA à mão (editar, ligar recurso). */
+export const EDITABLE: AssistantStatus[] = ['discovery', 'draft', 'ready', 'failed']
+
+export const isEditable = (status: AssistantStatus): boolean => EDITABLE.includes(status)
+
+/**
+ * Estados em que a CONVERSA continua.
+ *
+ * `applied` entra aqui e não em `EDITABLE` de propósito: falar sempre se pode, e é o
+ * que a conversa produzir que reabre a proposta. O contrário — fechar o chat ao aplicar —
+ * obrigava a começar um projeto novo para trocar uma instrução, e o projeto novo não
+ * sabia o que já existia.
+ */
+export const CONVERSABLE: AssistantStatus[] = [...EDITABLE, 'applied']
+
+export const isConversable = (status: AssistantStatus): boolean => CONVERSABLE.includes(status)
