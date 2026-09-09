@@ -768,3 +768,96 @@ test('ACEITAÇÃO: a base que a operação usa é CONCEDIDA aos agentes dela', (
   assert.ok(Array.isArray(base.agentKeys), 'a base precisa declarar de quem é o acesso')
   assert.ok(base.agentKeys.length > 0, `nenhum agente alcança a base: ${JSON.stringify(base)}`)
 })
+
+// --- Fase 2: porta de entrada só onde alguém entra --------------------------------------
+//
+// O DEFEITO MAIS IRÔNICO DA SÉRIE. O dono pediu duas vezes para tirar o web_chat, e
+// conseguiu esvaziar `brief.channels`. Só que `resolveChannel` diz:
+//
+//   // Ninguém pediu canal: aí sim o conectado serve, porque não há pedido para contrariar.
+//   const conectado = canais.find((c) => c.connected)
+//
+// Esvaziar a lista é EXATAMENTE o que dispara o padrão. Ele insistiu até acionar o gatilho
+// do que estava tentando evitar — e a aplicação saiu com `["channel","created"]`.
+//
+// A regra certa é o que o canal É: uma porta para alguém FALAR com o agente. Numa operação
+// que roda sozinha no fim do dia não há quem fale.
+
+const soRotina = () => ({
+  ...emptyBrief('Guardar o máximo diário do Bitcoin'),
+  channels: [],
+  jobs: [
+    {
+      id: 'j1',
+      name: 'Registrar o máximo do dia',
+      trigger: 'todo fim de dia, por rotina agendada',
+      input: 'as cotações do dia',
+      decision: 'conferir se já existe registro daquela data',
+      action: 'gravar data e máximo',
+      output: 'uma linha por dia',
+    },
+  ],
+})
+
+test('ACEITAÇÃO: operação só-rotina não ganha canal, mesmo com web_chat conectado', () => {
+  const { blueprint } = compilar(soRotina())
+  assert.deepEqual(blueprint.operations.channels, [], `canal aberto sem ninguém para entrar: ${JSON.stringify(blueprint.operations.channels)}`)
+  assert.equal(blueprint.resources.appRequirements.filter((r) => r.key.startsWith('canal-')).length, 0)
+})
+
+test('quem ATENDE continua ganhando a porta', () => {
+  const brief = {
+    ...emptyBrief('Atender quem escreve pelo site'),
+    channels: [],
+    jobs: [{ id: 'j1', name: 'Responder a dúvida do cliente', trigger: 'quando o cliente escreve', input: 'a pergunta', decision: 'entender o pedido', action: 'responder', output: 'a resposta' }],
+  }
+  const { blueprint } = compilar(brief)
+  assert.equal(blueprint.operations.channels.length, 1, 'sem canal, ninguém alcança quem atende')
+})
+
+test('AMEAÇA: pedir um canal explicitamente continua valendo, mesmo sem conversa no texto', () => {
+  // Pedido é pedido. A regra tira o PADRÃO silencioso, não a escolha de quem pediu.
+  const { blueprint } = compilar({ ...soRotina(), channels: ['web_chat'] })
+  assert.equal(blueprint.operations.channels.length, 1, 'o canal pedido por escrito sumiu')
+})
+
+// --- Fase 3: a base de ORIGEM entra no plano --------------------------------------------
+//
+// O agente aplicado sabia GRAVAR e não sabia LER: o `resourceMap` da aplicação real tinha
+// uma base só, a de destino. A de origem — a que já recebe o preço do bitcoin — não entrou
+// no plano, e por isso não recebeu concessão nenhuma.
+//
+// A causa foi minha: ao reconhecer que a fonte já existe, o compilador `return`ava sem
+// declarar nada. Não duplicar a coleta estava certo; sair sem dizer DE ONDE SE LÊ, não —
+// a operação inteira existe para ler dali.
+
+test('ACEITAÇÃO: a fonte que já existe vira base de LEITURA no plano, com acesso', () => {
+  const inventario = {
+    ownerId: 'dono',
+    at: new Date(),
+    building: { id: '000000000000000000000b01', name: 'Prédio' },
+    sections: {
+      database: { kind: 'database', total: 1, truncated: false, items: [{ id: '000000000000000000000db1', label: 'Históricos', ownerScope: 'account:', status: 'active', meta: { adapterKind: 'data_history' } }] },
+      source: { kind: 'source', total: 1, truncated: false, items: [{ id: '000000000000000000000f01', label: 'Bitcoin', ownerScope: 'account:', status: 'active', meta: { kind: 'api_polling', history: true, dataStoreId: '000000000000000000000db1' } }] },
+    },
+  }
+  const brief = {
+    ...soRotina(),
+    liveDataNeeds: [{ source: 'Base de preços do bitcoin a cada 15 segundos', freshness: '15s', required: true }],
+    recordsToKeep: [{ subject: 'máximo diário do bitcoin', fields: ['data', 'maximo'], retentionDays: null }],
+  }
+  const { blueprint, pending } = compilar(brief, { inventory: inventario })
+
+  // Nenhuma coleta nova: a fonte que já roda continua sendo a fonte.
+  assert.equal(blueprint.operations.sources.filter((s) => s.action === 'create').length, 0)
+  assert.deepEqual(pending.filter((p) => p.kind === 'source_config'), [])
+
+  // DUAS bases: de onde se lê e onde se grava — cada uma com o seu acesso.
+  const leitura = blueprint.resources.databases.find((d) => d.agentAccess === 'read')
+  const escrita = blueprint.resources.databases.find((d) => d.agentAccess === 'write')
+  assert.ok(leitura, `sem base de leitura, o agente não alcança o dado: ${JSON.stringify(blueprint.resources.databases)}`)
+  assert.equal(leitura.action, 'reuse')
+  assert.equal(leitura.resourceId, '000000000000000000000db1')
+  assert.ok(escrita, 'sem base de destino, não há onde gravar')
+  assert.ok((leitura.agentKeys ?? []).length > 0, 'a leitura precisa dizer de quem é')
+})

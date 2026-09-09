@@ -148,3 +148,23 @@ test('AMEAÇA: o catálogo diz que agente LÊ e GRAVA em Database', async () => 
   assert.match(texto, /database_insert_rows/, 'o catálogo não diz que dá para gravar em Database')
   assert.match(texto, /concess|grant/i, 'precisa dizer que depende de concessão, senão ele promete acesso que não existe')
 })
+
+test('Fase 4: o catálogo cita MONITOR e FONTE — e diz o que o Arquiteto NÃO faz', async () => {
+  /**
+   * Em 46 mensagens ele nunca mencionou monitor, e o dono perguntou: "dá pra criar até um
+   * monitoramento, né? quando acontece alguma coisa ele faz tal coisa". Dá — a plataforma
+   * tem Central de Monitoramento inteira. Ele não sabia porque o catálogo não dizia.
+   *
+   * E o outro lado: ele respondeu "vou considerar que vocês vão anexar o documento" DUAS
+   * vezes, sem nunca dizer que não anexa nada nem onde se anexa. Uma recusa sem caminho é
+   * um beco: a pessoa fica esperando uma coisa que não vai acontecer.
+   */
+  const texto = manifestForPrompt(await buildCapabilityManifest(DONO))
+  // Maiúsculas com dois-pontos: é o rótulo do BLOCO que eu controlo. "monitor" solto
+  // aparece em nome de App e em descrição de função, e casaria com o bloco removido.
+  assert.match(texto, /- MONITOR:/, 'o catálogo não fala de monitor')
+  assert.match(texto, /- FONTE:/, 'o catálogo não fala de fonte de dado')
+  assert.match(texto, /NÃO FAZ|não faço|não escrevo/i, 'o catálogo não diz o que ele não faz')
+  // Cada recusa com o caminho de resolver.
+  assert.match(texto, /anexa|conhecimento do agente/i)
+})

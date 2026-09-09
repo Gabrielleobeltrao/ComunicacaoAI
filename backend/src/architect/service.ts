@@ -9,7 +9,7 @@ import type { OfficeBlueprintV2 } from './typesV2.js'
 import { loadOfficeInventory } from './inventory.js'
 import { architectV2Enabled } from './flags.js'
 import { runLlmCritique } from './criticLlm.js'
-import { diffBlueprints } from './diff.js'
+import { diffBlueprints, ehRepeticaoSemEfeito, resumoDaMudanca } from './diff.js'
 import { repairBlueprintPatch, repairReuseWithoutTarget } from './repair.js'
 import { buildArchitectPrompt } from './prompt.js'
 import { runArchitectTurn } from './turn.js'
@@ -227,7 +227,8 @@ async function runTurn(
   }
 
   const turno = resultado.result
-  await repo.appendMessage(ownerId, projeto._id, 'assistant', turno.assistantText)
+  // A mensagem do Arquiteto é gravada DEPOIS de o plano existir — ver `resumoDaMudanca`
+  // mais abaixo. Gravá-la aqui era gravar a promessa antes de saber se ela se cumpriu.
   // Deu certo: o que falhou antes está resolvido, e para de aparecer como se fosse agora.
   await repo.resolveFailureNotices(ownerId, projeto._id)
 
@@ -333,6 +334,27 @@ async function runTurn(
    */
   const comReuso = consertoDoReuso?.blueprint ?? mesclado
   const blueprint = turno.blueprintPatch && projeto.status === 'applied' ? await marcarOQueJaExiste(ownerId, projeto, comReuso) : comReuso
+
+  /**
+   * A RESPOSTA carrega o que ACONTECEU, e não só o que o modelo disse que ia acontecer.
+   *
+   * Numa conversa real, "você tem razão, vou remover o web_chat" foi dito duas vezes e o
+   * canal foi criado; e seis respostas seguidas começaram por "Ajustei" com o plano
+   * idêntico entre elas. A frase do modelo continua — ela é boa em linguagem de negócio.
+   * O que muda é ela deixar de ser a única fonte sobre o que o sistema fez.
+   */
+  const mudancas = diffBlueprints(recorteDe(projeto), blueprint ? selectLayer(blueprint, camadaDe(projeto)) : null)
+  /**
+   * REPETIR É INFORMAÇÃO. Se a pessoa pediu de novo e nada mudou, algo está travando — e
+   * responder com uma frase nova e animada ensina ela a repetir mais alto e depois desistir.
+   */
+  // `messages` é o histórico recente já carregado no início da rodada: a última do dono é
+  // a mensagem desta rodada, e as anteriores são com o que comparar.
+  const doDono = messages.filter((m) => m.role === 'user').map((m) => m.content)
+  const repetido = doDono.length > 1 && ehRepeticaoSemEfeito(doDono[doDono.length - 1], doDono.slice(0, -1), mudancas)
+  const resumo = resumoDaMudanca(mudancas, [...(compilado?.pending ?? []), ...(compiladoV2?.pending ?? [])], { repetido })
+  const textoFinal = resumo ? `${turno.assistantText}\n\n${resumo}` : turno.assistantText
+  await repo.appendMessage(ownerId, projeto._id, 'assistant', textoFinal)
 
   // Os avisos do conserto entram JUNTO dos do modelo: quem lê a proposta lê tudo num
   // lugar só, e não descobre a mudança comparando duas versões.
@@ -459,7 +481,7 @@ async function runTurn(
   }
   const atualizado = (await repo.patchProject(ownerId, projeto._id, patch)) ?? projeto
 
-  return { project: atualizado, assistantText: turno.assistantText, question: pergunta, secretMasked: opts.secretMasked }
+  return { project: atualizado, assistantText: textoFinal, question: pergunta, secretMasked: opts.secretMasked }
 }
 
 /**

@@ -103,6 +103,55 @@ function ehConversa(job: BriefJob): boolean {
 }
 
 /**
+ * A INSTRUÇÃO do agente — montada do Brief, e não do nome do trabalho.
+ *
+ * O agente aplicado nasceu com o objetivo igual ao nome do trabalho e sem instrução de como
+ * fazê-lo: nada dizia de onde ler, onde gravar, nem o que fazer quando o dado faltasse. O
+ * Brief tinha as três coisas escritas; elas simplesmente não desciam.
+ *
+ * Nada é inventado aqui: origem e destino só entram quando o Brief os declara. Um agente
+ * com uma origem que ninguém declarou é pior que um sem instrução — ele age com confiança
+ * sobre um lugar que não existe.
+ */
+function instrucaoDe(job: BriefJob | undefined, brief: OperationBrief): string {
+  const partes: string[] = []
+  if (job?.decision?.trim()) partes.push(`Decide: ${job.decision.trim()}.`)
+
+  const origem = (brief.liveDataNeeds ?? []).filter((n) => n.source?.trim()).map((n) => n.source.trim())
+  if (origem.length) partes.push(`Lê de: ${origem.join('; ')}.`)
+
+  const destino = (brief.recordsToKeep ?? []).filter((r) => r.subject?.trim()).map((r) => {
+    const campos = (r.fields ?? []).filter((c) => c?.trim())
+    return campos.length ? `${r.subject.trim()} (${campos.join(', ')})` : r.subject.trim()
+  })
+  if (destino.length) partes.push(`Grava em: ${destino.join('; ')}.`)
+
+  if (partes.length === 0) return ''
+  /**
+   * O QUE FAZER QUANDO FALTA DADO é o que separa um agente que avisa de um que inventa o
+   * número — e um número inventado numa série histórica não tem como ser distinguido depois.
+   */
+  partes.push('Se faltar dado no período, registre que faltou e não invente valor. Se algo não estiver claro, diga que vai confirmar em vez de supor.')
+  return partes.join(' ')
+}
+
+/**
+ * O FUSO que a pessoa citou, se citou algum.
+ *
+ * Não resolve cidade em fuso — isso exige uma tabela que muda com a política de cada país,
+ * e errar aqui é pior que não saber. O que ele faz é NOTAR que houve um pedido de fuso, que
+ * é o suficiente para o sistema parar de fingir que o padrão respondia.
+ */
+function fusoCitado(job: BriefJob): string | null {
+  const t = `${job.trigger ?? ''} ${job.frequency ?? ''} ${job.decision ?? ''}`
+  const m = t.match(/\b(fuso|hor[áa]rio)\s+(?:de\s+|d[oa]\s+)?([A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç]+(?:\s+[A-Z][\wáéíóú]+)?)/)
+  if (m) return m[2]
+  // "UTC", "GMT-3" e os nomes de zona IANA são citados sem a palavra "fuso" na frente.
+  const z = t.match(/\b(UTC[+-]?\d*|GMT[+-]?\d*|[A-Za-z]+\/[A-Za-z_]+)\b/)
+  return z ? z[1] : null
+}
+
+/**
  * A ROTINA de um trabalho agendado.
  *
  * Mesma forma da rotina que o classificador já produzia — inclusive a etapa, que existe
@@ -117,9 +166,10 @@ function rotinaPara(job: BriefJob, agentKey: string, floorKey: string, layer: Bl
     floorKey,
     ownerAgentKey: agentKey,
     name: job.name,
-    // O QUE A PESSOA DISSE, escrito. O `cron` abaixo é um padrão para a rotina poder
-    // nascer; é esta frase que diz o que ela pediu de verdade.
-    ...(quando ? { description: `Quando: ${quando}` } : {}),
+    // O QUE A PESSOA DISSE, escrito — e o que o sistema escolheu, dito também. O `cron`
+    // abaixo é um padrão para a rotina poder nascer; ela nasce PARADA, e quem lê a
+    // proposta precisa saber disso antes de esperar um alarme que não vai tocar.
+    description: `${quando ? `Quando: ${quando}. ` : ''}Esta rotina nasce parada: publique em Rotinas para ela começar a rodar.`,
     triggerType: 'schedule',
     cron: '0 8 * * *',
     timezone: 'America/Sao_Paulo',
@@ -261,7 +311,7 @@ export function compileBrief(
         preset: decision.suggestedPreset ?? 'custom',
         objective: job?.output ? `${decision.jobName}: entrega ${job.output}` : decision.jobName,
         role: job?.trigger ? `Quando ${job.trigger}` : `Quando o assunto for ${decision.jobName.toLowerCase()}`,
-        ...(job?.decision ? { instructions: `Decide: ${job.decision}. Se faltar informação, diga que vai confirmar em vez de supor.` } : {}),
+        ...(instrucaoDe(job, brief) ? { instructions: instrucaoDe(job, brief) } : {}),
         ...(job?.input ? { inputContract: job.input } : {}),
         ...(job?.output ? { outputContract: job.output } : {}),
         executorKind: 'llm',
@@ -289,7 +339,27 @@ export function compileBrief(
         bp.routines.push(rotinaPara(job, key, floorKey, layer, reason))
         // O HORÁRIO EXATO é da pessoa, não meu. O padrão existe para a rotina poder nascer;
         // inventá-lo em silêncio é entregar um alarme que toca na hora errada.
-        pending.push({ kind: 'routine_time', ref: job.name, because: `confirme o horário: "${job.trigger}" — a rotina nasce com um horário padrão até você ajustar` })
+        pending.push({
+          kind: 'routine_time',
+          ref: job.name,
+          because: `você disse "${(job.trigger ?? '').slice(0, 90)}"; a rotina nasce às 8h e parada — confirme o horário em Rotinas`,
+        })
+        /**
+         * O FUSO que a pessoa NOMEOU não pode ser trocado em silêncio.
+         *
+         * O pedido dizia "fim do dia em Orlando, com horário de verão" e a rotina nasceu em
+         * `America/Sao_Paulo`: oito da manhã de São Paulo é o meio da madrugada em Orlando.
+         * O compilador não resolve fuso de cidade — e é justamente por isso que ele precisa
+         * dizer que não resolveu, em vez de entregar o padrão como se fosse a resposta.
+         */
+        const fuso = fusoCitado(job)
+        if (fuso) {
+          pending.push({
+            kind: 'routine_timezone',
+            ref: job.name,
+            because: `você citou "${fuso}"; a rotina nasce em America/Sao_Paulo — ajuste o fuso em Rotinas`,
+          })
+        }
       }
       continue
     }

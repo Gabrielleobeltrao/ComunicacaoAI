@@ -321,3 +321,26 @@ test('projeto legado NÃO é recompilado quando o entendimento muda', async () =
   assert.deepEqual(depois.blueprint, p.blueprint, 'o desenho do legado não pode ser reescrito')
   assert.equal(depois.blueprintHash, p.blueprintHash)
 })
+
+// --- Fase 7: o conhecimento pendente tem CAMINHO -----------------------------------------
+//
+// Na conversa real o dono escreveu "Anexa para mim" duas vezes. As duas respostas foram
+// "vou considerar que vocês vão anexar o documento", e a aplicação saiu com
+// `["knowledge","skipped","sem conteúdo: continua pendente"]`.
+//
+// Ele não anexa — e não anexar é a decisão certa. O erro foi não dizer ISSO nem onde se
+// anexa. Uma recusa sem caminho é um beco: a pessoa fica esperando uma coisa que não vai
+// acontecer. O App já resolve isto com `actionPath: '/apps'`; o conhecimento, não.
+test('um requisito de conhecimento leva à tela onde se anexa', () => {
+  const bp = {
+    floors: [],
+    agents: [{ key: 'marina', name: 'Marina' }],
+    sectors: [],
+    routines: [],
+    appRequirements: [],
+    knowledgeRequirements: [{ key: 'regra-do-dia', title: 'Definição de início e fim de dia', description: '', required: true, scope: 'agent', targetKey: 'marina' }],
+  }
+  const item = deriveChecklist(bp).find((i) => i.category === 'knowledge')
+  assert.ok(item, 'o requisito não virou item de checklist')
+  assert.ok(item.actionPath, `sem caminho, a pendência é um beco: ${JSON.stringify(item)}`)
+})

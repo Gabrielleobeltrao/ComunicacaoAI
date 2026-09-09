@@ -141,3 +141,100 @@ export function diffBlueprints(antes: OfficeBlueprintV1 | null | undefined, depo
   const peso = { removed: 0, added: 1, changed: 2 }
   return mudancas.sort((a, b) => peso[a.change] - peso[b.change]).slice(0, MAX_MUDANCAS)
 }
+
+/**
+ * O QUE MUDOU, dito pelo SERVIDOR.
+ *
+ * A resposta que a pessoa lê é escrita pelo modelo; o plano é montado pelo compilador. Nada
+ * comparava os dois — e o resultado, numa conversa real de 46 mensagens, foi o Arquiteto
+ * respondendo "você tem razão, vou remover o web_chat" duas vezes seguidas enquanto a
+ * aplicação criava o canal, e seis respostas em sequência começando por "Ajustei" com o
+ * plano idêntico entre elas.
+ *
+ * O problema não é ele errar: é ele DIZER QUE FEZ. Esta frase vai junto da dele, e é a
+ * única das duas que tem como estar errada — ela é derivada do documento.
+ */
+/**
+ * A PESSOA ESTÁ PEDINDO A MESMA COISA DE NOVO, e nada aconteceu entre uma vez e outra?
+ *
+ * Na conversa real, "E pq está com web-chat, não vamos precisar disso" foi escrito duas
+ * vezes, palavra por palavra; "Anexa para mim" duas vezes; e "corrige a proposta" em quatro
+ * variações. Cada rodada respondeu com uma frase nova e animada sobre um plano que não
+ * mudava — o que ensina a pessoa a repetir mais alto e depois a desistir.
+ *
+ * Repetir é INFORMAÇÃO: quer dizer que a resposta anterior não resolveu. Se o plano mudou,
+ * porém, repetir é só reforçar — e acusar travamento aí seria o sistema chamando de inútil
+ * um trabalho que aconteceu.
+ */
+export function ehRepeticaoSemEfeito(mensagem: string, anteriores: string[], mudancas: BlueprintChange[]): boolean {
+  if (mudancas.length > 0) return false
+  const alvo = palavrasDe(mensagem)
+  if (alvo.size < 2) return false
+  for (const anterior of anteriores.slice(-4)) {
+    const dela = palavrasDe(anterior)
+    if (dela.size < 2) continue
+    let comuns = 0
+    for (const w of alvo) if (dela.has(w)) comuns += 1
+    // Metade das palavras significativas em comum, nos dois sentidos: "tira o web chat" e
+    // "e por que está com web chat? não vamos precisar" são o mesmo pedido dito diferente.
+    if (comuns / Math.min(alvo.size, dela.size) >= 0.5) return true
+  }
+  return false
+}
+
+/** As palavras que carregam o assunto — fora as de ligação, que toda frase tem. */
+const LIGACAO = new Set([
+  'a','o','as','os','de','do','da','dos','das','em','no','na','nos','nas','por','para','com','sem','que','e','ou','se',
+  'um','uma','uns','umas','isso','isto','esse','essa','este','esta','nao','não','esta','está','estar','ser','vamos','quero',
+  'pq','porque','por','me','mim','meu','minha','ele','ela','voce','você','ai','aí','ja','já','mais','muito','so','só','tb','tambem','também',
+])
+function palavrasDe(texto: string): Set<string> {
+  return new Set(
+    String(texto ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length >= 2 && !LIGACAO.has(w)),
+  )
+}
+
+export function resumoDaMudanca(
+  mudancas: BlueprintChange[],
+  pendencias: { kind: string; ref: string; because: string }[],
+  opts: { repetido?: boolean } = {},
+): string {
+  const linhas: string[] = []
+
+  if (opts.repetido) {
+    // O reconhecimento vem PRIMEIRO: quem repetiu precisa saber que foi ouvido antes de
+    // ler qualquer outra coisa.
+    linhas.push('**Você pediu isto de novo e o plano continua igual** — então tem algo no caminho, e não adianta eu reescrever a mesma resposta.')
+  }
+
+  if (mudancas.length === 0) {
+    // Dizer "nada mudou" é mais útil que uma frase animada sobre um trabalho que não houve:
+    // é o que permite a pessoa parar de repetir o pedido e perguntar por quê.
+    linhas.push('**Nada mudou na proposta nesta rodada.**')
+  } else {
+    const porTipo = { added: 'Criei', removed: 'Removi', changed: 'Alterei' } as const
+    for (const tipo of ['added', 'removed', 'changed'] as const) {
+      const desta = mudancas.filter((m) => m.change === tipo)
+      if (desta.length === 0) continue
+      // Um teto por grupo: uma lista que não cabe na tela esconde a linha que importava.
+      const mostradas = desta.slice(0, 4)
+      const sobra = desta.length - mostradas.length
+      const nomes = mostradas.map((m) => (m.fields.length ? `${m.label} (${m.fields.slice(0, 3).join(', ')})` : m.label))
+      linhas.push(`**${porTipo[tipo]}:** ${nomes.join(', ')}${sobra > 0 ? ` e mais ${sobra}` : ''}`)
+    }
+  }
+
+  if (pendencias.length) {
+    const mostradas = pendencias.slice(0, 3)
+    const sobra = pendencias.length - mostradas.length
+    for (const p of mostradas) linhas.push(`**Falta:** ${p.ref} — ${p.because}`)
+    if (sobra > 0) linhas.push(`E mais ${sobra} pendência(s).`)
+  }
+
+  return linhas.join('\n')
+}
