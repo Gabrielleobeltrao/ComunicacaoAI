@@ -190,8 +190,29 @@ export async function migrarNomesDoAssistente(): Promise<void> {
     ['architect_pending_operations', 'assistant_pending_operations'],
   ]
   for (const [antigo, novo] of pares) {
-    if (!existentes.has(antigo) || existentes.has(novo)) continue
-    await db.renameCollection(antigo, novo).catch(() => undefined)
+    if (!existentes.has(antigo)) continue
+    if (!existentes.has(novo)) {
+      await db.renameCollection(antigo, novo).catch(() => undefined)
+      continue
+    }
+    /**
+     * AS DUAS EXISTEM — e desistir aqui foi o que sumiu com o histórico de quem já usava.
+     *
+     * Bastou o primeiro documento cair no nome novo antes de a migração rodar: a partir
+     * dali ela via as duas coleções e não fazia nada, para sempre. O dono continuava com os
+     * projetos e as conversas dele no banco, e não via nenhum — pior que um erro, porque
+     * nada avisa.
+     *
+     * Então o que sobrou no nome antigo é COPIADO, um a um, sem tocar em quem já está no
+     * nome novo (`$setOnInsert` pelo `_id`) e sem apagar a origem. Rodar de novo não muda
+     * nada, e o dado antigo continua onde estava caso algo tenha de ser conferido.
+     */
+    const restantes = db.collection(antigo).find({}).batchSize(200)
+    const destino = db.collection(novo)
+    for await (const doc of restantes) {
+      const { _id, ...resto } = doc
+      await destino.updateOne({ _id }, { $setOnInsert: resto }, { upsert: true }).catch(() => undefined)
+    }
   }
 
   /**

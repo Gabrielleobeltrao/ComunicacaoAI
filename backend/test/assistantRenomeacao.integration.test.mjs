@@ -72,3 +72,39 @@ test('AMEAÇA: se o nome NOVO já tem dados, a migração não os sobrescreve', 
   const titulos = (await db.collection('assistant_projects').find({}).toArray()).map((p) => p.title)
   assert.ok(titulos.includes('novo'), 'sobrescreveu o que já estava no nome novo')
 })
+
+test('ACEITAÇÃO: com as DUAS coleções cheias, o histórico antigo é recuperado', async () => {
+  /**
+   * O que aconteceu no banco de verdade: um documento caiu no nome novo antes de a migração
+   * rodar. A partir dali ela via as duas coleções e desistia — para sempre. O dono tinha 6
+   * projetos e 90 mensagens gravados e não via nenhum, sem nada avisando.
+   */
+  const antigo = new ObjectId()
+  const novo = new ObjectId()
+  await db.collection('architect_projects').insertOne({ _id: antigo, ownerId: 'dono', title: 'De antes' })
+  await db.collection('architect_messages').insertMany([
+    { _id: new ObjectId(), ownerId: 'dono', projectId: antigo, role: 'user', content: 'a' },
+    { _id: new ObjectId(), ownerId: 'dono', projectId: antigo, role: 'assistant', content: 'b' },
+  ])
+  await db.collection('assistant_projects').insertOne({ _id: novo, ownerId: 'dono', title: 'De agora' })
+  await db.collection('assistant_messages').insertOne({ _id: new ObjectId(), ownerId: 'dono', projectId: novo, role: 'user', content: 'c' })
+
+  await migrarNomesDoAssistente()
+
+  const titulos = (await db.collection('assistant_projects').find({ ownerId: 'dono' }).toArray()).map((p) => p.title).sort()
+  assert.deepEqual(titulos, ['De agora', 'De antes'], 'os dois têm de conviver — nenhum some, nenhum sobrescreve')
+  assert.equal(await db.collection('assistant_messages').countDocuments({}), 3, 'a conversa antiga tem de voltar junto')
+})
+
+test('AMEAÇA: a cópia NÃO sobrescreve quem já está no nome novo, e não apaga a origem', async () => {
+  const id = new ObjectId()
+  await db.collection('architect_projects').insertOne({ _id: id, ownerId: 'dono', title: 'versão velha' })
+  await db.collection('assistant_projects').insertOne({ _id: id, ownerId: 'dono', title: 'versão nova' })
+
+  await migrarNomesDoAssistente()
+  await migrarNomesDoAssistente()
+
+  assert.equal((await db.collection('assistant_projects').findOne({ _id: id })).title, 'versão nova', 'o que já estava lá é a verdade')
+  assert.equal(await db.collection('assistant_projects').countDocuments({}), 1, 'rodar duas vezes não duplica')
+  assert.equal(await db.collection('architect_projects').countDocuments({}), 1, 'a origem continua de pé para conferência')
+})
