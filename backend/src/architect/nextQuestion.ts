@@ -31,6 +31,19 @@ export interface BriefGap {
 
 const temTexto = (v: string | undefined | null): boolean => Boolean(v && v.trim())
 
+/**
+ * As ÁREAS que o texto nomeia — a mesma família de palavras do compilador.
+ *
+ * Duplicada aqui de propósito: `compileV2` puxa o inventário e o catálogo no import, e este
+ * módulo é lido pela rodada antes de qualquer um dos dois existir. O que se repete são seis
+ * expressões regulares; o que se evitaria repetindo-as é um ciclo de import.
+ */
+const AREAS_CITADAS = /\b(atend|suporte|sac|recep|cliente|vend|comercial|prospec|financ|cobran|faturam|pagament|log[íi]st|entreg|expedi|estoque|marketing|conte[úu]do|campanha|opera[çc])/i
+function areasCitadas(brief: OperationBrief): string[] {
+  const texto = `${brief.businessGoal} ${brief.jobs.map((j) => j.name).join(' ')}`
+  return AREAS_CITADAS.test(texto) ? ['area'] : []
+}
+
 /** A chave estável de um assunto, para a resposta não se perder entre rodadas. */
 const slugDeAssunto = (texto: string) =>
   String(texto ?? '')
@@ -123,6 +136,28 @@ export function detectGaps(
    * A pergunta cita o que foi achado E os campos que existem: é o que permite responder
    * sabendo, em vez de confiar.
    */
+  /**
+   * EM QUAL ANDAR ISTO MORA — perguntado, e não escolhido.
+   *
+   * O trabalho do bitcoin nasceu no "Salão", que é o andar do restaurante, só por ser o
+   * primeiro da lista. Virar pendência foi melhor que o silêncio, mas pendência é um aviso
+   * que se lê DEPOIS de a proposta estar montada. A escolha entre andares é fechada e
+   * curta — são os que existem —, que é exatamente a forma de uma pergunta com opções.
+   *
+   * Quem NOMEIA uma área já respondeu: "montar o atendimento" diz onde mora.
+   */
+  const andares = inventory?.sections.floor?.items ?? []
+  if (andares.length > 1 && brief.jobs.length > 0 && !jaSabido(brief, 'andar') && areasCitadas(brief).length === 0) {
+    lacunas.push({
+      id: 'andar',
+      question: 'Em qual andar este trabalho mora?',
+      why: `A conta tem ${andares.length} andares. Sem a resposta eu monto em "${andares[0].label}", que é só o primeiro da lista.`,
+      impact: 'Decide onde a operação inteira é criada.',
+      priority: 90,
+      choices: andares.slice(0, 6).map((f) => ({ value: slugDeAssunto(f.label), label: f.label })),
+    })
+  }
+
   for (const [i, need] of (brief.liveDataNeeds ?? []).entries()) {
     if (!need.source?.trim()) continue
     const chave = `origem:${slugDeAssunto(need.source)}` || `origem:${i}`

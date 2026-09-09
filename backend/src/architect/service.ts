@@ -247,9 +247,9 @@ async function runTurn(
    * acreditar que o sistema está ouvindo.
    */
   const formasEscolhidas = Object.entries(answers)
-    .filter(([k]) => k.startsWith('forma:') || k.startsWith('origem:'))
+    .filter(([k]) => k.startsWith('forma:') || k.startsWith('origem:') || k === 'andar')
     .map(([k, v]) => ({ key: k, value: String(v ?? ''), source: 'user' as const }))
-    .filter((f) => (f.key.startsWith('origem:') ? f.value === 'usar' || f.value === 'criar' : Boolean(formaEscolhida(f.value))))
+    .filter((f) => (f.key === 'andar' ? f.value.length > 0 : f.key.startsWith('origem:') ? f.value === 'usar' || f.value === 'criar' : Boolean(formaEscolhida(f.value))))
 
   /**
    * O que dá para consertar sozinho é consertado ANTES de virar proposta.
@@ -420,7 +420,7 @@ async function runTurn(
    * As opções são as mesmas de sempre, com a recomendação primeiro, e é o servidor que
    * carimba a `key`.
    */
-  const daForma = nextQuestions(briefNovo, manifesto, 2, inventario).find((g) => g.id.startsWith('forma:') || g.id.startsWith('origem:'))
+  const daForma = nextQuestions(briefNovo, manifesto, 2, inventario).find((g) => g.id.startsWith('forma:') || g.id.startsWith('origem:') || g.id === 'andar')
   const pergunta = daForma
     ? { key: daForma.id, text: daForma.question, why: daForma.why, choices: daForma.choices ?? [], allowUnknown: false }
     : turno.question

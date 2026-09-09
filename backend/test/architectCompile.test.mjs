@@ -488,3 +488,22 @@ test('sem dado declarado, a instrução continua sendo a do trabalho — sem inv
   const instrucao = String(blueprint.agents[0].instructions ?? '')
   assert.equal(/bitcoin/i.test(instrucao), false, 'inventou uma origem que ninguém declarou')
 })
+
+test('ACEITAÇÃO: respondido o andar, a operação é montada NELE', () => {
+  /**
+   * A pergunta só vale se a resposta mandar. Responder "Bastidores" e ver a proposta
+   * montada no "Salão" é pior que nunca ter perguntado.
+   */
+  const brief = { ...briefCompleto(), businessGoal: 'Guardar o mínimo diário do bitcoin' }
+  const inv = inventarioAndares(['Salão', 'Bastidores'])
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Mínimo', objective: 'x' }, inv, { andar: 'bastidores' })
+  assert.equal(blueprint.floors[0].name, 'Bastidores', `montou no andar errado: ${JSON.stringify(blueprint.floors[0])}`)
+  assert.equal(blueprint.floors[0].action, 'reuse')
+  assert.equal(blueprint.floors[0].resourceId, '00000000000000000000f001')
+})
+
+test('sem resposta, continua no primeiro — e a pergunta continua de pé', () => {
+  const brief = { ...briefCompleto(), businessGoal: 'Guardar o mínimo diário do bitcoin' }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Mínimo', objective: 'x' }, inventarioAndares(['Salão', 'Bastidores']), {})
+  assert.equal(blueprint.floors[0].name, 'Salão')
+})

@@ -362,3 +362,39 @@ test('respondida, a pergunta não volta', () => {
   }
   assert.equal(detectGaps(brief, manifesto, inventarioComBitcoin()).find((g) => g.id.startsWith('origem:')), undefined)
 })
+
+// --- o andar vira PERGUNTA, não pendência ------------------------------------------------
+//
+// O dono reclamou disso duas vezes: o trabalho do bitcoin nasceu no "Salão", que é o andar
+// do restaurante, só por ser o primeiro da lista. Virou pendência — melhor que o silêncio,
+// mas pendência é um aviso que ele lê DEPOIS de a proposta estar montada.
+//
+// A escolha entre andares é fechada e curta: são os andares que existem. É exatamente a
+// forma de uma pergunta com opções, do mesmo jeito que a origem do dado virou.
+
+const inventarioComAndares = (nomes) => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: null,
+  sections: {
+    floor: { kind: 'floor', total: nomes.length, truncated: false, items: nomes.map((n, i) => ({ id: `f${i}`, label: n, ownerScope: 'building:b1', status: 'active' })) },
+  },
+})
+
+test('ACEITAÇÃO: com vários andares e nenhuma área dita, ele PERGUNTA em qual — com as opções', () => {
+  const brief = { ...emptyBrief('Guardar o mínimo diário do bitcoin'), jobs: [{ id: 'j1', name: 'Registrar o mínimo', trigger: 'todo fim de dia', input: 'as cotações', decision: 'conferir', action: 'gravar', output: 'uma linha' }] }
+  const gap = detectGaps(brief, manifesto, inventarioComAndares(['Salão', 'Bastidores'])).find((g) => g.id === 'andar')
+  assert.ok(gap, 'o andar continua sendo escolhido sem perguntar')
+  assert.deepEqual(gap.choices.map((c) => c.label), ['Salão', 'Bastidores'])
+  assert.match(gap.why, /Salão/)
+})
+
+test('com UM andar só, não há escolha a fazer', () => {
+  const brief = { ...emptyBrief('x'), jobs: [{ id: 'j1', name: 'y', trigger: '', input: '', decision: '', action: '', output: '' }] }
+  assert.equal(detectGaps(brief, manifesto, inventarioComAndares(['Operações'])).find((g) => g.id === 'andar'), undefined)
+})
+
+test('quem NOMEIA a área não é perguntado — a área já respondeu', () => {
+  const brief = { ...emptyBrief('Montar o atendimento ao cliente'), jobs: [{ id: 'j1', name: 'Responder o cliente', trigger: 'quando escreve', input: 'a pergunta', decision: 'entender', action: 'responder', output: 'resposta' }] }
+  assert.equal(detectGaps(brief, manifesto, inventarioComAndares(['Salão', 'Bastidores'])).find((g) => g.id === 'andar'), undefined)
+})
