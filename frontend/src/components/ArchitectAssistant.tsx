@@ -115,6 +115,15 @@ interface AssistantState {
   /** Pede a primeira proposta sem esperar todas as respostas. */
   gerarProposta: () => Promise<void>
   /**
+   * Solta a conversa atual e começa outra — SEM apagar nada.
+   *
+   * O painel passou a retomar sozinho o projeto em andamento, o que resolve o "ele não
+   * lembra de nada" e não deixava saída: abrir o balão trazia sempre a mesma conversa, e
+   * para falar de outra coisa era preciso descobrir a tela `/architect` e apagar o projeto.
+   * Começar de novo não é destruir: o projeto continua na lista.
+   */
+  novaConversa: () => void
+  /**
    * O último erro COM O CÓDIGO.
    *
    * `erro` é a frase que o painel mostra; isto é o que permite a tela oferecer a saída
@@ -554,6 +563,23 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
     [projeto, enviando],
   )
 
+  const novaConversa = useCallback(() => {
+    setProjeto(null)
+    setPergunta(null)
+    setMensagens([])
+    setRascunho('')
+    setErro(null)
+    setUltimoErro(null)
+    setPhase('idle')
+    /**
+     * A retomada NÃO volta a disparar sozinha, e isso não é sorte: `jaRetomou` é marcado
+     * no primeiro `abrir`, antes mesmo de a busca terminar. Cheguei a repetir a marcação
+     * aqui "por segurança" e o dente mostrou que era código morto — o caso passava com e
+     * sem a linha. Linha morta com comentário dizendo que sustenta alguma coisa é pior que
+     * linha nenhuma: ela é a que ninguém remove depois.
+     */
+  }, [])
+
   /**
    * A primeira proposta, agora.
    *
@@ -608,9 +634,10 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
       pergunta,
       responder,
       gerarProposta,
+      novaConversa,
       ultimoErro,
     }),
-    [aberto, mensagens, rascunho, phase, enviando, erro, enviar, confirmar, projetoAtual, projeto, pergunta, responder, gerarProposta, ultimoErro],
+    [aberto, mensagens, rascunho, phase, enviando, erro, enviar, confirmar, projetoAtual, projeto, pergunta, responder, gerarProposta, novaConversa, ultimoErro],
   )
 
 
@@ -887,6 +914,20 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
           <span data-testid="architect-phase" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             {PHASE_LABEL[a.phase]}
           </span>
+        ) : null}
+        {/* SÓ APARECE quando há conversa para soltar — e fora da página do projeto, onde a
+            conversa é a daquele projeto e sair dela seria sair da tela sem dizer. */}
+        {!naPaginaDeProjeto && (a.mensagens.length > 0 || a.projeto) ? (
+          <button
+            type="button"
+            onClick={a.novaConversa}
+            aria-label="Começar uma conversa nova"
+            title="Começar uma conversa nova (não apaga o que já existe)"
+            data-testid="architect-nova-conversa"
+            style={botaoDeIcone}
+          >
+            <Icon name="plus" size={16} />
+          </button>
         ) : null}
         <button type="button" onClick={a.fechar} aria-label="Fechar o Arquiteto" data-testid="architect-close" style={botaoDeIcone}>
           <Icon name="x" size={16} />

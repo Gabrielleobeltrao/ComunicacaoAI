@@ -713,3 +713,34 @@ test('COMPATIBILIDADE: a rota antiga redireciona PRESERVANDO os parâmetros', as
   await page.waitForURL(/\/architect\?objetivo=/, { timeout: 20_000 })
   await expect(page.getByTestId('architect-objective')).toHaveValue('vindo de um favorito antigo')
 })
+
+test('dá para COMEÇAR UMA CONVERSA NOVA sem sair do painel', async ({ page }) => {
+  /**
+   * FALHA QUE EU CRIEI. O painel passou a retomar sozinho o projeto em andamento — o que é
+   * certo, e resolve o "ele não lembra de nada". Só que não sobrou saída: abrir o balão
+   * trazia de volta a mesma conversa, e para começar outra era preciso descobrir que existe
+   * uma tela `/architect`, ir até lá e apagar o projeto.
+   *
+   * Começar de novo NÃO é apagar: o projeto antigo continua na lista. O que este botão faz
+   * é soltar a conversa atual do painel — é a diferença entre "quero falar de outra coisa"
+   * e "quero destruir o que fiz".
+   */
+  await stub(page)
+  await page.route('**/api/architect/projects', (r) => r.fulfill({ json: [PROJETO()] }))
+  await page.route('**/api/architect/projects/000000000000000000000abc', (r) => r.fulfill({ json: PROJETO() }))
+  await page.route('**/api/architect/projects/*/messages', (r) =>
+    r.fulfill({ json: [{ id: 'm1', role: 'user', content: 'a conversa velha', createdAt: NOW }] }),
+  )
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+
+  // Ele retoma o que estava em andamento…
+  await expect(page.getByTestId('architect-message-user')).toContainText('a conversa velha')
+
+  // …e dá para sair disso sem apagar nada.
+  await page.getByTestId('architect-nova-conversa').click()
+  await expect(page.getByTestId('architect-message-user')).toHaveCount(0)
+  await expect(page.getByTestId('architect-vazio')).toBeVisible()
+  // O campo continua lá, pronto para o assunto novo.
+  await expect(page.getByTestId('architect-input')).toBeVisible()
+})
