@@ -418,3 +418,73 @@ test('com UM andar só, não há o que perguntar', () => {
   const { pending } = compileBrief(brief, manifesto, { title: 'Máximo', objective: 'x' }, inventarioAndares(['Operações']), {})
   assert.equal(pending.some((p) => p.kind === 'floor_choice'), false)
 })
+
+// --- Fase 5: nenhum default silencioso ---------------------------------------------------
+//
+// O QUE FOI APLICADO DE VERDADE, para um pedido que dizia "fim do dia em Orlando, com
+// horário de verão": `cron: "0 8 * * *"`, `timezone: America/Sao_Paulo`, status `draft`.
+// Três valores escolhidos pelo sistema, nenhum dito para quem ia usar. Oito da manhã de
+// São Paulo é o meio da madrugada em Orlando, e a rotina nem roda porque nasce parada.
+//
+// O padrão pode existir — a rotina precisa de um horário para nascer. O que não pode é
+// nascer calado.
+
+test('ACEITAÇÃO: o horário inventado é DECLARADO, com a frase da pessoa', () => {
+  const brief = { ...briefCompleto(), jobs: [{ ...trabalhoAgendado(), trigger: 'no fim do dia, no fuso de Orlando, com horário de verão' }] }
+  const { blueprint, pending } = compileBrief(brief, manifesto, { title: 'Máximo diário', objective: 'x' }, null, {})
+
+  const p = pending.find((x) => x.kind === 'routine_time')
+  assert.ok(p, `o horário foi escolhido em silêncio: ${JSON.stringify(pending)}`)
+  assert.match(p.because, /Orlando/i, 'a pendência precisa citar o que a pessoa disse')
+
+  // E a rotina diz na própria descrição que nasce parada — senão a pessoa espera um
+  // alarme que nunca vai tocar.
+  assert.match(String(blueprint.routines[0].description ?? ''), /parada|publique|Rotinas/i)
+})
+
+test('ACEITAÇÃO: um fuso NOMEADO pela pessoa não é trocado pelo padrão em silêncio', () => {
+  const brief = { ...briefCompleto(), jobs: [{ ...trabalhoAgendado(), trigger: 'todo fim de dia no fuso de Orlando' }] }
+  const { pending } = compileBrief(brief, manifesto, { title: 'Máximo', objective: 'x' }, null, {})
+  const p = pending.find((x) => x.kind === 'routine_timezone')
+  assert.ok(p, `o fuso pedido foi ignorado sem dizer: ${JSON.stringify(pending)}`)
+  assert.match(p.because, /Orlando/i)
+})
+
+test('sem fuso nomeado, não há o que declarar', () => {
+  const brief = { ...briefCompleto(), jobs: [{ ...trabalhoAgendado(), trigger: 'todo dia de manhã' }] }
+  const { pending } = compileBrief(brief, manifesto, { title: 'Resumo', objective: 'x' }, null, {})
+  assert.equal(pending.some((x) => x.kind === 'routine_timezone'), false)
+})
+
+// --- Fase 8: o agente nasce sabendo trabalhar --------------------------------------------
+//
+// O QUE FOI CRIADO DE VERDADE: `Marina | preset=analyst exec=llm tools=0 | objetivo:
+// "Capturar maior valor diário do bitcoin e registrar em base histórica: entrega Um
+// registro…"`. O objetivo é o NOME DO TRABALHO, e a instrução não diz de onde ler, onde
+// gravar, nem o que fazer quando faltar dado.
+//
+// O Brief tinha tudo isso escrito. Ele simplesmente não descia para o agente.
+
+test('ACEITAÇÃO: a instrução do agente cita a origem, o destino e o que fazer sem dado', () => {
+  const brief = {
+    ...briefCompleto(),
+    liveDataNeeds: [{ source: 'Base de preços do bitcoin a cada 15 segundos', freshness: '15s', required: true }],
+    recordsToKeep: [{ subject: 'máximo diário do bitcoin', fields: ['data', 'maximo'], retentionDays: null }],
+    jobs: [trabalhoAgendado()],
+  }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Máximo diário', objective: 'x' }, null, {})
+  const instrucao = String(blueprint.agents[0].instructions ?? '')
+
+  assert.match(instrucao, /bitcoin/i, `a instrução não diz de onde ler: ${instrucao}`)
+  assert.match(instrucao, /máximo diário|maximo diario/i, 'a instrução não diz onde gravar')
+  // O que fazer quando o dado falta é o que separa um agente de um que trava — ou pior,
+  // de um que inventa o número.
+  assert.match(instrucao, /faltar|sem dado|não invente|nao invente/i)
+})
+
+test('sem dado declarado, a instrução continua sendo a do trabalho — sem inventar origem', () => {
+  const brief = { ...briefCompleto(), jobs: [trabalhoAgendado()] }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'x', objective: 'x' }, null, {})
+  const instrucao = String(blueprint.agents[0].instructions ?? '')
+  assert.equal(/bitcoin/i.test(instrucao), false, 'inventou uma origem que ninguém declarou')
+})

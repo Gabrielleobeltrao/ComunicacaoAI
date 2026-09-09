@@ -70,6 +70,16 @@ export function deriveChecklist(bp: OfficeBlueprintV1): ArchitectChecklistItem[]
       // O documento é entregue na base de quem vai usá-lo. Prédio não tem link aqui:
       // a base dele não é uma tela de recurso.
       ...(req.targetKey && req.scope !== 'building' ? { linkTarget: { kind: req.scope, key: req.targetKey } } : {}),
+      /**
+       * O CAMINHO de resolver. O Arquiteto não anexa arquivo — e não anexar é a decisão
+       * certa. O erro era não dizer onde se anexa: numa conversa real o dono escreveu
+       * "Anexa para mim" duas vezes e as duas respostas foram "vou considerar que vocês
+       * vão anexar", deixando ele esperando uma coisa que não ia acontecer.
+       *
+       * O App já resolvia isto com `actionPath`. O conhecimento passa a resolver igual: a
+       * tela do dono do conhecimento é onde o documento entra.
+       */
+      actionPath: req.scope === 'agent' ? '/agents' : req.scope === 'sector' ? '/setores' : '/building',
       dependsOn: req.targetKey && req.scope === 'agent' ? [idDe('structure', `agent-${req.targetKey}`)] : req.targetKey && req.scope === 'sector' ? [idDe('structure', `sector-${req.targetKey}`)] : [],
     })
   }

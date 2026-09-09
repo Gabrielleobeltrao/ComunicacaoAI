@@ -85,15 +85,33 @@ test('LACUNA 1: o Blueprint V1 não tem onde guardar Databases, Sources, Monitor
 
 // --- lacuna 2: liveDataNeeds não vira nada ----------------------------------------------
 
-test('LACUNA 2: uma necessidade de dado ao vivo não é compilada em fonte, destino nem monitor', () => {
+test('LACUNA 2, hoje pela METADE: o V1 não cria fonte nem monitor, mas o dado chega ao agente', () => {
+  /**
+   * A lacuna original: `liveDataNeeds` não virava NADA — nem recurso, nem pendência. Quem
+   * dissesse "preciso da cotação do dólar" tinha a frase entendida e descartada.
+   *
+   * O que mudou: a necessidade de dado passou a descer para a INSTRUÇÃO do agente, junto
+   * com onde gravar e o que fazer quando o dado falta. O agente aplicado nascia com o
+   * objetivo igual ao nome do trabalho e nenhuma instrução de como fazê-lo.
+   *
+   * O que NÃO mudou, e é de propósito: criar fonte, destino ao vivo e monitor é do V2 —
+   * o V1 desenha organização (andar, agente, setor, rotina). Este caso continua sendo a
+   * prova de que o V1 não invadiu esse território.
+   */
   const brief = briefDe({
     liveDataNeeds: [{ source: 'cotação do dólar', freshness: 'até 1 minuto', required: true }],
   })
   const { blueprint, pending } = compileBrief(brief, manifesto(), { title: 'Câmbio', objective: 'Acompanhar' })
 
-  // Nada nasce dela, e nem sequer aparece como pendência declarada.
-  assert.equal(JSON.stringify(blueprint).includes('dólar'), false)
-  assert.equal(pending.some((p) => p.ref?.includes('dólar')), false, 'nem pendência ela vira (lacuna 2)')
+  // O V1 continua sem criar recurso de dado nenhum.
+  for (const campo of ['sources', 'monitors', 'databases', 'liveDestinations']) {
+    assert.equal(campo in blueprint, false, `o V1 não desenha ${campo}`)
+  }
+  assert.equal(pending.some((p) => p.ref?.includes('dólar')), false, 'a pendência de dado é do V2')
+
+  // E o dado CHEGA a quem vai trabalhar com ele.
+  const instrucao = String(blueprint.agents[0]?.instructions ?? '')
+  assert.match(instrucao, /dólar/i, 'a necessidade de dado voltou a ser descartada')
 })
 
 // --- lacuna 3: só quatro tipos podem ser reaproveitados ---------------------------------

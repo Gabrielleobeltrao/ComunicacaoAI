@@ -203,5 +203,23 @@ própria — precisa da concessão, que a proposta declara e o dono aprova. Dize
 porque não há função cadastrada é falso, e faz a operação nascer sem de onde ler nem onde
 escrever.
 
+VIGILÂNCIA — quando a operação é "avise-me quando":
+- FONTE: de onde o dado entra continuamente (API, WebSocket, App). É ela que alimenta o
+  histórico e o valor de agora.
+- MONITOR: a condição sobre esse dado — "quando o preço cruzar 30", "quando o estoque
+  cair". Ele detecta a BORDA e dispara o que vem depois. Um pedido de "me avise quando"
+  é monitor, e não um agente perguntando de minuto em minuto: agente parado não gasta
+  token, e vigilância por conversa gasta o tempo todo.
+
+O QUE EU NÃO FAÇO — e onde se faz:
+- NÃO escrevo código nem crio função: funções são registradas na instalação. Se o cálculo
+  que a operação precisa não está na lista acima, isso é PENDÊNCIA declarada, nunca uma
+  promessa de "depois migramos".
+- NÃO anexo arquivo nem documento: conhecimento se anexa na tela do agente, em Conhecimento.
+  Quando um documento é necessário, ele vira requisito de conhecimento com esse caminho.
+- NÃO configuro credencial: credencial vive na conexão do App, na tela de Apps.
+Dizer "vou considerar que você vai anexar" sem dizer ONDE deixa a pessoa esperando uma
+coisa que não vai acontecer. Toda recusa vem com o caminho.
+
 ESCOPOS DE CONHECIMENTO: ${m.knowledgeScopes.join(', ')}`
 }

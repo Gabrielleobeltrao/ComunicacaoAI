@@ -199,6 +199,18 @@ export function resolveAppActions(app: CapabilityApp, job: BriefJob | null): { r
  * conectado recebia uma proposta de web_chat, sem aviso. O pedido ganha sempre; a conexão
  * vira pendência de checklist, que é o lugar certo para ela.
  */
+/**
+ * Alguém FALA com este agente?
+ *
+ * O gatilho decide: trabalho que começa quando uma pessoa escreve precisa de porta; o que
+ * começa no horário, não. O texto conta junto, porque "responder a dúvida" é conversa mesmo
+ * quando o gatilho não diz quem falou.
+ */
+export function ehConversaDeGente(job: { trigger?: string; name?: string; action?: string; input?: string }): boolean {
+  const t = `${job.trigger ?? ''} ${job.name ?? ''} ${job.action ?? ''} ${job.input ?? ''}`.toLowerCase()
+  return /(cliente|pessoa|usuário|usuario|visitante|lead|conversa|mensagem|whatsapp|chat|responder|atender|dúvida|duvida|pergunta)/.test(t)
+}
+
 export function resolveChannel(
   pedidos: string[],
   manifest: ArchitectCapabilityManifest | null,
@@ -668,7 +680,19 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
   }
 
   // --- 4. o canal: o PEDIDO ganha ------------------------------------------------------------
-  const canal = resolveChannel(brief.channels ?? [], manifest)
+  /**
+   * A PORTA DE ENTRADA SÓ EXISTE ONDE ALGUÉM ENTRA.
+   *
+   * `resolveChannel` cai no primeiro canal CONECTADO quando ninguém pede um — e foi assim
+   * que o dono, insistindo duas vezes para tirar o web_chat, acabou acionando o gatilho do
+   * que tentava evitar: esvaziar `brief.channels` é exatamente o que dispara o padrão.
+   *
+   * O padrão só vale onde há conversa. Numa operação que roda sozinha no fim do dia não há
+   * quem fale, e abrir a porta é prometer um atendimento que ninguém vai atender. Um canal
+   * PEDIDO por escrito continua valendo — a regra tira o silêncio, não a escolha.
+   */
+  const alguemFala = brief.jobs.some((j) => ehConversaDeGente(j))
+  const canal = (brief.channels ?? []).length > 0 || alguemFala ? resolveChannel(brief.channels ?? [], manifest) : null
   const entrada = bp.organization.agents[0]
   if (canal && entrada) {
     if ('missing' in canal) {
@@ -814,6 +838,18 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
   }
 
   bp.warnings = pending.map((p) => ({ path: p.kind, message: `${p.ref}: ${p.because}` }))
+  /**
+   * DE QUEM É O ACESSO ÀS BASES — decidido no fim, quando os agentes já existem.
+   *
+   * As fontes de dado são compiladas antes dos agentes (o dado precisa existir para o
+   * trabalho ser desenhado em cima dele), então a base de leitura nascia sem `agentKeys`:
+   * declarada e inalcançável, que é o mesmo que não declarada. Aqui todo Database que diz
+   * para que serve ganha quem o usa.
+   */
+  for (const base of bp.resources.databases) {
+    if (base.agentAccess && !(base.agentKeys ?? []).length) base.agentKeys = bp.organization.agents.map((a) => a.key)
+  }
+
   return { blueprint: bp, classification, pending }
 }
 
@@ -1114,7 +1150,34 @@ function compilarFonteDeDado(
    * divergem no primeiro minuto em que uma falhar.
    */
   const fonteDaConta = fonteDaContaQueJaServe(ctx.inventory, need.source)
-  if (fonteDaConta) return
+  if (fonteDaConta) {
+    /**
+     * A fonte já roda — mas o plano precisa DIZER DE ONDE SE LÊ.
+     *
+     * Sair calado aqui foi o defeito: não duplicar a coleta estava certo, e o resultado foi
+     * um agente aplicado que sabia gravar e não sabia ler, porque a base de origem nunca
+     * entrou no plano e por isso nunca recebeu concessão. A operação inteira existe para
+     * ler dali.
+     */
+    const base = baseDaFonte(ctx.inventory, fonteDaConta)
+    if (base && !bp.resources.databases.some((d) => d.resourceId === base.id)) {
+      bp.resources.databases.push({
+        key: `base-${slug(base.label) || raiz}`,
+        action: 'reuse',
+        resourceId: base.id,
+        layer: need.required ? 'essential' : 'recommended',
+        rationale: `"${fonteDaConta.label}" já grava neste Database: a operação lê dele em vez de abrir outra coleta`,
+        dependsOn: [],
+        name: base.label,
+        owner: { ownerType: 'account' },
+        adapterKind: 'data_history',
+        agentKeys: bp.organization.agents.map((a) => a.key),
+        // LEITURA e só: esta é a base de onde a operação consome.
+        agentAccess: 'read' as const,
+      })
+    }
+    return
+  }
 
   const jaExiste = baseQueJaServe(ctx.inventory, need.source)
   if (jaExiste) {
@@ -1247,6 +1310,22 @@ function fonteDaContaQueJaServe(inventory: OfficeInventory | null, texto: string
   if (!termos.length) return null
   const achada = (inventory?.sections.source?.items ?? []).find((f) => termosDistintivos(f.label).some((t) => termos.includes(t)))
   return achada ? { id: achada.id, label: achada.label } : null
+}
+
+/**
+ * O Database em que uma fonte grava.
+ *
+ * A fonte declara `dataStoreId` quando escreve histórico. Sem ele, a conta que só tem um
+ * Database de histórico responde sozinha — é ele, e não há ambiguidade a resolver.
+ */
+function baseDaFonte(inventory: OfficeInventory | null, fonte: { id: string; label: string }): { id: string; label: string } | null {
+  const bases = inventory?.sections.database?.items ?? []
+  const fonteNoInventario = (inventory?.sections.source?.items ?? []).find((f) => f.id === fonte.id)
+  const declarado = String(fonteNoInventario?.meta?.dataStoreId ?? '')
+  const porDeclaracao = bases.find((b) => b.id === declarado)
+  if (porDeclaracao) return { id: porDeclaracao.id, label: porDeclaracao.label }
+  const historicos = bases.filter((b) => String(b.meta?.adapterKind ?? '') === 'data_history')
+  return historicos.length === 1 ? { id: historicos[0].id, label: historicos[0].label } : null
 }
 
 /** Palavras que identificam UMA coisa: fora do vocabulário comum e com dígito ou tamanho. */
