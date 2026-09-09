@@ -237,7 +237,16 @@ export function compileBrief(
   const areas = areasOf(brief)
   const daArea = areas.length ? findExistingFloor(inventory, areas[0]) : null
   const existentes = inventory?.sections.floor?.items ?? []
-  const anfitriao = daArea ?? (areas.length === 0 ? (existentes[0] ?? null) : null)
+  /**
+   * O ANDAR QUE A PESSOA ESCOLHEU vence a lista.
+   *
+   * A pergunta só vale se a resposta mandar: responder "Bastidores" e ver a proposta montada
+   * no "Salão" é pior que nunca ter perguntado. A resposta é o SLUG DO NOME, e não um id —
+   * quem reencontra o andar é este código, contra o inventário.
+   */
+  const escolhido = String(answers.andar ?? '').trim()
+  const doDono = escolhido ? existentes.find((f) => slug(f.label) === escolhido) : null
+  const anfitriao = doDono ?? daArea ?? (areas.length === 0 ? (existentes[0] ?? null) : null)
   /**
    * COM VÁRIOS ANDARES e nenhuma área dita, a escolha é da pessoa.
    *
@@ -248,7 +257,7 @@ export function compileBrief(
    * O plano continua montado no primeiro para permanecer válido (agente mora em andar), e
    * a escolha vira pendência declarada. Perguntar é mais barato que desfazer.
    */
-  if (!daArea && areas.length === 0 && existentes.length > 1) {
+  if (!doDono && !daArea && areas.length === 0 && existentes.length > 1) {
     pending.push({
       kind: 'floor_choice',
       ref: base.title,

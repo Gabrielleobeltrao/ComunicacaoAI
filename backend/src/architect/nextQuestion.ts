@@ -1,6 +1,7 @@
 import type { ArchitectCapabilityManifest } from './capabilities.js'
 import type { OperationBrief } from './brief.js'
 import { classifyJob, formaPedida, haDuvidaDeForma } from './classify.js'
+import type { OfficeInventory } from './inventory.js'
 
 // QUAL pergunta fazer agora — decidido pelo servidor, não pelo modelo.
 //
@@ -30,6 +31,66 @@ export interface BriefGap {
 
 const temTexto = (v: string | undefined | null): boolean => Boolean(v && v.trim())
 
+/**
+ * As ÁREAS que o texto nomeia — a mesma família de palavras do compilador.
+ *
+ * Duplicada aqui de propósito: `compileV2` puxa o inventário e o catálogo no import, e este
+ * módulo é lido pela rodada antes de qualquer um dos dois existir. O que se repete são seis
+ * expressões regulares; o que se evitaria repetindo-as é um ciclo de import.
+ */
+const AREAS_CITADAS = /\b(atend|suporte|sac|recep|cliente|vend|comercial|prospec|financ|cobran|faturam|pagament|log[íi]st|entreg|expedi|estoque|marketing|conte[úu]do|campanha|opera[çc])/i
+function areasCitadas(brief: OperationBrief): string[] {
+  const texto = `${brief.businessGoal} ${brief.jobs.map((j) => j.name).join(' ')}`
+  return AREAS_CITADAS.test(texto) ? ['area'] : []
+}
+
+/** A chave estável de um assunto, para a resposta não se perder entre rodadas. */
+const slugDeAssunto = (texto: string) =>
+  String(texto ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40)
+
+/**
+ * O conjunto da conta que parece servir a esta necessidade.
+ *
+ * Casa por TERMO DISTINTIVO — o mesmo critério que o compilador usa para decidir reuso.
+ * Aqui ele não decide nada: só encontra o candidato de que a pergunta precisa.
+ */
+function conjuntoQueServe(inventory: OfficeInventory | null, texto: string): { label: string; campos: string } | null {
+  const termos = termosDoAssunto(texto)
+  if (!termos.length) return null
+  const conjuntos = inventory?.sections.dataset?.items ?? []
+  const fontes = inventory?.sections.source?.items ?? []
+  for (const item of [...conjuntos, ...fontes]) {
+    if (termosDoAssunto(item.label).some((t) => termos.includes(t))) {
+      return { label: item.label, campos: String(item.meta?.fields ?? '') }
+    }
+  }
+  return null
+}
+
+/** Palavras que identificam UMA coisa — ver `termosDistintivos` no compilador. */
+const GENERICOS = new Set([
+  'cotacao','cotacoes','preco','precos','valor','valores','dado','dados','fonte','fontes','base','bases','database',
+  'atualizando','atualiza','cada','segundos','minutos','historico','serie','diario','diaria','nova','novo','conta',
+])
+function termosDoAssunto(texto: string): string[] {
+  return [
+    ...new Set(
+      String(texto ?? '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 4 && !GENERICOS.has(t)),
+    ),
+  ]
+}
+
 /** Como cada forma se chama, e por que ela é a recomendada. */
 const NOME_DA_FORMA: Record<string, string> = {
   agent: 'um agente',
@@ -56,8 +117,65 @@ const jaSabido = (brief: OperationBrief, chave: string): boolean =>
  * Cada detector responde a uma pergunta só: "sem isto, o desenho muda?". O que não muda
  * o desenho não entra — é assim que a entrevista para de parecer formulário.
  */
-export function detectGaps(brief: OperationBrief, manifest: ArchitectCapabilityManifest | null): BriefGap[] {
+export function detectGaps(
+  brief: OperationBrief,
+  manifest: ArchitectCapabilityManifest | null,
+  /** O que a conta tem. Sem ele, "você já tem uma base que serve" não é uma pergunta possível. */
+  inventory: OfficeInventory | null = null,
+): BriefGap[] {
   const lacunas: BriefGap[] = []
+
+  /**
+   * ANTES DE CRIAR, PROCURA — E PERGUNTA SE ACHOU.
+   *
+   * O compilador já procurava, e amarrava calado. Procurar em silêncio tem os dois
+   * defeitos: quando acerta, a pessoa não fica sabendo que houve reuso; quando erra, ela
+   * descobre depois de aplicar. E o que ela pediu foi exatamente o meio-termo — "ele
+   * pergunta se eu tenho essa database de bitcoin, e vê o que tem lá dentro".
+   *
+   * A pergunta cita o que foi achado E os campos que existem: é o que permite responder
+   * sabendo, em vez de confiar.
+   */
+  /**
+   * EM QUAL ANDAR ISTO MORA — perguntado, e não escolhido.
+   *
+   * O trabalho do bitcoin nasceu no "Salão", que é o andar do restaurante, só por ser o
+   * primeiro da lista. Virar pendência foi melhor que o silêncio, mas pendência é um aviso
+   * que se lê DEPOIS de a proposta estar montada. A escolha entre andares é fechada e
+   * curta — são os que existem —, que é exatamente a forma de uma pergunta com opções.
+   *
+   * Quem NOMEIA uma área já respondeu: "montar o atendimento" diz onde mora.
+   */
+  const andares = inventory?.sections.floor?.items ?? []
+  if (andares.length > 1 && brief.jobs.length > 0 && !jaSabido(brief, 'andar') && areasCitadas(brief).length === 0) {
+    lacunas.push({
+      id: 'andar',
+      question: 'Em qual andar este trabalho mora?',
+      why: `A conta tem ${andares.length} andares. Sem a resposta eu monto em "${andares[0].label}", que é só o primeiro da lista.`,
+      impact: 'Decide onde a operação inteira é criada.',
+      priority: 90,
+      choices: andares.slice(0, 6).map((f) => ({ value: slugDeAssunto(f.label), label: f.label })),
+    })
+  }
+
+  for (const [i, need] of (brief.liveDataNeeds ?? []).entries()) {
+    if (!need.source?.trim()) continue
+    const chave = `origem:${slugDeAssunto(need.source)}` || `origem:${i}`
+    if (jaSabido(brief, chave)) continue
+    const achado = conjuntoQueServe(inventory, need.source)
+    if (!achado) continue
+    lacunas.push({
+      id: chave,
+      question: `Você já tem "${achado.label}" nesta conta. É de lá que eu leio "${need.source.slice(0, 60)}"?`,
+      why: achado.campos ? `"${achado.label}" tem os campos: ${achado.campos}.` : `"${achado.label}" já recebe dado nesta conta.`,
+      impact: 'Decide se a operação lê o que já existe ou abre uma coleta nova.',
+      priority: 92,
+      choices: [
+        { value: 'usar', label: `Sim, ler de "${achado.label}"` },
+        { value: 'criar', label: 'Não, é outra origem' },
+      ],
+    })
+  }
 
   /**
    * QUANDO O SERVIDOR DISCORDA DE QUEM PEDIU, ele PERGUNTA.
@@ -192,8 +310,8 @@ export function detectGaps(brief: OperationBrief, manifest: ArchitectCapabilityM
  * Duas e não cinco porque uma entrevista de cinco perguntas por turno é um formulário
  * com outro nome, e porque a segunda resposta costuma mudar a terceira pergunta.
  */
-export function nextQuestions(brief: OperationBrief, manifest: ArchitectCapabilityManifest | null, limite = 2): BriefGap[] {
-  const lacunas = detectGaps(brief, manifest)
+export function nextQuestions(brief: OperationBrief, manifest: ArchitectCapabilityManifest | null, limite = 2, inventory: OfficeInventory | null = null): BriefGap[] {
+  const lacunas = detectGaps(brief, manifest, inventory)
   if (lacunas.length === 0) return []
   /**
    * Quando a primeira lacuna é FUNDACIONAL, ela vai sozinha.

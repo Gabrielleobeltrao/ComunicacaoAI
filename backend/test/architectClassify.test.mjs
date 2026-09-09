@@ -314,3 +314,87 @@ test('SEM dúvida: pediu ferramenta e a regra deu ferramenta — nada a pergunta
   const brief = { ...emptyBrief('pedidos'), jobs: [j] }
   assert.equal(detectGaps(brief, manifesto).find((g) => g.id === 'forma:j1'), undefined)
 })
+
+// --- ele VÊ o que você tem, e PERGUNTA se é aquilo --------------------------------------
+//
+// DO TESTE REAL: "ele não viu que eu tenho uma database chamada bitcoin… ele pergunta se eu
+// tenho essa database de bitcoin? 'Ah, você está querendo tirar o valor dessa database' — e
+// aí ele entra mais a fundo e vê o que tem nessa database. Estou sentindo falta dele, antes
+// de querer criar alguma coisa, buscar e ver se tem."
+//
+// O compilador já procura — e amarra em silêncio. Procurar calado tem os dois defeitos: se
+// acerta, a pessoa não fica sabendo que ele reusou; se erra, ela descobre depois de aplicar.
+
+const inventarioComBitcoin = () => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: null,
+  sections: {
+    database: { kind: 'database', total: 1, truncated: false, items: [{ id: 'db1', label: 'Históricos', ownerScope: 'account:', meta: { adapterKind: 'data_history' } }] },
+    dataset: { kind: 'dataset', total: 1, truncated: false, items: [{ id: 'db1:btc', label: 'Bitcoin', ownerScope: 'database:db1', meta: { dataStoreId: 'db1', key: 'btc', fields: 'preco_bitcoin' } }] },
+  },
+})
+
+test('ACEITAÇÃO: achou uma base que serve, ele PERGUNTA se é dela que lê', () => {
+  const brief = {
+    ...emptyBrief('Guardar o mínimo diário do bitcoin'),
+    liveDataNeeds: [{ source: 'database com o valor do bitcoin atualizando a cada 15 segundos', freshness: '15s', required: true }],
+  }
+  const gap = detectGaps(brief, manifesto, inventarioComBitcoin()).find((g) => g.id.startsWith('origem:'))
+  assert.ok(gap, 'ele amarrou em silêncio em vez de perguntar')
+  // A pergunta cita o que ele achou E o que tem lá dentro — é o que permite a pessoa
+  // responder sabendo, em vez de confiar.
+  assert.match(gap.question, /Bitcoin/)
+  assert.match(gap.why, /preco_bitcoin/)
+  assert.deepEqual(gap.choices.map((c) => c.value), ['usar', 'criar'])
+})
+
+test('sem nada parecido na conta, não há o que perguntar', () => {
+  const brief = { ...emptyBrief('x'), liveDataNeeds: [{ source: 'cotação do café arábica', freshness: '1h', required: true }] }
+  assert.equal(detectGaps(brief, manifesto, inventarioComBitcoin()).find((g) => g.id.startsWith('origem:')), undefined)
+})
+
+test('respondida, a pergunta não volta', () => {
+  const brief = {
+    ...emptyBrief('Guardar o mínimo diário do bitcoin'),
+    liveDataNeeds: [{ source: 'valor do bitcoin', freshness: '15s', required: true }],
+    knownFacts: [{ key: 'origem:valor-do-bitcoin', value: 'usar', source: 'user' }],
+  }
+  assert.equal(detectGaps(brief, manifesto, inventarioComBitcoin()).find((g) => g.id.startsWith('origem:')), undefined)
+})
+
+// --- o andar vira PERGUNTA, não pendência ------------------------------------------------
+//
+// O dono reclamou disso duas vezes: o trabalho do bitcoin nasceu no "Salão", que é o andar
+// do restaurante, só por ser o primeiro da lista. Virou pendência — melhor que o silêncio,
+// mas pendência é um aviso que ele lê DEPOIS de a proposta estar montada.
+//
+// A escolha entre andares é fechada e curta: são os andares que existem. É exatamente a
+// forma de uma pergunta com opções, do mesmo jeito que a origem do dado virou.
+
+const inventarioComAndares = (nomes) => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: null,
+  sections: {
+    floor: { kind: 'floor', total: nomes.length, truncated: false, items: nomes.map((n, i) => ({ id: `f${i}`, label: n, ownerScope: 'building:b1', status: 'active' })) },
+  },
+})
+
+test('ACEITAÇÃO: com vários andares e nenhuma área dita, ele PERGUNTA em qual — com as opções', () => {
+  const brief = { ...emptyBrief('Guardar o mínimo diário do bitcoin'), jobs: [{ id: 'j1', name: 'Registrar o mínimo', trigger: 'todo fim de dia', input: 'as cotações', decision: 'conferir', action: 'gravar', output: 'uma linha' }] }
+  const gap = detectGaps(brief, manifesto, inventarioComAndares(['Salão', 'Bastidores'])).find((g) => g.id === 'andar')
+  assert.ok(gap, 'o andar continua sendo escolhido sem perguntar')
+  assert.deepEqual(gap.choices.map((c) => c.label), ['Salão', 'Bastidores'])
+  assert.match(gap.why, /Salão/)
+})
+
+test('com UM andar só, não há escolha a fazer', () => {
+  const brief = { ...emptyBrief('x'), jobs: [{ id: 'j1', name: 'y', trigger: '', input: '', decision: '', action: '', output: '' }] }
+  assert.equal(detectGaps(brief, manifesto, inventarioComAndares(['Operações'])).find((g) => g.id === 'andar'), undefined)
+})
+
+test('quem NOMEIA a área não é perguntado — a área já respondeu', () => {
+  const brief = { ...emptyBrief('Montar o atendimento ao cliente'), jobs: [{ id: 'j1', name: 'Responder o cliente', trigger: 'quando escreve', input: 'a pergunta', decision: 'entender', action: 'responder', output: 'resposta' }] }
+  assert.equal(detectGaps(brief, manifesto, inventarioComAndares(['Salão', 'Bastidores'])).find((g) => g.id === 'andar'), undefined)
+})

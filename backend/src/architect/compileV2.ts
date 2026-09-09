@@ -428,7 +428,7 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
    * históricos que divergem no primeiro erro de rede.
    */
   for (const [i, need] of (brief.liveDataNeeds ?? []).entries()) {
-    compilarFonteDeDado(bp, pending, { need, indice: i, floorKey: andarPadrao, manifest, inventory })
+    compilarFonteDeDado(bp, pending, { need, indice: i, floorKey: andarPadrao, manifest, inventory, answers: input.answers ?? {} })
   }
 
   // --- 3. as peças, por classificação -------------------------------------------------------
@@ -1121,6 +1121,8 @@ function compilarFonteDeDado(
     floorKey: string
     manifest: ArchitectCapabilityManifest | null
     inventory: OfficeInventory | null
+    /** O que a pessoa respondeu sobre a ORIGEM: `origem:<assunto>` = `usar` | `criar`. */
+    answers: Record<string, unknown>
   },
 ): void {
   const { need, indice } = ctx
@@ -1149,7 +1151,13 @@ function compilarFonteDeDado(
    * outra em cima dela é pagar duas vezes pela mesma leitura — e ficar com duas séries que
    * divergem no primeiro minuto em que uma falhar.
    */
-  const fonteDaConta = fonteDaContaQueJaServe(ctx.inventory, need.source)
+  /**
+   * A RESPOSTA MANDA. "É outra origem" quer dizer que a base que eu achei não é a dela —
+   * insistir no reuso seria pior que nunca ter perguntado: ela responderia e veria a
+   * proposta ignorar a resposta.
+   */
+  const escolha = String(ctx.answers[`origem:${chaveDeAssunto(need.source)}`] ?? '')
+  const fonteDaConta = escolha === 'criar' ? null : fonteDaContaQueJaServe(ctx.inventory, need.source)
   if (fonteDaConta) {
     /**
      * A fonte já roda — mas o plano precisa DIZER DE ONDE SE LÊ.
@@ -1179,7 +1187,7 @@ function compilarFonteDeDado(
     return
   }
 
-  const jaExiste = baseQueJaServe(ctx.inventory, need.source)
+  const jaExiste = escolha === 'criar' ? null : baseQueJaServe(ctx.inventory, need.source)
   if (jaExiste) {
     if (!bp.resources.databases.some((d) => d.resourceId === jaExiste.id)) {
       bp.resources.databases.push({
@@ -1275,6 +1283,16 @@ function fonteQueJaServe(bp: OfficeBlueprintV2, texto: string): string | null {
   }
   return null
 }
+
+/** A mesma chave que a pergunta usa — ver `slugDeAssunto` em `nextQuestion.ts`. */
+const chaveDeAssunto = (texto: string) =>
+  String(texto ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40)
 
 /**
  * A Database DA CONTA que já guarda este dado, se houver.

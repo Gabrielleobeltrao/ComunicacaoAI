@@ -169,15 +169,33 @@ export function diffBlueprints(antes: OfficeBlueprintV1 | null | undefined, depo
 export function ehRepeticaoSemEfeito(mensagem: string, anteriores: string[], mudancas: BlueprintChange[]): boolean {
   if (mudancas.length > 0) return false
   const alvo = palavrasDe(mensagem)
+  /**
+   * FRASE CURTA NÃO ACUSA NINGUÉM.
+   *
+   * A conta antiga era `comuns / Math.min(a, b)`, e isso fazia uma abertura vaga contaminar
+   * tudo que viesse depois: "quero montar um agente" tem duas palavras significativas, e o
+   * pedido seguinte — "quero criar um agente para salvar o valor mínimo do bitcoin numa nova
+   * database" — repetia uma delas. Meio de dois é meio, e o sistema respondia "você pediu
+   * isto de novo" na PRIMEIRA vez que a pessoa explicou o que queria.
+   *
+   * Acusar repetição onde houve pedido novo é pior que não acusar nenhuma. Quem resolve
+   * isso é o DENOMINADOR MAIOR, logo abaixo — o piso de tamanho aqui só descarta o que não
+   * chega a ser uma frase ("ok", "isso").
+   */
   if (alvo.size < 2) return false
   for (const anterior of anteriores.slice(-4)) {
     const dela = palavrasDe(anterior)
     if (dela.size < 2) continue
     let comuns = 0
     for (const w of alvo) if (dela.has(w)) comuns += 1
-    // Metade das palavras significativas em comum, nos dois sentidos: "tira o web chat" e
-    // "e por que está com web chat? não vamos precisar" são o mesmo pedido dito diferente.
-    if (comuns / Math.min(alvo.size, dela.size) >= 0.5) return true
+    /**
+     * Dois terços das palavras significativas, contra a frase MAIOR.
+     *
+     * Contra a maior, e não contra a menor: é o que impede uma frase curta de "caber
+     * inteira" dentro de uma longa e ser lida como a mesma coisa. Duas frases que dizem o
+     * mesmo pedido têm tamanho parecido — é isso que o denominador maior exige.
+     */
+    if (comuns / Math.max(alvo.size, dela.size) >= 0.6) return true
   }
   return false
 }
