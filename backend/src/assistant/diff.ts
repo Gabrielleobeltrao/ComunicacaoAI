@@ -217,12 +217,40 @@ function palavrasDe(texto: string): Set<string> {
   )
 }
 
+/**
+ * COMO UMA JANELA SE LÊ — num lugar só.
+ *
+ * `Math.round(30_000 / 60_000)` é 1: uma janela de 30 segundos era descrita como "1 min".
+ * Arredondar o tamanho de uma janela é a mentira silenciosa que mais custa aqui, porque a
+ * pessoa confere o número da série contra o intervalo que ela pediu.
+ */
+export function tamanhoDaJanela(everyMs: number): string {
+  const ms = Number(everyMs) || 0
+  if (ms >= 3_600_000 && ms % 3_600_000 === 0) return `${ms / 3_600_000} h`
+  if (ms >= 60_000) return `${ms % 60_000 === 0 ? ms / 60_000 : (ms / 60_000).toFixed(1)} min`
+  return `${Math.round(ms / 1000)}s`
+}
+
 export function resumoDaMudanca(
   mudancas: BlueprintChange[],
   pendencias: { kind: string; ref: string; because: string }[],
-  opts: { repetido?: boolean } = {},
+  opts: { repetido?: boolean; janelas?: { nome: string; contas: string[]; campo: string; everyMs: number }[] } = {},
 ): string {
   const linhas: string[] = []
+
+  /**
+   * O QUE A PROPOSTA VAI GRAVAR — dito pelo servidor, ao lado do texto do modelo.
+   *
+   * O diff só conhece o Blueprint V1, que não tem `histories`: a série resumida não aparecia
+   * em "Criei:", então a ÚNICA coisa descrevendo ela era a prosa do modelo — que foi
+   * justamente a que passou cinco rodadas dizendo "depende de uma função que não existe".
+   *
+   * Aqui a linha é derivada do plano compilado. Se o texto do modelo hedgear, a verdade está
+   * na mesma mensagem, uma linha abaixo.
+   */
+  for (const j of opts.janelas ?? []) {
+    linhas.push(`**Vai gravar:** ${j.contas.join(' e ')} de "${j.campo}" a cada ${tamanhoDaJanela(j.everyMs)} — conta do motor, sem função a cadastrar.`)
+  }
 
   if (opts.repetido) {
     // O reconhecimento vem PRIMEIRO: quem repetiu precisa saber que foi ouvido antes de

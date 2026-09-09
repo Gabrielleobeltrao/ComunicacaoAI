@@ -17,7 +17,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-const { resumoDaMudanca } = await import('../dist/assistant/diff.js')
+const { resumoDaMudanca, tamanhoDaJanela } = await import('../dist/assistant/diff.js')
 
 test('nada mudou: a resposta DIZ que nada mudou', () => {
   const r = resumoDaMudanca([], [])
@@ -128,4 +128,46 @@ test('e a repetição de VERDADE continua sendo vista', () => {
   const mesma = 'E pq está com web-chat, não vamos precisar disso'
   assert.equal(ehRepeticaoSemEfeito(mesma, ['oi', mesma], []), true)
   assert.equal(ehRepeticaoSemEfeito('e por que está com web chat? não vamos precisar dele', [mesma], []), true)
+})
+
+// --- O QUE A PROPOSTA VAI GRAVAR -------------------------------------------------------------
+//
+// O diff só conhece o Blueprint V1, que não tem `histories`: a série resumida por janela não
+// aparecia em "Criei:", então a ÚNICA coisa descrevendo ela era a prosa do modelo — e a prosa
+// passou cinco rodadas dizendo "depende de uma função determinística que não existe".
+
+const janelaDoBitcoin = () => [{ nome: 'minimo e maximo a cada 5 min', contas: ['minimo', 'maximo'], campo: 'price', everyMs: 300_000 }]
+
+test('a janela entra no resumo do SERVIDOR, com a conta e o campo', () => {
+  const r = resumoDaMudanca([], [], { janelas: janelaDoBitcoin() })
+  assert.match(r, /\*\*Vai gravar:\*\*/)
+  assert.match(r, /minimo e maximo/)
+  assert.match(r, /"price"/, 'sem o campo, "vai gravar o mínimo" não diz o mínimo DE QUE')
+  assert.match(r, /a cada 5 min/)
+  // O desmentido, na mesma mensagem em que o modelo pode ter hedgeado.
+  assert.match(r, /sem função a cadastrar/)
+})
+
+test('janela em segundos é dita em segundos — 5 min e 30s não são a mesma coisa', () => {
+  const r = resumoDaMudanca([], [], { janelas: [{ nome: 'x', contas: ['media'], campo: 'temp', everyMs: 30_000 }] })
+  assert.match(r, /a cada 30s/)
+})
+
+test('sem janela nenhuma, o resumo não inventa a linha', () => {
+  assert.doesNotMatch(resumoDaMudanca([], [], {}), /Vai gravar/)
+  assert.doesNotMatch(resumoDaMudanca([], []), /Vai gravar/)
+})
+
+test('AMEAÇA: o tamanho da janela nunca é arredondado para outro número', () => {
+  // A pessoa confere o número da série contra o intervalo que ela pediu. "30 segundos"
+  // reportado como "1 min" é a mentira silenciosa que mais custa aqui.
+  const casos = [
+    [30_000, '30s'],
+    [15_000, '15s'],
+    [60_000, '1 min'],
+    [300_000, '5 min'],
+    [90_000, '1.5 min'],
+    [3_600_000, '1 h'],
+  ]
+  for (const [ms, esperado] of casos) assert.equal(tamanhoDaJanela(ms), esperado, `${ms}ms`)
 })

@@ -250,6 +250,8 @@ export interface BlueprintLiveDestinationV2 extends BlueprintItemBaseV2 {
 
 export interface BlueprintHistoryV2 extends BlueprintItemBaseV2 {
   sourceKey: string
+  /** Como a série se chama para quem olha a tela. Sem ele, ela nasce com a chave. */
+  name?: string
   /** O conjunto que a série alimenta. Sem ele, o monitor não tem o que observar. */
   datasetKey?: string | null
   retentionDays?: number | null
@@ -269,6 +271,28 @@ export interface BlueprintHistoryV2 extends BlueprintItemBaseV2 {
     lookback: number
     outputField: string
     params: Record<string, unknown>
+  } | null
+  /**
+   * A SÉRIE RESUMIDA POR JANELA — o mínimo e o máximo de cada 5 minutos.
+   *
+   * O motor de Históricos faz isto desde sempre: `window_aggregate` fecha a janela e grava
+   * uma linha com as sete operações determinísticas (primeiro, último, menor, maior, média,
+   * soma, contagem). O que faltava era o PLANO saber dizer isso.
+   *
+   * Sem este campo, o único caminho para "consolide o preço a cada 5 minutos" era `derive`,
+   * que exige uma função registrada no catálogo. Não havia nenhuma — então o pedido virava
+   * pendência declarada, rodada após rodada, enquanto a capacidade existia na tela. Do dono,
+   * depois de aplicar: "onde está a função para identificar e salvar as informações?".
+   *
+   * `derive` e `window` são excludentes: uma série é calculada por função OU resumida por
+   * janela. As duas juntas seriam duas origens para a mesma linha.
+   */
+  window?: {
+    /** O tamanho da janela, em milissegundos. O motor tem piso e teto próprios. */
+    everyMs: number
+    /** De onde ler, que conta fazer, e como o resultado se chama na linha gravada.
+     *  Os nomes são os do motor (`from`/`op`/`to`): traduzir no meio do caminho é onde some um campo. */
+    rules: { from: string; op: 'first' | 'last' | 'min' | 'max' | 'avg' | 'sum' | 'count'; to: string }[]
   } | null
 }
 

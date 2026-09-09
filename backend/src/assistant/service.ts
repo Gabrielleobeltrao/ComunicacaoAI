@@ -365,7 +365,15 @@ async function runTurn(
   // a mensagem desta rodada, e as anteriores são com o que comparar.
   const doDono = messages.filter((m) => m.role === 'user').map((m) => m.content)
   const repetido = doDono.length > 1 && ehRepeticaoSemEfeito(doDono[doDono.length - 1], doDono.slice(0, -1), mudancas)
-  const resumo = resumoDaMudanca(mudancas, [...(compilado?.pending ?? []), ...(compiladoV2?.pending ?? [])], { repetido })
+  const janelas = (compiladoV2?.blueprint?.operations?.histories ?? [])
+    .filter((h) => h.window && h.action !== 'reuse')
+    .map((h) => ({
+      nome: String(h.name ?? h.key),
+      contas: (h.window?.rules ?? []).map((r) => r.to),
+      campo: h.window?.rules?.[0]?.from ?? '',
+      everyMs: Number(h.window?.everyMs ?? 0),
+    }))
+  const resumo = resumoDaMudanca(mudancas, [...(compilado?.pending ?? []), ...(compiladoV2?.pending ?? [])], { repetido, janelas })
   const textoFinal = resumo ? `${turno.assistantText}\n\n${resumo}` : turno.assistantText
   // O "já volto" some quando a resposta de verdade chega: ele existia só para o caso de ela
   // não chegar. Deixá-lo ali gasta um turno da conversa dizendo o que o próximo turno diz.

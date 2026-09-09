@@ -202,7 +202,34 @@ export function validateBlueprintV2(bruto: unknown): BlueprintV2ValidationResult
     conferir(`operations.liveDestinations[${i}]`, 'sourceKey', l.sourceKey)
     for (const k of l.agentKeys ?? []) conferir(`operations.liveDestinations[${i}]`, 'agentKeys', k)
   })
-  bp.operations?.histories?.forEach((h, i) => conferir(`operations.histories[${i}]`, 'sourceKey', h.sourceKey))
+  bp.operations?.histories?.forEach((h, i) => {
+    const p = `operations.histories[${i}]`
+    conferir(p, 'sourceKey', h.sourceKey)
+    if (!h.window) return
+    /**
+     * A JANELA é validada AQUI, e não só no motor.
+     *
+     * O motor recusa uma janela vazia com a mensagem certa — mas isso acontece na hora de
+     * APLICAR, quando a pessoa já aprovou. Uma proposta que só falha ao ser aplicada é uma
+     * proposta que mentiu na tela.
+     */
+    if (h.derive) issues.push(erro(p, 'history_two_origins', 'a série não pode ser calculada por função E resumida por janela ao mesmo tempo'))
+    const ms = Number(h.window.everyMs)
+    if (!Number.isFinite(ms) || ms <= 0) issues.push(erro(`${p}.window.everyMs`, 'window_without_size', 'a janela precisa de um tamanho'))
+    const regras = h.window.rules ?? []
+    if (regras.length === 0) issues.push(erro(`${p}.window.rules`, 'window_without_rules', 'sem regra, a janela fecharia num objeto vazio'))
+    const OPS = ['first', 'last', 'min', 'max', 'avg', 'sum', 'count']
+    const nomes = new Set<string>()
+    regras.forEach((r, j) => {
+      if (!String(r.from ?? '').trim()) issues.push(erro(`${p}.window.rules[${j}].from`, 'required', 'a regra não diz de onde ler'))
+      if (!OPS.includes(String(r.op))) issues.push(erro(`${p}.window.rules[${j}].op`, 'unknown_op', `conta desconhecida: "${r.op}"`))
+      const como = String(r.to ?? '').trim()
+      if (!como) issues.push(erro(`${p}.window.rules[${j}].to`, 'required', 'a regra não diz como o resultado se chama'))
+      // Dois resultados com o mesmo nome: um sobrescreve o outro, calado.
+      else if (nomes.has(como)) issues.push(erro(`${p}.window.rules[${j}].to`, 'duplicate', `duas regras gravam em "${como}"`))
+      else nomes.add(como)
+    })
+  })
   bp.operations?.monitors?.forEach((m, i) => {
     const p = `operations.monitors[${i}]`
     if (m.observes?.kind === 'dataset') conferir(p, 'observes.datasetKey', m.observes.datasetKey)

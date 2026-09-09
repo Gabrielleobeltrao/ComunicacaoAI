@@ -917,3 +917,75 @@ test('o nome do agente pula quem já existe na conta', () => {
   const comEle = agentesDe(c2.compileBriefV2({ brief, manifest: manifesto(), inventory: inventarioComAgentes([usado]), base: { title: 'X', objective: 'Y' } }).blueprint)
   assert.notEqual(comEle[0].name, usado, 'o nome já em uso não pode ser oferecido de novo')
 })
+
+// --- O PEDIDO DO BITCOIN, LITERAL ------------------------------------------------------------
+//
+// "Salvar o valor mínimo e máximo de bitcoin em um intervalo de 5 minutos."
+//
+// O motor de Históricos faz isso desde sempre — `window_aggregate` com `min` e `max` são
+// operações determinísticas de primeira classe. O compilador não lia o pedido assim: procurava
+// uma função registrada no catálogo, não achava nenhuma, e devolvia pendência rodada após
+// rodada. Depois de aplicar, a pergunta do dono foi "onde está a função?".
+
+const briefDoBitcoin = (over = {}) => ({
+  ...emptyBrief('Guardar o mínimo e o máximo do bitcoin'),
+  jobs: [
+    {
+      id: 'consolidar',
+      name: 'Salvar o valor mínimo e máximo de bitcoin em um intervalo de 5 minutos',
+      trigger: 'a cada janela fechada',
+      input: 'preço do bitcoin em tempo real',
+      decision: '',
+      action: 'consolidar mínimo e máximo em janelas de 5 minutos',
+      output: 'uma linha por janela',
+    },
+  ],
+  liveDataNeeds: [{ source: 'preço do bitcoin em tempo real', freshness: '15s', required: true }],
+  recordsToKeep: [{ subject: 'preço do bitcoin', fields: ['price'], retentionDays: null }],
+  ...over,
+})
+
+test('ACEITAÇÃO: "mínimo e máximo a cada 5 minutos" vira uma janela no plano, não uma pendência', () => {
+  const { blueprint, pending } = compilar(briefDoBitcoin())
+  const janela = blueprint.operations.histories.find((h) => h.window)
+  assert.ok(janela, `nenhuma janela no plano: ${JSON.stringify(blueprint.operations.histories.map((h) => h.key))}`)
+  assert.equal(janela.window.everyMs, 300_000)
+  assert.deepEqual(
+    janela.window.rules.map((r) => `${r.from}:${r.op}:${r.to}`).sort(),
+    ['price:max:maximo', 'price:min:minimo'],
+    'as contas têm de ser as que a frase pediu, sobre o campo que a pessoa declarou',
+  )
+  // E o que sumiu: a pendência de "nenhuma função registrada faz este cálculo".
+  assert.equal(
+    pending.some((p) => /função|funcao/i.test(p.because ?? '')),
+    false,
+    `a conta existe no motor — declarar pendência dela é mandar a pessoa esperar por nada: ${JSON.stringify(pending)}`,
+  )
+})
+
+test('a fonte que a conta JÁ TEM é reaproveitada, não duplicada', () => {
+  const inventory = {
+    ownerId: 'dono',
+    at: new Date(),
+    building: { id: '000000000000000000000b01', name: 'Prédio' },
+    sections: { source: { kind: 'source', total: 1, truncated: false, items: [{ id: 's1', label: 'Bitcoin', ownerScope: 'account', meta: { fields: 'price' } }] } },
+  }
+  const { blueprint } = c2.compileBriefV2({ brief: briefDoBitcoin(), manifest: manifesto(), inventory, base: { title: 'X', objective: 'Y' } })
+  const fonte = blueprint.operations.sources.find((f) => f.key.startsWith('fonte-'))
+  assert.ok(fonte, 'a janela precisa de uma fonte')
+  assert.equal(fonte.action, 'reuse', 'criar outra coleta do mesmo endereço produz dois históricos que divergem')
+  assert.equal(fonte.name, 'Bitcoin')
+})
+
+test('AMEAÇA: sem campo declarado NÃO há janela — resumir o campo errado mente em todo gráfico', () => {
+  const { blueprint } = compilar(briefDoBitcoin({ recordsToKeep: [] }))
+  assert.equal(blueprint.operations.histories.some((h) => h.window), false)
+})
+
+test('AMEAÇA: "guardar o preço do bitcoin" não vira janela — isso é toda ocorrência', () => {
+  const brief = briefDoBitcoin({
+    jobs: [{ id: 'guardar', name: 'Guardar o preço do bitcoin', trigger: 'chega leitura', input: 'preço', decision: '', action: 'gravar', output: 'linha' }],
+  })
+  const { blueprint } = compilar(brief)
+  assert.equal(blueprint.operations.histories.some((h) => h.window), false, 'sem tamanho de janela e sem conta, não é uma série resumida')
+})

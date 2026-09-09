@@ -1,6 +1,8 @@
 import { classifyBrief } from './classify.js'
 import type { Classification, ResourceDecision } from './classify.js'
 import { nomeDoAgente, nomesEmUso, slug } from './compile.js'
+import { conjuntoQueServe } from './nextQuestion.js'
+import { tamanhoDaJanela } from './diff.js'
 import type { AssistantCapabilityManifest, CapabilityApp } from './capabilities.js'
 import type { BriefJob, OperationBrief } from './brief.js'
 import type { OfficeInventory } from './inventory.js'
@@ -79,6 +81,58 @@ const COMPARADORES: { padrao: RegExp; op: string }[] = [
   { padrao: /\b(no mínimo|pelo menos)\b/i, op: 'gte' },
   { padrao: /\b(no máximo|até)\b/i, op: 'lte' },
 ]
+
+/**
+ * A JANELA lida da frase — "o mínimo e o máximo do bitcoin a cada 5 minutos".
+ *
+ * O motor de Históricos fecha janelas e grava uma linha com as sete contas determinísticas
+ * desde sempre. Faltava alguém LER o pedido e dizer que é disso que se trata: sem isto, o
+ * compilador procurava uma função registrada que fizesse a conta, não achava nenhuma, e o
+ * pedido virava pendência declarada rodada após rodada.
+ *
+ * Ela devolve `null` sem dó. Sem tamanho de janela não há janela; sem nenhuma conta
+ * reconhecida, "guardar o preço" é `every_event`, que é outra coisa. Inventar um padrão aqui
+ * gravaria uma série que ninguém pediu, e a pessoa descobriria pelo conteúdo.
+ */
+const CONTAS: { padrao: RegExp; op: 'first' | 'last' | 'min' | 'max' | 'avg' | 'sum' | 'count'; nome: string }[] = [
+  { padrao: /\b(m[íi]nimo|menor|m[íi]nima)\b/i, op: 'min', nome: 'minimo' },
+  { padrao: /\b(m[áa]ximo|maior|m[áa]xima)\b/i, op: 'max', nome: 'maximo' },
+  { padrao: /\b(m[ée]dia|m[ée]dio)\b/i, op: 'avg', nome: 'media' },
+  { padrao: /\b(soma|somat[óo]rio|total)\b/i, op: 'sum', nome: 'soma' },
+  { padrao: /\b(contagem|quantidade|quantos)\b/i, op: 'count', nome: 'contagem' },
+  { padrao: /\b(abertura|primeiro|inicial)\b/i, op: 'first', nome: 'abertura' },
+  { padrao: /\b(fechamento|[úu]ltimo|final)\b/i, op: 'last', nome: 'fechamento' },
+]
+
+const UNIDADES: { padrao: RegExp; ms: number }[] = [
+  { padrao: /\b(segundos?|s)\b/i, ms: 1_000 },
+  { padrao: /\b(minutos?|min)\b/i, ms: 60_000 },
+  { padrao: /\b(horas?|h)\b/i, ms: 3_600_000 },
+]
+
+export interface ParsedWindow {
+  everyMs: number
+  rules: { from: string; op: 'first' | 'last' | 'min' | 'max' | 'avg' | 'sum' | 'count'; to: string }[]
+}
+
+export function parseJanela(texto: string, campo: string | null): ParsedWindow | null {
+  const t = String(texto ?? '')
+  // "a cada 5 minutos", "de 5 em 5 minutos", "janelas de 5 minutos", "intervalo de 5 min".
+  const m = t.match(/\b(?:a cada|de|em|janelas? de|intervalos? de|per[íi]odos? de)\s+(\d{1,4})\s*(segundos?|minutos?|horas?|min|s|h)\b/i)
+  if (!m) return null
+  const n = Number(m[1])
+  const unidade = UNIDADES.find((u) => u.padrao.test(m[2]))
+  if (!Number.isFinite(n) || n <= 0 || !unidade) return null
+
+  const from = String(campo ?? '').trim()
+  // Sem saber QUAL número resumir, a janela gravaria a conta de um campo que ninguém
+  // declarou. Isso é pendência, não palpite.
+  if (!from) return null
+
+  const rules = CONTAS.filter((c) => c.padrao.test(t)).map((c) => ({ from, op: c.op, to: c.nome }))
+  if (rules.length === 0) return null
+  return { everyMs: n * unidade.ms, rules }
+}
 
 export interface ParsedCondition {
   /** O campo observado, quando dá para nomeá-lo a partir do texto. */
@@ -450,6 +504,28 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
      * As duas coisas convivem: a vigilância é compilada aqui, e o cálculo continua descendo
      * para virar função ou pendência. Escolher uma delas descartaria a outra.
      */
+    /**
+     * A JANELA vem ANTES da classificação virar pendência.
+     *
+     * "Salvar o mínimo e o máximo do bitcoin a cada 5 minutos" não é uma conta que roda uma
+     * vez, nem uma vigilância: é uma SÉRIE RESUMIDA. O motor de Históricos faz isso com as
+     * sete operações determinísticas — e enquanto ninguém lia o pedido assim, o compilador
+     * procurava uma função registrada, não achava nenhuma, e o dono recebia pendência
+     * rodada após rodada. Depois de aplicar, ele perguntou: "onde está a função?".
+     *
+     * Ela é compilada mesmo quando o classificador pede um AGENTE: a janela é COMO o dado é
+     * guardado, e não quem faz o trabalho. Os dois convivem — o agente conversa sobre a
+     * série que a janela grava.
+     */
+    const janela = parseJanela(`${job?.name ?? ''} ${job?.action ?? ''} ${job?.output ?? ''}`, campoAResumir(brief))
+    if (janela) {
+      // A janela é COMO o dado é guardado — vale inclusive quando o trabalho também tem um
+      // agente. Pular a janela porque existe alguém para conversar sobre ela deixaria a
+      // pessoa com o agente e sem o dado, que foi exatamente o que aconteceu.
+      compilarJanela(bp, pending, { job, decision, janela, brief, inventory })
+      if (decision.kind !== 'agent') continue
+    }
+
     const vigilancia = parseDataCondition(`${job?.trigger ?? ''} ${job?.name ?? ''}`)
     if (vigilancia && decision.kind !== 'agent') {
       compilarVigilancia(bp, pending, { brief, job, decision, condicao: vigilancia, floorKey: andarDo(job), manifest })
@@ -1423,4 +1499,73 @@ function freshnessEmSegundos(texto: string | undefined): number {
   if (/minuto/.test(t)) return Math.min(86_400, valor * 60)
   if (/segundo/.test(t)) return Math.max(30, valor)
   return 900
+}
+
+
+/**
+ * QUAL NÚMERO a janela resume.
+ *
+ * Sai do que a pessoa disse que quer guardar (`recordsToKeep`), e não de um palpite sobre o
+ * texto: resumir o campo errado grava uma série que parece certa e mente em todo gráfico.
+ * Sem nenhum campo declarado, não há janela — é pendência.
+ */
+function campoAResumir(brief: OperationBrief): string | null {
+  for (const r of brief.recordsToKeep ?? []) {
+    const campo = (r.fields ?? []).find((c) => String(c ?? '').trim())
+    if (campo) return String(campo).trim()
+  }
+  return null
+}
+
+/**
+ * A SÉRIE RESUMIDA POR JANELA — a fonte que já existe, uma segunda série em cima dela.
+ *
+ * Do pedido do dono, literal: "salvar o valor mínimo e máximo de bitcoin em um intervalo de
+ * 5 minutos". Ele já tinha a fonte gravando de 15 em 15 segundos, com 17 mil registros. O que
+ * faltava era dizer, no plano, que existe uma segunda série que fecha a janela.
+ *
+ * Reaproveitar a fonte é o ponto: criar outra coletaria o mesmo endereço duas vezes e
+ * produziria dois históricos que divergem no primeiro erro de rede.
+ */
+function compilarJanela(
+  bp: OfficeBlueprintV2,
+  pending: { kind: string; ref: string; because: string }[],
+  ctx: { job: OperationBrief['jobs'][number] | undefined; decision: ResourceDecision; janela: ParsedWindow; brief: OperationBrief; inventory: OfficeInventory | null },
+): void {
+  const { job, decision, janela, brief, inventory } = ctx
+  const raiz = slug(job?.name ?? decision.jobId) || 'serie'
+  const fonteTexto = (brief.liveDataNeeds ?? [])[0]?.source ?? job?.input ?? ''
+  const achado = fonteTexto ? conjuntoQueServe(inventory, String(fonteTexto)) : null
+
+  const fonteKey = `fonte-${raiz}`
+  const jaTem = bp.operations.sources.find((f) => f.key === fonteKey)
+  if (!jaTem) {
+    bp.operations.sources.push({
+      key: fonteKey,
+      action: achado ? 'reuse' : 'create',
+      ...ESSENCIAL,
+      rationale: achado ? `"${achado.label}" já recebe este dado nesta conta` : `sem uma fonte, não há o que resumir em janelas`,
+      dependsOn: [],
+      name: achado?.label ?? String(fonteTexto || raiz),
+      kind: 'api_polling',
+      config: {},
+      mapping: { version: 1, fields: [{ to: janela.rules[0].from, from: janela.rules[0].from, required: true }] },
+      cadence: { mode: 'interval', intervalMs: 60_000 },
+    } as never)
+    if (!achado) {
+      pending.push({ kind: 'source_config', ref: String(fonteTexto || raiz), because: 'falta dizer de onde este dado vem: endereço, App ou fonte existente' })
+    }
+  }
+
+  const cada = tamanhoDaJanela(janela.everyMs)
+  bp.operations.histories.push({
+    key: `janela-${raiz}`,
+    action: 'create',
+    ...ESSENCIAL,
+    rationale: `${janela.rules.map((r) => r.to).join(' e ')} de "${janela.rules[0].from}" a cada ${cada} — contas determinísticas do motor de Históricos`,
+    dependsOn: [fonteKey],
+    sourceKey: fonteKey,
+    name: `${janela.rules.map((r) => r.to).join(' e ')} a cada ${cada}`,
+    window: janela,
+  })
 }
