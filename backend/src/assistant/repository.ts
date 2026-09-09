@@ -136,6 +136,14 @@ export interface AssistantMessage {
    * certo depois; o aviso de credencial continua valendo para sempre.
    */
   failure?: boolean
+  /**
+   * PROVISÓRIA — vale só até a resposta de verdade chegar.
+   *
+   * O aviso de "abri a conversa, já volto" existe para a pessoa não ficar com um pedido sem
+   * resposta caso a montagem falhe. Quando a montagem dá certo — segundos depois — ele vira
+   * ruído entre o pedido e a resposta. Então ele SAI, em vez de acumular.
+   */
+  provisional?: boolean
   /** Quando uma rodada seguinte funcionou. A mensagem fica; o alarme, não. */
   resolvedAt?: Date | null
   createdAt: Date
@@ -354,7 +362,7 @@ export async function appendMessage(
   projectId: ObjectId,
   role: AssistantMessage['role'],
   content: string,
-  opts: { failure?: boolean } = {},
+  opts: { failure?: boolean; provisional?: boolean } = {},
 ): Promise<AssistantMessage> {
   const doc: AssistantMessage = {
     _id: new ObjectId(),
@@ -364,6 +372,7 @@ export async function appendMessage(
     // Mascarado na ENTRADA. Depois de gravado já é tarde.
     content: maskSecrets(content).slice(0, L.MAX_MESSAGE_CHARS),
     ...(opts.failure ? { failure: true, resolvedAt: null } : {}),
+    ...(opts.provisional ? { provisional: true } : {}),
     createdAt: new Date(),
   }
   await messages.insertOne(doc)
@@ -379,6 +388,11 @@ export async function appendMessage(
  */
 export async function resolveFailureNotices(ownerId: string, projectId: ObjectId): Promise<void> {
   await messages.updateMany({ ownerId, projectId, role: 'system_notice', failure: true, resolvedAt: null }, { $set: { resolvedAt: new Date() } })
+}
+
+/** Apaga o "já volto" desta conversa. Chamado quando a resposta de verdade vai ser gravada. */
+export async function clearProvisionalMessages(ownerId: string, projectId: ObjectId): Promise<void> {
+  await messages.deleteMany({ ownerId, projectId, provisional: true })
 }
 
 export function listMessages(ownerId: string, projectId: ObjectId, q: { limit: number; skip: number }): Promise<AssistantMessage[]> {
