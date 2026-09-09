@@ -744,3 +744,52 @@ test('dá para COMEÇAR UMA CONVERSA NOVA sem sair do painel', async ({ page }) 
   // O campo continua lá, pronto para o assunto novo.
   await expect(page.getByTestId('architect-input')).toBeVisible()
 })
+
+test('a porta da proposta NÃO segue a conversa — ela fica na rodada que a montou', async ({ page }) => {
+  /**
+   * DO RELATO: "esse negócio de abrir proposta fica embaixo… não quero ele sempre no final
+   * da conversa, porque não é sempre. Se eu estou pedindo pra ele deletar alguma coisa, não
+   * faz sentido aparecer esse botão."
+   *
+   * Solta no fim da LISTA, a porta acompanhava tudo: três mensagens depois, falando de outro
+   * assunto, ela continuava lá pedindo clique. Presa à rodada que montou, ela fica onde
+   * estava — é o desfecho DAQUELA rodada, e não um convite permanente.
+   */
+  let linha = [
+    { id: 'm1', role: 'user', content: 'monta a operação', createdAt: NOW },
+    { id: 'm2', role: 'assistant', content: 'Montei a proposta.', createdAt: NOW },
+  ]
+  await stub(page, { turno: TURNO_PROPOE })
+  await page.route('**/api/architect/projects/000000000000000000000abc', (r) => r.fulfill({ json: PROJETO({ hasBlueprint: true, status: 'draft' }) }))
+  // GET devolve a linha; POST devolve o PROJETO (é uma rodada). Um handler só para os dois
+  // fazia o cliente guardar a lista de mensagens como se fosse o projeto — e o defeito
+  // aparecia como "a porta sumiu", que não é o que este caso mede.
+  await page.route('**/api/architect/projects/*/messages', (r) =>
+    r.request().method() === 'POST'
+      ? r.fulfill({ json: { ...PROJETO({ hasBlueprint: true, status: 'draft' }), assistantText: 'ok', question: null } })
+      : r.fulfill({ json: linha }),
+  )
+
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-input').fill('monta a operação')
+  await page.getByTestId('architect-enviar').click()
+  await expect(page.getByTestId('architect-abrir-projeto')).toBeVisible()
+
+  // A conversa segue para OUTRO assunto.
+  linha = [
+    ...linha,
+    { id: 'm3', role: 'user', content: 'agora apaga o agente antigo', createdAt: NOW },
+    { id: 'm4', role: 'assistant', content: 'Vou apagar.', createdAt: NOW },
+  ]
+  await page.getByTestId('architect-input').fill('agora apaga o agente antigo')
+  await page.getByTestId('architect-enviar').click()
+  await expect(page.getByTestId('architect-message-assistant').last()).toContainText('Vou apagar')
+
+  // A porta continua onde estava: ACIMA da conversa nova, e não pendurada no fim.
+  const [yBotao, yUltima] = await Promise.all([
+    page.getByTestId('architect-abrir-projeto').evaluate((e) => e.getBoundingClientRect().top),
+    page.getByTestId('architect-message-assistant').last().evaluate((e) => e.getBoundingClientRect().top),
+  ])
+  expect(yBotao, 'a porta seguiu a conversa em vez de ficar na rodada dela').toBeLessThan(yUltima)
+})

@@ -480,3 +480,84 @@ test('AUDITORIA: a tentativa que ESTOURA no handler também deixa linha', async 
     servidor.close()
   }
 })
+
+// --- gerenciar, e não só construir ------------------------------------------------------
+//
+// DO RELATO: "eu pedi pra ele deletar todos os agentes de um andar. Ele falou que não pode
+// fazer isso. Eu queria que ele confirmasse se era isso mesmo e deletasse. E editar a
+// descrição de um agente: eu confirmo, ele edita — sem virar uma proposta."
+//
+// Ele sabia pausar e ativar fonte, e mais nada: "não sei fazer isso ainda". O caminho de
+// operar já existe inteiro — preparar, mostrar impacto, esperar confirmação, executar. O que
+// faltava eram as capacidades.
+//
+// Apagar é IRREVERSÍVEL e PLURAL: por isso ele exige o nome do andar digitado, e o impacto
+// lista quem vai embora, um por um. Ver a lista antes é a diferença entre confirmar e
+// adivinhar.
+
+const andarComAgentes = async (nomeDoAndar, nomes) => {
+  const predio = new ObjectId()
+  const andar = new ObjectId()
+  await db.collection('buildings').insertOne({ _id: predio, ownerId: DONO, name: 'Prédio', createdAt: new Date(), updatedAt: new Date() })
+  await db.collection('offices').insertOne({ _id: andar, ownerId: DONO, buildingId: predio, name: nomeDoAndar, status: 'active', workMode: 'organization', createdAt: new Date(), updatedAt: new Date() })
+  for (const nome of nomes) {
+    await db.collection('agents').insertOne({ _id: new ObjectId(), ownerId: DONO, officeId: andar, name: nome, role: 'x', objective: 'y', provider: 'anthropic', createdAt: new Date() })
+  }
+  return andar
+}
+
+test('ACEITAÇÃO: apagar os agentes de um andar LISTA quem vai embora e espera confirmação', async () => {
+  await andarComAgentes('Bastidores', ['Marina', 'Rafael'])
+
+  const preparo = await op.prepararOperacao(DONO, { mode: 'operate', action: 'apague todos os agentes do andar Bastidores', targetRef: 'Bastidores', risk: 'high_risk' })
+  assert.equal(preparo.ok, true, preparo.reason)
+  // Quem vai embora, pelo nome: confirmar sem ver a lista é adivinhar.
+  assert.match(preparo.pending.impact.join(' '), /Marina/)
+  assert.match(preparo.pending.impact.join(' '), /Rafael/)
+  // Irreversível e plural: exige digitar o nome do andar.
+  assert.equal(preparo.pending.requiresName, 'Bastidores')
+
+  // Nada aconteceu ainda.
+  assert.equal(await db.collection('agents').countDocuments({ ownerId: DONO }), 2, 'apagou antes de confirmar')
+
+  const feito = await op.confirmarOperacao(DONO, { id: preparo.pending.id, operationHash: preparo.pending.operationHash, confirmationName: 'Bastidores' })
+  assert.equal(feito.ok, true, feito.reason)
+  assert.equal(await db.collection('agents').countDocuments({ ownerId: DONO }), 0, 'não apagou depois de confirmar')
+})
+
+test('AMEAÇA: o andar de OUTRA conta não é tocado', async () => {
+  await andarComAgentes('Bastidores', ['Marina'])
+  const preparo = await op.prepararOperacao(VIZINHO, { mode: 'operate', action: 'apague todos os agentes do andar Bastidores', targetRef: 'Bastidores', risk: 'high_risk' })
+  assert.equal(preparo.ok, false, 'enxergou o andar de outra conta')
+})
+
+test('ACEITAÇÃO: editar a descrição de um agente MOSTRA o texto exato antes de escrever', async () => {
+  /**
+   * O texto novo vem da frase da pessoa, e é ela que confirma. A garantia não é o parser
+   * acertar sempre — é o preview mostrar EXATAMENTE o que vai ser escrito, para um parser
+   * errado ser visto antes de virar dado.
+   */
+  await andarComAgentes('Salão', ['Marcos'])
+
+  const preparo = await op.prepararOperacao(DONO, {
+    mode: 'operate',
+    action: 'mude a descrição do Marcos para Cuida das reservas do salão e confirma por WhatsApp',
+    targetRef: 'Marcos',
+    risk: 'write',
+  })
+  assert.equal(preparo.ok, true, preparo.reason)
+  assert.match(preparo.pending.impact.join(' '), /Cuida das reservas do salão/)
+
+  await op.confirmarOperacao(DONO, { id: preparo.pending.id, operationHash: preparo.pending.operationHash })
+  const marcos = await db.collection('agents').findOne({ ownerId: DONO, name: 'Marcos' })
+  assert.match(String(marcos.objective ?? ''), /Cuida das reservas do salão/)
+})
+
+test('AMEAÇA: sem texto novo, ele RECUSA em vez de apagar a descrição', async () => {
+  // "mude a descrição do Marcos" sem dizer para quê é um pedido incompleto — e escrever
+  // vazio seria destruir a descrição achando que estava obedecendo.
+  await andarComAgentes('Salão', ['Marcos'])
+  const preparo = await op.prepararOperacao(DONO, { mode: 'operate', action: 'mude a descrição do Marcos', targetRef: 'Marcos', risk: 'write' })
+  assert.equal(preparo.ok, false)
+  assert.match(preparo.reason, /para o qu|novo texto|qual/i)
+})

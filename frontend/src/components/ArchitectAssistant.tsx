@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { Button, Field, Icon, Input } from '../ui'
@@ -123,6 +123,13 @@ interface AssistantState {
    * Começar de novo não é destruir: o projeto continua na lista.
    */
   novaConversa: () => void
+  /**
+   * A mensagem em que a porta da proposta fica pendurada.
+   *
+   * Solta no fim da lista ela acompanhava a conversa para sempre: três mensagens depois,
+   * falando de apagar um agente, continuava ali pedindo clique.
+   */
+  idDaProposta: string | null
   /**
    * O último erro COM O CÓDIGO.
    *
@@ -257,6 +264,14 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
   const [projeto, setProjeto] = useState<ArchitectProject | null>(null)
   const [pergunta, setPergunta] = useState<ArchitectQuestion | null>(null)
   const [ultimoErro, setUltimoErro] = useState<{ code: string; message: string } | null>(null)
+  /**
+   * A MENSAGEM que fechou a proposta — é nela que a porta fica pendurada.
+   *
+   * Solta no fim da lista, a porta acompanhava a conversa para sempre: três mensagens
+   * depois, falando de apagar um agente, ela continuava lá pedindo clique. Presa à rodada
+   * que montou, ela é o que sempre foi — o desfecho DAQUELA rodada.
+   */
+  const [idDaProposta, setIdDaProposta] = useState<string | null>(null)
 
   const location = useLocation()
   const navigate = useNavigate()
@@ -271,6 +286,24 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
    * Só isso vai para o servidor, que reconfirma cada um contra a conta antes de usar.
    */
   const uiContext = useMemo(() => idsDoCaminho(location.pathname), [location.pathname])
+
+  /**
+   * Recarrega a linha e PENDURA a porta da proposta na última fala do Arquiteto.
+   *
+   * Só quando ainda não há porta pendurada: uma vez presa a uma rodada, ela fica onde
+   * estava — mover a porta a cada resposta nova seria o mesmo defeito com outro nome.
+   */
+  const recarregarLinha = useCallback(async (id: string, temProposta: boolean) => {
+    const linhas = await arq.listMessages(id)
+    setMensagens(linhas.map(daLinha))
+    if (temProposta) {
+      setIdDaProposta((atual) => {
+        if (atual && linhas.some((m) => m.id === atual)) return atual
+        const ultimaDoArquiteto = [...linhas].reverse().find((m) => m.role === 'assistant')
+        return ultimaDoArquiteto?.id ?? null
+      })
+    }
+  }, [])
 
   /** Uma mensagem gravada, no formato que este painel desenha. */
   const daLinha = (m: ArchitectMessage): Mensagem => ({
@@ -304,6 +337,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
         : null,
     )
     setMensagens(linhas.map(daLinha))
+    setIdDaProposta(p.hasBlueprint ? ([...linhas].reverse().find((m) => m.role === 'assistant')?.id ?? null) : null)
     return p
   }, [])
 
@@ -331,7 +365,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
         const r = await arq.sendMessage(projeto.id, texto)
         setProjeto(r)
         setPergunta(r.question)
-        setMensagens((await arq.listMessages(projeto.id)).map(daLinha))
+        await recarregarLinha(projeto.id, r.hasBlueprint)
         setPhase(r.hasBlueprint ? 'done' : 'preparing_proposal')
       } catch (e) {
         setErro((e as Error).message)
@@ -494,7 +528,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
           const r = await arq.advanceTurn(p.id)
           setProjeto(r)
           setPergunta(r.question)
-          setMensagens((await arq.listMessages(p.id)).map(daLinha))
+          await recarregarLinha(p.id, r.hasBlueprint)
           setPhase(r.hasBlueprint ? 'done' : 'preparing_proposal')
         } catch (e) {
           setErro((e as Error).message)
@@ -550,7 +584,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
         const r = await arq.sendMessage(projeto.id, texto)
         setProjeto(r)
         setPergunta(r.question)
-        setMensagens((await arq.listMessages(projeto.id)).map(daLinha))
+        await recarregarLinha(projeto.id, r.hasBlueprint)
         setPhase(r.hasBlueprint ? 'done' : 'preparing_proposal')
       } catch (e) {
         setErro((e as Error).message)
@@ -570,6 +604,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
     setRascunho('')
     setErro(null)
     setUltimoErro(null)
+    setIdDaProposta(null)
     setPhase('idle')
     /**
      * A retomada NÃO volta a disparar sozinha, e isso não é sorte: `jaRetomou` é marcado
@@ -635,9 +670,10 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
       responder,
       gerarProposta,
       novaConversa,
+      idDaProposta,
       ultimoErro,
     }),
-    [aberto, mensagens, rascunho, phase, enviando, erro, enviar, confirmar, projetoAtual, projeto, pergunta, responder, gerarProposta, novaConversa, ultimoErro],
+    [aberto, mensagens, rascunho, phase, enviando, erro, enviar, confirmar, projetoAtual, projeto, pergunta, responder, gerarProposta, novaConversa, idDaProposta, ultimoErro],
   )
 
 
@@ -955,8 +991,10 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
             ) : null}
 
             {a.mensagens.map((m) => (
+              // Fragmento porque a rodada rende DUAS coisas irmãs: a fala e, quando ela foi
+              // a que montou a proposta, a porta para ela.
+              <Fragment key={m.id}>
               <div
-                key={m.id}
                 /* O marcador usa o vocabulário dos DADOS — `user`, `assistant`,
                    `system_notice` — e não o da tela. Havia dois nomes para a mesma coisa
                    porque havia duas conversas; com uma só, sobra um nome. */
@@ -988,6 +1026,17 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
                 ) : null}
 
               </div>
+            {/* A PORTA fica PRESA À RODADA que montou a proposta.
+                No fim da lista ela acompanhava a conversa para sempre: três mensagens
+                depois, falando de apagar um agente, continuava ali pedindo clique. */}
+            {a.idDaProposta === m.id && a.projeto?.hasBlueprint && !naPaginaDeProjeto ? (
+              <p style={{ margin: '2px 0 0', alignSelf: 'flex-start' }}>
+                <Button variant="secondary" onClick={() => onAbrirProjeto(a.projeto!.id)} data-testid="architect-abrir-projeto">
+                  Abrir a proposta
+                </Button>
+              </p>
+            ) : null}
+              </Fragment>
             ))}
             {/* "PENSANDO… Ns", com o relógio andando.
                 Veio junto com a conversa: um "Pensando…" parado por trinta segundos é
@@ -997,17 +1046,6 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
             {a.enviando ? (
               <p role="status" data-testid="architect-thinking" style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
                 Pensando… {segundos}s
-              </p>
-            ) : null}
-            {/* A PORTA PARA A PROPOSTA fica DENTRO da conversa, e rola com ela.
-                Fixa no rodapé ela ocupava uma faixa permanente da tela e ficava ali
-                pedindo clique muito depois de a pessoa ter seguido para outro assunto.
-                Aqui ela é o que é: o desfecho da rodada que montou a proposta. */}
-            {a.projeto?.hasBlueprint && !naPaginaDeProjeto ? (
-              <p style={{ margin: '2px 0 0', alignSelf: 'flex-start' }}>
-                <Button variant="secondary" onClick={() => onAbrirProjeto(a.projeto!.id)} data-testid="architect-abrir-projeto">
-                  Abrir a proposta
-                </Button>
               </p>
             ) : null}
             <div ref={fim} />

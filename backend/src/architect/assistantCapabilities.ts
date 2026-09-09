@@ -36,6 +36,10 @@ export interface CapabilityContext {
   targetRef?: string
   /** A pergunta ou ação, em português, para compor a resposta. */
   query: string
+  /** O recurso já resolvido pelo inventário, quando o preparo o encontrou. */
+  target?: { kind: string; id: string; label: string }
+  /** O que o preparo guardou para a execução — o texto novo, por exemplo. */
+  payload?: Record<string, string>
 }
 
 export interface AssistantCapability {
@@ -46,6 +50,17 @@ export interface AssistantCapability {
   /** Os tipos de recurso do inventário que esta capacidade sabe usar. */
   kinds: string[]
   run: (ctx: CapabilityContext) => Promise<CapabilityOutcome>
+  /**
+   * O PREVIEW desta capacidade, quando o genérico não serve.
+   *
+   * Pausar uma fonte afeta uma coisa e o impacto cabe numa frase. Apagar os agentes de um
+   * andar afeta N, e confirmar sem ver QUEM vai embora é adivinhar. Editar um texto precisa
+   * mostrar o TEXTO — a garantia não é o parser acertar, é o preview deixar o erro visível
+   * antes de virar dado.
+   *
+   * Devolver `null` recusa a operação com o motivo: é o caminho de "faltou dizer para quê".
+   */
+  preparar?: (ctx: CapabilityContext) => Promise<{ summary: string; impact: string[]; requiresName?: string; payload?: Record<string, string> } | { recusa: string }>
 }
 
 /**
@@ -242,7 +257,109 @@ const ativarFonte: AssistantCapability = {
  * Acrescentar capacidade é acrescentar uma entrada com risco declarado e handler escrito —
  * não é uma frase nova no prompt.
  */
-export const ASSISTANT_CAPABILITIES: readonly AssistantCapability[] = [consultarValorAtual, listarRecursos, pausarFonte, ativarFonte]
+/**
+ * APAGAR OS AGENTES DE UM ANDAR — irreversível e plural.
+ *
+ * Pedido de verdade: "delete todos os agentes de um andar", e a resposta era "não sei fazer
+ * isso ainda". O caminho de operar já existia inteiro; faltava a capacidade.
+ *
+ * Duas coisas a distinguem de pausar uma fonte: o impacto lista QUEM vai embora, um por um
+ * — confirmar sem ver a lista é adivinhar —, e a confirmação exige digitar o nome do andar,
+ * porque não há desfazer.
+ */
+const apagarAgentesDoAndar: AssistantCapability = {
+  key: 'delete_floor_agents',
+  title: 'apagar os agentes de um andar',
+  risk: 'high_risk',
+  kinds: ['floor'],
+  preparar: async (ctx) => {
+    const andar = ctx.target
+    if (!andar) return { recusa: 'não achei esse andar nesta conta' }
+    const nomes = agentesDoAndar(ctx.inventory, andar.id)
+    if (nomes.length === 0) return { recusa: `o andar "${andar.label}" não tem agente nenhum para apagar` }
+    return {
+      summary: `apagar ${nomes.length} agente(s) do andar "${andar.label}"`,
+      impact: [
+        `Vão embora: ${nomes.join(', ')}.`,
+        'Isto não tem desfazer: o histórico de conversas deles vai junto.',
+        'O andar continua de pé, e nada mais é alterado.',
+      ],
+      requiresName: andar.label,
+    }
+  },
+  run: async (ctx) => {
+    const andar = ctx.target
+    if (!andar || !ObjectId.isValid(andar.id)) return { ok: false, reason: 'não achei esse andar nesta conta' }
+    const { listAgents, deleteAgent } = await import('../agents.js')
+    const agentes = await listAgents(ctx.ownerId, new ObjectId(andar.id)).catch(() => [])
+    let apagados = 0
+    for (const a of agentes) {
+      // Um a um, pelo serviço canônico: é ele que cuida do que o agente leva junto.
+      if (await deleteAgent(ctx.ownerId, a._id).catch(() => false)) apagados += 1
+    }
+    return apagados > 0
+      ? { ok: true, text: `Apaguei ${apagados} agente(s) do andar "${andar.label}".` }
+      : { ok: false, reason: `não consegui apagar os agentes de "${andar.label}"` }
+  },
+}
+
+/**
+ * EDITAR A DESCRIÇÃO DE UM AGENTE.
+ *
+ * O texto novo vem da frase da pessoa — "mude a descrição do Marcos PARA …". A garantia não
+ * é o recorte acertar sempre: é o preview mostrar EXATAMENTE o que será escrito, para um
+ * recorte errado ser visto antes de virar dado. Sem texto novo, recusa — escrever vazio
+ * seria destruir a descrição achando que estava obedecendo.
+ */
+const editarDescricaoDoAgente: AssistantCapability = {
+  key: 'edit_agent_description',
+  title: 'mudar a descrição de um agente',
+  risk: 'write',
+  kinds: ['agent'],
+  preparar: async (ctx) => {
+    const agente = ctx.target
+    if (!agente) return { recusa: 'não achei esse agente nesta conta' }
+    const novo = textoDepoisDePara(ctx.query)
+    if (!novo) return { recusa: `mudar a descrição de "${agente.label}" para o quê? escreva o texto novo depois de "para"` }
+    return {
+      summary: `mudar a descrição de "${agente.label}"`,
+      impact: [`A descrição passa a ser: "${novo}"`, 'A descrição anterior é substituída, e nada mais muda.'],
+      payload: { objective: novo },
+    }
+  },
+  run: async (ctx) => {
+    const agente = ctx.target
+    const novo = ctx.payload?.objective ?? ''
+    if (!agente || !ObjectId.isValid(agente.id)) return { ok: false, reason: 'não achei esse agente nesta conta' }
+    if (!novo) return { ok: false, reason: 'faltou o texto novo' }
+    const { updateAgent } = await import('../agents.js')
+    const depois = await updateAgent(ctx.ownerId, new ObjectId(agente.id), { objective: novo }).catch(() => null)
+    return depois
+      ? { ok: true, text: `A descrição de "${agente.label}" agora é: "${novo}"` }
+      : { ok: false, reason: `não consegui mudar a descrição de "${agente.label}"` }
+  },
+}
+
+/** Os agentes que moram num andar, pelo inventário — nunca por consulta solta ao banco. */
+function agentesDoAndar(inv: OfficeInventory, floorId: string): string[] {
+  return (inv.sections.agent?.items ?? [])
+    .filter((a) => String(a.ownerScope ?? '').endsWith(floorId) || String(a.meta?.floorId ?? '') === floorId)
+    .map((a) => a.label)
+}
+
+/**
+ * O texto que vem depois de "para" — o novo conteúdo que a pessoa ditou.
+ *
+ * Recorte simples de propósito: quem confere se ele acertou é a própria pessoa, no preview,
+ * antes de qualquer escrita. Um parser esperto que errasse em silêncio seria pior.
+ */
+function textoDepoisDePara(frase: string): string {
+  const m = String(frase ?? '').match(/\bpara\s+(.+)$/i)
+  const t = (m?.[1] ?? '').trim().replace(/^["“']|["”']$/g, '')
+  return t.length >= 3 ? t.slice(0, 400) : ''
+}
+
+export const ASSISTANT_CAPABILITIES: readonly AssistantCapability[] = [consultarValorAtual, listarRecursos, pausarFonte, ativarFonte, apagarAgentesDoAndar, editarDescricaoDoAgente]
 
 export const capabilityByKey = (key: string): AssistantCapability | undefined => ASSISTANT_CAPABILITIES.find((c) => c.key === key)
 
@@ -271,6 +388,19 @@ export function capabilityFor(mode: 'answer' | 'operate', texto: string): Assist
    * A fronteira fica só na ENTRADA do radical; o fim é livre para a flexão. E a ordem importa:
    * "desativar" contém "ativar", então o desligar é testado primeiro.
    */
+  /**
+   * AS REGRAS DE DOIS SINAIS VÊM PRIMEIRO — e não é preferência de ordem, é correção.
+   *
+   * O padrão de pausar aceita `par(a|ar|e)\b`, e "para" em português é preposição antes de
+   * ser verbo: "mude a descrição do Marcos PARA outra coisa" casava com pausar, ia procurar
+   * uma FONTE chamada Marcos e recusava com "não achei qual recurso". Uma frase de edição
+   * virando comando de parada é o tipo de colisão que só aparece com a frase na mão.
+   *
+   * Exigir dois sinais — o verbo E o substantivo — é o que torna estas duas específicas o
+   * bastante para decidirem antes.
+   */
+  if (/\b(apag\w*|delet\w*|remov\w*|exclu\w*)/.test(t) && /\bagente/.test(t)) return apagarAgentesDoAndar
+  if (/\b(mud\w*|alter\w*|edit\w*|troc\w*|renome\w*|ajust\w*)/.test(t) && /\bdescri|\bobjetiv/.test(t)) return editarDescricaoDoAgente
   if (/\b(pau[sz]\w*|par(a|ar|e)\b|desativ\w*|deslig\w*|suspend\w*)/.test(t)) return pausarFonte
   if (/\b(ativ\w*|lig(a|ar|ue)\w*|relig\w*|reativ\w*|colocar no ar|subir)/.test(t)) return ativarFonte
   if (/\b(list\w*|mostr\w*|quais|exib\w*|ver\b)/.test(t)) return listarRecursos

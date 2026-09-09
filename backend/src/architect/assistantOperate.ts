@@ -40,6 +40,14 @@ export interface PendingOperation {
   operationHash: string
   /** Alto risco exige digitar isto. Ausente quando não é alto risco. */
   confirmationName?: string
+  /**
+   * O que o preparo guardou para a execução — o texto novo, por exemplo.
+   *
+   * Guardado no documento da operação, e não recalculado na confirmação: o que a pessoa
+   * aprovou foi o que ela LEU no preview, e recortar a frase de novo poderia dar outro
+   * resultado.
+   */
+  payload?: Record<string, string>
   expiresAt: Date
   createdAt: Date
   confirmedAt?: Date | null
@@ -81,7 +89,7 @@ export type PrepareOutcome =
 export async function prepararOperacao(ownerId: string, intent: Extract<ArchitectIntent, { mode: 'operate' }>): Promise<PrepareOutcome> {
   const capacidade = capabilityFor('operate', intent.action)
   if (!capacidade) {
-    return { ok: false, reason: 'não sei fazer isso ainda — sei listar, pausar e ativar fontes' }
+    return { ok: false, reason: 'não sei fazer isso ainda — sei listar, pausar e ativar fontes, apagar os agentes de um andar e mudar a descrição de um agente' }
   }
   if (capacidade.risk === 'read') {
     return { ok: false, reason: 'essa ação não muda nada: peça de novo e eu respondo direto' }
@@ -102,19 +110,33 @@ export async function prepararOperacao(ownerId: string, intent: Extract<Architec
    */
   const risco: 'write' | 'high_risk' = intent.risk === 'high_risk' || capacidade.risk === 'high_risk' ? 'high_risk' : 'write'
 
+  /**
+   * O PREVIEW PRÓPRIO da capacidade, quando ela tem um.
+   *
+   * Pausar uma fonte cabe numa frase genérica. Apagar N agentes precisa listar quem vai
+   * embora, e trocar um texto precisa mostrar o texto — e as duas podem RECUSAR aqui, que é
+   * o caminho de "faltou dizer para quê".
+   */
+  const alvo = { kind: achado.kind, id: achado.item.id, label: achado.item.label }
+  const proprio = capacidade.preparar
+    ? await capacidade.preparar({ ownerId, inventory, query: intent.action, target: alvo, ...(intent.targetRef ? { targetRef: intent.targetRef } : {}) })
+    : null
+  if (proprio && 'recusa' in proprio) return { ok: false, reason: proprio.recusa }
+
   const doc: PendingOperation = {
     id: randomUUID(),
     ownerId,
     capabilityKey: capacidade.key,
-    summary: `${capacidade.title}: "${achado.item.label}"`,
-    impact: [
+    summary: proprio?.summary ?? `${capacidade.title}: "${achado.item.label}"`,
+    ...(proprio?.payload ? { payload: proprio.payload } : {}),
+    impact: proprio?.impact ?? [
       `${achado.kind === 'source' ? 'A fonte' : 'O recurso'} "${achado.item.label}" ${capacidade.key === 'pause_source' ? 'para de coletar até você reativar' : 'passa a operar'}.`,
       'Nada mais é alterado nesta operação.',
     ],
     target: { kind: achado.kind, id: achado.item.id, label: achado.item.label },
     risk: risco,
     operationHash: hashDaOperacao([capacidade.key, achado.kind, achado.item.id, achado.item.status, risco]),
-    ...(risco === 'high_risk' ? { confirmationName: achado.item.label } : {}),
+    ...(proprio?.requiresName ? { confirmationName: proprio.requiresName } : risco === 'high_risk' ? { confirmationName: achado.item.label } : {}),
     expiresAt: new Date(Date.now() + PENDING_OPERATION_TTL_MS),
     createdAt: new Date(),
     confirmedAt: null,
@@ -206,7 +228,15 @@ export async function confirmarOperacao(
 
   let r
   try {
-    r = await handler.run({ ownerId, inventory, query: doc.summary, ...(doc.target ? { targetRef: doc.target.label } : {}) })
+    // O ALVO e a CARGA vêm do documento: é o que a pessoa aprovou lendo o preview. Recortar
+    // a frase de novo aqui poderia dar outro resultado que ninguém confirmou.
+    r = await handler.run({
+      ownerId,
+      inventory,
+      query: doc.summary,
+      ...(doc.target ? { targetRef: doc.target.label, target: doc.target } : {}),
+      ...(doc.payload ? { payload: doc.payload } : {}),
+    })
   } catch (erro) {
     /**
      * A EXCEÇÃO é gravada antes de subir.
