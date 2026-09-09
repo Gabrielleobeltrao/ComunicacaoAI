@@ -12,7 +12,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 const { emptyBrief, applyBriefPatch, resolveIntegrations, briefForPrompt, BRIEF_LIMITS } = await import('../dist/assistant/brief.js')
-const { detectGaps, nextQuestions, gapsForPrompt } = await import('../dist/assistant/nextQuestion.js')
+const { detectGaps, nextQuestions, gapsForPrompt, aPerguntarAgora, temBotao } = await import('../dist/assistant/nextQuestion.js')
 
 // --- o patch ------------------------------------------------------------------------------
 
@@ -288,4 +288,40 @@ test('uma resposta em branco não conta como respondida', () => {
   const brief = briefDeOrigem('preço do bitcoin em tempo real')
   const depois = detectGaps(brief, null, inv, { 'origem:bitcoin': '   ' })
   assert.ok(depois.some((g) => g.id === 'origem:bitcoin'), 'espaço em branco não é resposta')
+})
+
+// --- O TEXTO E OS BOTÕES PERGUNTAM A MESMA COISA ---------------------------------------------
+//
+// Do banco real: o texto perguntava o CANAL e os botões ofereciam a ORIGEM. O dono respondeu a
+// origem cinco vezes e o canal continuou aberto — ninguém tinha perguntado o canal com botão.
+
+test('a lacuna com opção fechada vence, mesmo vindo depois na ordem de impacto', () => {
+  const lacunas = [
+    { id: 'canal', question: 'Por onde falam com você?', why: '', impact: '', priority: 94 },
+    { id: 'origem:bitcoin', question: 'É de lá que eu leio?', why: '', impact: '', priority: 92, choices: [{ value: 'usar', label: 'Sim' }] },
+  ]
+  assert.equal(aPerguntarAgora(lacunas).id, 'origem:bitcoin', 'a que vira botão é a que o texto tem de perguntar')
+})
+
+test('sem nenhuma de opção fechada, vale a de maior impacto', () => {
+  const lacunas = [
+    { id: 'trabalhos', question: 'Quais trabalhos?', why: '', impact: '', priority: 99 },
+    { id: 'canal', question: 'Por onde?', why: '', impact: '', priority: 94 },
+  ]
+  assert.equal(aPerguntarAgora(lacunas).id, 'trabalhos')
+  assert.equal(aPerguntarAgora([]), undefined, 'sem lacuna, não há pergunta')
+})
+
+test('AMEAÇA: o prompt leva UMA pergunta — duas no texto com um botão só foi o defeito', () => {
+  const inv = inventarioComFonte('Bitcoin')
+  const brief = briefDeOrigem('preço do bitcoin em tempo real')
+  const lacunas = nextQuestions(brief, null, 2, inv)
+  assert.ok(lacunas.length > 1, 'o caso só tem valor quando há mais de uma lacuna aberta')
+
+  const escolhida = aPerguntarAgora(lacunas)
+  const texto = gapsForPrompt([escolhida])
+  assert.match(texto, /no máximo uma pergunta/)
+  // E é a MESMA que o servidor carimba no botão.
+  assert.equal(temBotao(escolhida), true)
+  assert.equal(escolhida.id, 'origem:bitcoin')
 })

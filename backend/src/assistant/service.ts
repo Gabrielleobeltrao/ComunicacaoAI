@@ -18,7 +18,7 @@ import { buildCapabilityManifest, manifestForPrompt } from './capabilities.js'
 import { applyBriefPatch, briefForPrompt, emptyBrief, resolveIntegrations } from './brief.js'
 import type { OperationBrief } from './brief.js'
 import type { AssistantCapabilityManifest } from './capabilities.js'
-import { gapsForPrompt, nextQuestions } from './nextQuestion.js'
+import { aPerguntarAgora, gapsForPrompt, nextQuestions, temBotao } from './nextQuestion.js'
 import { classifyBrief, classificationForPrompt, formaEscolhida } from './classify.js'
 import { runCritic } from './critic.js'
 import { runSimulation } from './simulate.js'
@@ -194,6 +194,18 @@ async function runTurn(
   const briefAtual = resolveIntegrations(projeto.brief ?? emptyBrief(projeto.objective), manifesto)
   const lacunas = nextQuestions(briefAtual, manifesto, 2, inventario, respondidas)
   /**
+   * O TEXTO E OS BOTÕES PERGUNTAM A MESMA COISA.
+   *
+   * O modelo recebia duas lacunas e escrevia sobre a que quisesse; o servidor carimbava os
+   * botões na lacuna de escolha fechada, que podia ser a outra. Na conversa real do dono o
+   * texto perguntava o CANAL e os botões ofereciam a ORIGEM — ele respondeu a origem cinco
+   * vezes, e o canal continuou aberto, porque ninguém tinha perguntado o canal com botão.
+   *
+   * Uma pergunta por rodada, escolhida aqui: a mesma que vai virar botão. Duas perguntas
+   * por turno era uma economia falsa quando só uma delas era clicável.
+   */
+  const aPerguntar = aPerguntarAgora(lacunas)
+  /**
    * A classificação vem ANTES do desenho, e vai junto no prompt.
    *
    * É o que impede as duas patologias: o superagente (tudo num só) e o enxame (um
@@ -216,7 +228,7 @@ async function runTurn(
       classification: classificationForPrompt(classificacao) || undefined,
       // Com pedido explícito de proposta não há entrevista: a pessoa já disse que quer
       // ver o desenho agora.
-      gaps: opts.forceProposal ? undefined : gapsForPrompt(lacunas),
+      gaps: opts.forceProposal ? undefined : gapsForPrompt(aPerguntar ? [aPerguntar] : []),
       forceProposal: opts.forceProposal,
     }),
     chargeKey,
@@ -420,7 +432,9 @@ async function runTurn(
    * As opções são as mesmas de sempre, com a recomendação primeiro, e é o servidor que
    * carimba a `key`.
    */
-  const daForma = nextQuestions(briefNovo, manifesto, 2, inventario, respondidas).find((g) => g.id.startsWith('forma:') || g.id.startsWith('origem:') || g.id === 'andar')
+  const aindaAbertas = nextQuestions(briefNovo, manifesto, 2, inventario, respondidas)
+  // A pergunta dos botões é a que o TEXTO fez — se ela continuar aberta depois do patch.
+  const daForma = aindaAbertas.find((g) => g.id === aPerguntar?.id && temBotao(g)) ?? aindaAbertas.find(temBotao)
   const pergunta = daForma
     ? { key: daForma.id, text: daForma.question, why: daForma.why, choices: daForma.choices ?? [], allowUnknown: false }
     : turno.question

@@ -363,3 +363,21 @@ ${gaps
   .join('\n')}
 Reescreva a pergunta em linguagem de negócio se ficar melhor, mas não mude o assunto e não acrescente outra.`
 }
+
+/**
+ * A LACUNA DESTA RODADA — uma só, e a mesma dos dois lados.
+ *
+ * O modelo recebia duas lacunas e escrevia sobre a que quisesse; o servidor carimbava os
+ * botões na de escolha fechada, que podia ser a outra. Na conversa real do dono, o texto
+ * perguntava o CANAL e os botões ofereciam a ORIGEM: ele respondeu a origem cinco vezes e o
+ * canal continuou aberto, porque ninguém tinha perguntado o canal com botão.
+ *
+ * Quem tem opção fechada vem primeiro: a resposta dela é clicável, e clicável é o que chega
+ * ao servidor com a chave certa. Sem nenhuma assim, a de maior impacto.
+ */
+export const temBotao = (gap: { id: string }): boolean =>
+  gap.id.startsWith('forma:') || gap.id.startsWith('origem:') || gap.id === 'andar'
+
+export function aPerguntarAgora(lacunas: BriefGap[]): BriefGap | undefined {
+  return lacunas.find(temBotao) ?? lacunas[0]
+}
