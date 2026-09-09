@@ -1625,6 +1625,9 @@ test('em 320 px nada estoura para os lados — nas quatro telas', async ({ page 
     if (rota !== '/architect') await page.getByTestId('architect-launcher').click()
     await expect(page.getByTestId(rota === '/architect' ? 'architect-projects' : 'architect-conversation')).toBeVisible()
     expect(await folga(), `${rota} estourou`).toBeLessThanOrEqual(0)
+    // No telefone o painel É A TELA — não sobra canto para ele. Para tocar na página é
+    // preciso sair dele, que é exatamente o que a pessoa faz.
+    if (rota !== '/architect') await page.getByTestId('architect-close').click()
   }
 
   // O mapa do escritório é a tela mais larga que existe aqui — e é a mais nova. Um

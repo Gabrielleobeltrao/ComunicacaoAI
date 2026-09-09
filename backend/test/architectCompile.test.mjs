@@ -321,3 +321,100 @@ test('AMEAÇA: uma resposta que não é uma forma não muda nada', () => {
   const { blueprint } = compileBrief(brief, manifesto, { title: 'Máxima do dia', objective: 'x' }, null, { 'forma:j1': 'superagente' })
   assert.equal(blueprint.agents.length, 0)
 })
+
+// --- o trabalho que acontece SOZINHO precisa de quem o dispare ---------------------------
+//
+// DA CONVERSA REAL: "porém não quero uma conversa, quero que sempre no final do dia ele faça
+// a anotação". O trabalho tem julgamento (conferir se já existe registro do dia), então a
+// regra o resolve como AGENTE — e está certa. Mas ninguém compilou a ROTINA, e a operação
+// nasceu sem nada que a acionasse: um agente pronto, esperando uma conversa que a pessoa
+// tinha acabado de dizer que não queria.
+//
+// Agente e rotina não competem: um é o TRABALHADOR, a outra é o GATILHO. A causa era de uma
+// linha — `texto(job)` junta nome, ação, decisão e saída, e não o TRIGGER. A frase que diz
+// quando a coisa acontece era a única que ninguém lia.
+
+const trabalhoAgendado = () => ({
+  id: 'j1',
+  name: 'Registrar o máximo do dia',
+  trigger: 'Rotina diária agendada, no fim do dia',
+  input: 'as cotações do dia',
+  decision: 'conferir se já existe registro daquela data e decidir criar ou atualizar',
+  action: 'gravar data e máximo na base diária',
+  output: 'uma linha por dia',
+})
+
+test('ACEITAÇÃO: trabalho com julgamento E horário vira AGENTE e ROTINA', () => {
+  const brief = { ...briefCompleto(), jobs: [trabalhoAgendado()] }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Máximo diário', objective: 'x' }, null, {})
+
+  assert.equal(blueprint.agents.length, 1, 'o julgamento continua sendo de um agente')
+  assert.equal(blueprint.routines.length, 1, `sem rotina, nada dispara: ${JSON.stringify(blueprint.routines)}`)
+  assert.equal(blueprint.routines[0].ownerAgentKey, blueprint.agents[0].key, 'a rotina precisa acionar o agente do trabalho')
+  // O QUE A PESSOA DISSE fica escrito: um horário inventado sem dizer que foi inventado é
+  // um alarme que toca na hora errada e ninguém sabe por quê.
+  assert.match(String(blueprint.routines[0].description ?? ''), /fim do dia/i)
+})
+
+test('sem horário nenhum, nada de rotina — quem dispara é a conversa', () => {
+  const brief = { ...briefCompleto(), jobs: [{ ...trabalhoAgendado(), trigger: 'quando o cliente escreve' }] }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Atendimento', objective: 'x' }, null, {})
+  assert.equal(blueprint.routines.length, 0, `rotina inventada: ${JSON.stringify(blueprint.routines)}`)
+})
+
+// --- porta de entrada só onde alguém entra ----------------------------------------------
+//
+// DA CONVERSA REAL: a pessoa disse "porém não quero uma conversa" e a proposta saiu com um
+// canal de chat web mesmo assim — porque `brief.channels` tinha "web_chat" de uma rodada
+// anterior e o entendimento ACUMULA sem retratar. O canal virou a única porta de uma
+// operação que roda sozinha no fim do dia.
+//
+// A regra é o que o canal É: uma porta para alguém FALAR com o agente. Se nenhum trabalho
+// começa com uma pessoa falando, não há porta a abrir — e abrir uma é prometer um
+// atendimento que ninguém vai atender.
+
+test('ACEITAÇÃO: operação que roda sozinha NÃO ganha canal de entrada', () => {
+  const brief = {
+    ...briefCompleto(),
+    channels: ['web_chat'],
+    jobs: [trabalhoAgendado()],
+  }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Máximo diário', objective: 'x' }, null, {})
+  const canal = blueprint.appRequirements.find((r) => r.key.startsWith('canal-'))
+  assert.equal(canal, undefined, `canal aberto numa operação sem conversa: ${JSON.stringify(canal)}`)
+})
+
+test('quem ATENDE continua ganhando a porta', () => {
+  const brief = {
+    ...briefCompleto(),
+    channels: ['web_chat'],
+    jobs: [{ id: 'j1', name: 'Responder dúvida do cliente', trigger: 'quando o cliente escreve', input: 'a pergunta', decision: 'entender o que ele quer', action: 'responder', output: 'a resposta' }],
+  }
+  const { blueprint } = compileBrief(brief, manifesto, { title: 'Atendimento', objective: 'x' }, null, {})
+  assert.ok(blueprint.appRequirements.find((r) => r.key.startsWith('canal-')), 'sem canal, ninguém alcança quem atende')
+})
+
+test('ACEITAÇÃO: com VÁRIOS andares e nenhuma área dita, ele PERGUNTA em qual', () => {
+  /**
+   * Escolher sozinho entre três andares é adivinhar onde o trabalho mora — e a proposta sai
+   * montada no lugar errado parecendo certa. Foi o que aconteceu: o trabalho do Bitcoin
+   * nasceu no "Salão", que é o andar do restaurante, só por ser o primeiro da lista.
+   */
+  const brief = { ...briefCompleto(), businessGoal: 'Guardar o máximo diário do Bitcoin' }
+  const { blueprint, pending } = compileBrief(
+    brief,
+    manifesto,
+    { title: 'Máximo do Bitcoin', objective: 'x' },
+    inventarioAndares(['Salão', 'Financeiro', 'Logística']),
+    {},
+  )
+  assert.ok(pending.some((p) => p.kind === 'floor_choice'), `faltou perguntar o andar: ${JSON.stringify(pending)}`)
+  // O plano continua válido enquanto a resposta não vem — e não inventa andar novo.
+  assert.equal(blueprint.floors[0].action, 'reuse')
+})
+
+test('com UM andar só, não há o que perguntar', () => {
+  const brief = { ...briefCompleto(), businessGoal: 'Guardar o máximo diário do Bitcoin' }
+  const { pending } = compileBrief(brief, manifesto, { title: 'Máximo', objective: 'x' }, inventarioAndares(['Operações']), {})
+  assert.equal(pending.some((p) => p.kind === 'floor_choice'), false)
+})
