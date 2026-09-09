@@ -184,7 +184,10 @@ export function detectGaps(
      * é reescrito por ninguém: é ele que identifica a pergunta.
      */
     const chave = `origem:${slugDeAssunto(achado.label)}` || `origem:${i}`
-    if (jaSabido(brief, chave, answers)) continue
+    // A chave ANTIGA saía do texto do pedido. Quem já respondeu está gravado sob ela, e
+    // mudar o formato não pode ressuscitar uma pergunta que a pessoa já fechou.
+    const chaveAntiga = `origem:${slugDeAssunto(need.source)}`
+    if (jaSabido(brief, chave, answers) || jaSabido(brief, chaveAntiga, answers)) continue
     lacunas.push({
       id: chave,
       question: `Você já tem "${achado.label}" nesta conta. É de lá que eu leio "${need.source.slice(0, 60)}"?`,
