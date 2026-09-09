@@ -68,16 +68,17 @@ test('CORRIGIDA: abrir, escrever e NAVEGAR — o rascunho sobrevive', async ({ p
   await expect(page.getByTestId('architect-input')).toHaveValue('adicione reservas pelo WhatsApp')
 })
 
-test('minimizar guarda a conversa; fechar e reabrir também', async ({ page }) => {
+test('fechar e reabrir guarda a conversa e o rascunho', async ({ page }) => {
+  /**
+   * MINIMIZAR SAIU. Ele deixava uma barra de 56 px colada embaixo, em cima do próprio botão
+   * do Arquiteto — dois controles no mesmo lugar, um cobrindo o outro. E o estado
+   * intermediário não servia para nada que fechar já não resolvesse: o que a pessoa quer ao
+   * clicar ali é tirar o painel da frente sem perder o que escreveu.
+   */
   await stub(page)
   await page.goto('/dashboard')
   await page.getByTestId('architect-launcher').click()
   await page.getByTestId('architect-input').fill('um rascunho')
-
-  await page.getByTestId('architect-minimize').click()
-  await expect(page.getByTestId('architect-input')).toHaveCount(0)
-  await page.getByTestId('architect-minimize').click()
-  await expect(page.getByTestId('architect-input')).toHaveValue('um rascunho')
 
   await page.getByTestId('architect-close').click()
   await expect(page.getByTestId('architect-panel')).toHaveCount(0)
@@ -85,14 +86,14 @@ test('minimizar guarda a conversa; fechar e reabrir também', async ({ page }) =
   await expect(page.getByTestId('architect-input')).toHaveValue('um rascunho')
 })
 
-test('o botão some enquanto o painel está aberto — dois alvos para a mesma coisa confundem', async ({ page }) => {
+test('não existe mais o meio-termo: nem minimizar, nem a barra que ele deixava', async ({ page }) => {
   await stub(page)
   await page.goto('/dashboard')
   await page.getByTestId('architect-launcher').click()
+  await expect(page.getByTestId('architect-minimize')).toHaveCount(0)
+  // E o botão do Arquiteto some enquanto o painel está aberto: dois alvos para a mesma
+  // coisa confundem, e era exatamente o que a barra recriava.
   await expect(page.getByTestId('architect-launcher')).toHaveCount(0)
-  await page.getByTestId('architect-minimize').click()
-  // Minimizado, o painel vira uma barra: o botão volta a fazer sentido.
-  await expect(page.getByTestId('architect-launcher')).toBeVisible()
 })
 
 test('uma PERGUNTA não cria projeto, e a resposta diz por que não deu', async ({ page }) => {
@@ -683,71 +684,22 @@ test('e continua aparecendo em página autenticada', async ({ page }) => {
  * deles — e "Arquiteto", "Blueprint" e "Montar operação" viravam três produtos que a pessoa
  * precisava descobrir sozinha que eram a mesma coisa.
  */
-test('MONTAR: sem projeto, o botão abre a montagem levando o RASCUNHO junto', async ({ page }) => {
+/**
+ * "MONTAR OPERAÇÃO" SAIU DO PAINEL.
+ *
+ * Ele existia de quando a conversa do painel e a da página do projeto eram duas coisas
+ * diferentes, e era preciso atravessar de uma para a outra levando o rascunho na mão. Com
+ * uma conversa só, ele levava para onde a pessoa já estava — e, com projeto aberto, ficava
+ * dizendo "Continuar a montagem" ao lado da montagem que estava acontecendo ali.
+ *
+ * A única porta que resta é "Abrir a proposta", e ela só existe quando existe proposta.
+ */
+test('o painel não oferece mais atravessar para "montar" — a conversa já é a montagem', async ({ page }) => {
   await stub(page)
   await page.goto('/dashboard')
   await page.getByTestId('architect-launcher').click()
-
-  const botao = page.getByTestId('architect-montar-operacao')
-  await expect(botao).toBeVisible()
-  await expect(botao).toHaveText(/Montar operação/)
-
-  // O que já foi digitado não pode sumir na travessia: pedir para redigitar é a forma mais
-  // barata de fazer alguém desistir.
-  await page.getByTestId('architect-input').fill('quero avisar quando o estoque acabar')
-  await botao.click()
-
-  await page.waitForURL(/\/architect\?objetivo=/, { timeout: 20_000 })
-  await expect(page.getByTestId('architect-objective')).toHaveValue('quero avisar quando o estoque acabar')
-})
-
-test('MONTAR: sem rascunho, ele abre a lista — onde se começa um e se retoma os antigos', async ({ page }) => {
-  await stub(page)
-  await page.goto('/dashboard')
-  await page.getByTestId('architect-launcher').click()
-  await page.getByTestId('architect-montar-operacao').click()
-
-  await page.waitForURL(/\/architect$/, { timeout: 20_000 })
-  await expect(page.getByTestId('architect-projects')).toBeVisible()
-})
-
-test('MONTAR: com projeto em andamento, ele CONTINUA esse projeto — e o rótulo diz isso', async ({ page }) => {
-  /**
-   * Perguntar "qual projeto?" para quem acabou de conversar sobre um só é uma pergunta cuja
-   * resposta o sistema já tem.
-   */
-  await stub(page, {
-    turno: {
-      intent: { mode: 'propose', action: 'montar', risk: 'read' },
-      phase: 'proposal',
-      text: 'Abri um projeto para isso.',
-      question: null,
-      projectId: '000000000000000000000abc',
-      context: { pathname: '/', rejected: [] },
-      pendingOperation: null,
-    },
-  })
-  await page.goto('/dashboard')
-  await page.getByTestId('architect-launcher').click()
-  await page.getByTestId('architect-input').fill('quero montar o atendimento')
-  await page.getByTestId('architect-input').press('Enter')
-
-  const botao = page.getByTestId('architect-montar-operacao')
-  await expect(botao).toHaveText(/Continuar a montagem/)
-  await botao.click()
-  await page.waitForURL(/\/architect\/000000000000000000000abc/, { timeout: 20_000 })
-})
-
-test('MONTAR: no celular o botão continua no chat, com alvo de toque acessível', async ({ page }) => {
-  await stub(page)
-  await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/dashboard')
-  await page.getByTestId('architect-launcher').click()
-
-  const botao = page.getByTestId('architect-montar-operacao')
-  await expect(botao).toBeVisible()
-  const caixa = await botao.boundingBox()
-  expect(caixa!.height, 'alvo de toque abaixo do mínimo').toBeGreaterThanOrEqual(44)
+  await expect(page.getByTestId('architect-montar-operacao')).toHaveCount(0)
+  await expect(page.getByTestId('architect-abrir-projeto')).toHaveCount(0)
 })
 
 test('COMPATIBILIDADE: a rota antiga redireciona PRESERVANDO os parâmetros', async ({ page }) => {

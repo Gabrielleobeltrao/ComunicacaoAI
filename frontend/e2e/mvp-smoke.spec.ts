@@ -577,10 +577,15 @@ test('“Montar operação” é um MODO do Arquiteto, e a porta é o chat', asy
   await expect(page.getByTestId('open-architect')).toHaveCount(0)
   await page.keyboard.press('Escape')
 
-  // O botão no chat leva à tela completa — e ela continua sendo a mesma de sempre.
+  // O painel abre e é a conversa. O botão de atravessar para "montar" saiu: com uma
+  // conversa só, ele levava para onde a pessoa já estava.
   await page.getByTestId('architect-launcher').click()
-  await page.getByTestId('architect-montar-operacao').click()
-  await page.waitForURL(/\/architect/, { timeout: 20_000 })
+  await expect(page.getByTestId('architect-input')).toBeVisible()
+  await expect(page.getByTestId('architect-montar-operacao')).toHaveCount(0)
+  await page.getByTestId('architect-close').click()
+
+  // A tela completa continua existindo, pela rota.
+  await page.goto('/architect')
   await expect(page.getByTestId('architect-projects')).toBeVisible()
 
   // A rota canônica responde direto: tirar o item de menu não tira a tela nem quebra favorito.

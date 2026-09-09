@@ -80,7 +80,6 @@ interface Mensagem {
 
 interface AssistantState {
   aberto: boolean
-  minimizado: boolean
   mensagens: Mensagem[]
   rascunho: string
   phase: AssistantPhase
@@ -89,7 +88,6 @@ interface AssistantState {
   erro: string | null
   abrir: () => void
   fechar: () => void
-  minimizar: () => void
   setRascunho: (t: string) => void
   enviar: () => Promise<void>
   /** Confirma a escrita que uma mensagem preparou. O texto do modelo nunca chega ao servidor. */
@@ -124,8 +122,6 @@ interface AssistantState {
    * pessoa lendo o problema sem nada para clicar.
    */
   ultimoErro: { code: string; message: string } | null
-  /** Abre a página completa do Arquiteto no modo de montagem. */
-  montarOperacao: () => void
 }
 
 const Ctx = createContext<AssistantState | null>(null)
@@ -227,7 +223,6 @@ function ConfirmacaoPendente({ mensagemId, pendente }: { mensagemId: string; pen
 
 export function ArchitectAssistantProvider({ children }: { children: ReactNode }) {
   const [aberto, setAberto] = useState(false)
-  const [minimizado, setMinimizado] = useState(false)
   const [mensagens, setMensagens] = useState<Mensagem[]>([])
   const [rascunho, setRascunho] = useState('')
   const [phase, setPhase] = useState<AssistantPhase>('idle')
@@ -467,10 +462,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
          * quando quiser pedir a mudança. É a mesma regra que esta tela já seguia — "sem
          * proposta, ela é a tela; com proposta, ela sai da frente".
          */
-        if (!p.hasBlueprint) {
-          setAberto(true)
-          setMinimizado(false)
-        }
+        if (!p.hasBlueprint) setAberto(true)
         return p
       })
       /**
@@ -597,37 +589,17 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
     return null
   }, [mensagens, projeto])
 
-  /**
-   * "MONTAR OPERAÇÃO" — a mesma sala, pela porta que a pessoa já está usando.
-   *
-   * Com projeto em andamento, ela abre ESSE projeto: perguntar "qual?" para quem acabou de
-   * conversar sobre um só é uma pergunta cuja resposta o sistema já tem.
-   *
-   * Sem projeto, ela abre a lista, que é onde se começa um e se retoma os antigos — e leva o
-   * RASCUNHO junto. Quem digitou "quero avisar quando o estoque acabar" e clicou em montar não
-   * pode encontrar um campo vazio do outro lado: o trabalho já estava feito.
-   */
-  const montarOperacao = useCallback(() => {
-    if (projetoAtual) return navigate(`/architect/${projetoAtual}`)
-    const texto = rascunho.trim()
-    navigate(texto ? `/architect?objetivo=${encodeURIComponent(texto.slice(0, 400))}` : '/architect')
-  }, [navigate, projetoAtual, rascunho])
 
   const valor = useMemo<AssistantState>(
     () => ({
       aberto,
-      minimizado,
       mensagens,
       rascunho,
       phase,
       enviando,
       erro,
-      abrir: () => {
-        setAberto(true)
-        setMinimizado(false)
-      },
+      abrir: () => setAberto(true),
       fechar: () => setAberto(false),
-      minimizar: () => setMinimizado((v) => !v),
       setRascunho,
       enviar,
       confirmar,
@@ -637,9 +609,8 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
       responder,
       gerarProposta,
       ultimoErro,
-      montarOperacao,
     }),
-    [aberto, minimizado, mensagens, rascunho, phase, enviando, erro, enviar, confirmar, projetoAtual, projeto, pergunta, responder, gerarProposta, ultimoErro, montarOperacao],
+    [aberto, mensagens, rascunho, phase, enviando, erro, enviar, confirmar, projetoAtual, projeto, pergunta, responder, gerarProposta, ultimoErro],
   )
 
 
@@ -672,7 +643,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
 /**
  * O BOTÃO — persistente, em desktop e no celular.
  *
- * Ele desaparece enquanto o painel está aberto e não minimizado: dois alvos para a mesma
+ * Ele desaparece enquanto o painel está aberto: dois alvos para a mesma
  * coisa na mesma tela é o tipo de duplicação que faz a pessoa clicar no errado.
  */
 function ArchitectLauncher() {
@@ -691,7 +662,7 @@ function ArchitectLauncher() {
    */
   useEffect(() => {
     // O painel do próprio Arquiteto tem `role="dialog"` e NÃO conta: contá-lo faria o botão
-    // sumir para sempre depois da primeira abertura, inclusive minimizado.
+    // sumir para sempre depois da primeira abertura.
     const conferir = () => setTemModal(document.querySelector('[role="dialog"]:not([data-testid="architect-panel"])') !== null)
     conferir()
     const observador = new MutationObserver(conferir)
@@ -699,7 +670,7 @@ function ArchitectLauncher() {
     return () => observador.disconnect()
   }, [])
 
-  if (!a || (a.aberto && !a.minimizado) || temModal) return null
+  if (!a || a.aberto || temModal) return null
   return (
     <button
       type="button"
@@ -761,6 +732,20 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
   // Dentro do projeto a proposta já está na tela: um botão para abri-la seria um clique
   // para chegar onde a pessoa já está.
   const naPaginaDeProjeto = ehPaginaDeProjeto(useLocation().pathname)
+  /**
+   * Existe CANTO nesta tela?
+   *
+   * Um cartão de canto pressupõe sobra ao redor. Num telefone não há sobra: o painel é a
+   * tela, e tratá-lo como cartão o empurrava para fora dela.
+   */
+  const [cabeNoCanto, setCabeNoCanto] = useState(() => (typeof window === 'undefined' ? true : window.matchMedia('(min-width: 1024px)').matches))
+  useEffect(() => {
+    const consulta = window.matchMedia('(min-width: 1024px)')
+    const ver = () => setCabeNoCanto(consulta.matches)
+    ver()
+    consulta.addEventListener('change', ver)
+    return () => consulta.removeEventListener('change', ver)
+  }, [])
   const [largura, setLargura] = useState(() => {
     try {
       return Math.min(LARGURA_MAX, Math.max(LARGURA_MIN, Number(localStorage.getItem(LARGURA_CHAVE)) || 400))
@@ -778,7 +763,7 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
    * fica exatamente ali. Quem precisa de espaço lê `--arquiteto-largura`; no celular ela é
    * zero, porque lá o painel é a tela inteira e não há o que reservar.
    */
-  const larguraAberta = a?.aberto && !a?.minimizado
+  const larguraAberta = a?.aberto
   useEffect(() => {
     const raiz = document.documentElement
     const aplicar = () => {
@@ -797,8 +782,8 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
   const fim = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (a?.aberto && !a.minimizado) campo.current?.focus()
-  }, [a?.aberto, a?.minimizado])
+    if (a?.aberto) campo.current?.focus()
+  }, [a?.aberto])
 
   useEffect(() => {
     fim.current?.scrollIntoView({ block: 'end' })
@@ -855,7 +840,16 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
          * Fora do projeto ela continua gaveta, que é o certo para um painel que se abre
          * por cima de qualquer tela.
          */
-        ...(naPaginaDeProjeto
+        /**
+         * O CARTÃO DE CANTO é coisa de DESKTOP.
+         *
+         * Dentro do projeto, numa tela larga, a conversa flutua no canto para não comer
+         * largura da proposta — essa decisão continua. No celular ela não cabe em canto
+         * nenhum: com `right: 24` e `width: min(100vw, …)` o painel começava fora da tela
+         * pela esquerda e terminava 24 px antes da borda direita. Aqui ele é a tela, como
+         * em qualquer outra rota.
+         */
+        ...(naPaginaDeProjeto && cabeNoCanto
           ? { right: 24, bottom: 24, maxHeight: 'min(70dvh, 640px)', borderRadius: 'var(--radius-panel)', overflow: 'hidden' }
           : { right: 0, bottom: 0, top: 0 }),
         display: 'flex',
@@ -865,11 +859,10 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
         boxShadow: '-8px 0 32px rgba(0,0,0,.12)',
         // No celular ocupa a tela inteira; no desktop, a largura escolhida.
         width: `min(100vw, ${largura}px)`,
-        ...(a.minimizado ? { top: 'auto', height: 56 } : {}),
       }}
     >
       {/* A alça de redimensionar só existe no desktop, onde há o que redimensionar. */}
-      {!a.minimizado ? (
+      {(
         <div
           onPointerDown={arrastar}
           data-testid="architect-resize"
@@ -877,7 +870,7 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
           className="hidden lg:block"
           style={{ position: 'absolute', left: -3, top: 0, bottom: 0, width: 6, cursor: 'col-resize' }}
         />
-      ) : null}
+      )}
 
       <header
         style={{
@@ -885,7 +878,7 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
           alignItems: 'center',
           gap: 8,
           padding: '10px 12px',
-          borderBottom: a.minimizado ? 'none' : '1px solid var(--border-subtle)',
+          borderBottom: '1px solid var(--border-subtle)',
         }}
       >
         <Icon name="sparkles" size={16} color="var(--intent-brand)" />
@@ -895,21 +888,12 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
             {PHASE_LABEL[a.phase]}
           </span>
         ) : null}
-        <button
-          type="button"
-          onClick={a.minimizar}
-          aria-label={a.minimizado ? 'Expandir o Arquiteto' : 'Minimizar o Arquiteto'}
-          data-testid="architect-minimize"
-          style={botaoDeIcone}
-        >
-          <Icon name={a.minimizado ? 'chevron-up' : 'chevron-down'} size={16} />
-        </button>
         <button type="button" onClick={a.fechar} aria-label="Fechar o Arquiteto" data-testid="architect-close" style={botaoDeIcone}>
           <Icon name="x" size={16} />
         </button>
       </header>
 
-      {a.minimizado ? null : (
+      {(
         <>
           {/*
             A resposta chega SEM mudar de página.
@@ -974,6 +958,17 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
                 Pensando… {segundos}s
               </p>
             ) : null}
+            {/* A PORTA PARA A PROPOSTA fica DENTRO da conversa, e rola com ela.
+                Fixa no rodapé ela ocupava uma faixa permanente da tela e ficava ali
+                pedindo clique muito depois de a pessoa ter seguido para outro assunto.
+                Aqui ela é o que é: o desfecho da rodada que montou a proposta. */}
+            {a.projeto?.hasBlueprint && !naPaginaDeProjeto ? (
+              <p style={{ margin: '2px 0 0', alignSelf: 'flex-start' }}>
+                <Button variant="secondary" onClick={() => onAbrirProjeto(a.projeto!.id)} data-testid="architect-abrir-projeto">
+                  Abrir a proposta
+                </Button>
+              </p>
+            ) : null}
             <div ref={fim} />
           </div>
 
@@ -1012,17 +1007,6 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
             </p>
           ) : null}
 
-          {/* A PORTA PARA A PROPOSTA só existe quando há proposta.
-              Antes ela aparecia no mesmo turno em que o projeto era criado — levando a
-              pessoa para uma sala vazia e deixando a conversa para trás. `hasBlueprint` é
-              o servidor dizendo que há algo para ver. */}
-          {a.projeto?.hasBlueprint && !naPaginaDeProjeto ? (
-            <p style={{ margin: 0, padding: '0 12px 10px' }}>
-              <Button variant="secondary" onClick={() => onAbrirProjeto(a.projeto!.id)} data-testid="architect-abrir-projeto">
-                Abrir a proposta
-              </Button>
-            </p>
-          ) : null}
 
           {a.erro ? (
             <p role="alert" data-testid="architect-erro" style={{ margin: 0, padding: '0 12px 8px', fontSize: 12.5, color: 'var(--intent-danger-text)' }}>
@@ -1030,45 +1014,12 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
             </p>
           ) : null}
 
-          {/*
-            A PORTA para a tela completa fica AQUI, e não na navegação.
-            "Montar operação" é um modo de trabalho do Arquiteto, não um módulo irmão de
-            Agentes e Setores. Listá-la na barra lateral fazia "Arquiteto", "Blueprint" e
-            "Montar operação" parecerem três produtos, e a pessoa tinha que descobrir sozinha
-            que eram a mesma coisa. Aqui ela está onde a conversa acontece — e o rótulo diz
-            para onde leva: continuar o que já começou, ou abrir a montagem.
-          */}
-          <div
-            style={{
-              display: 'flex',
-              gap: 8,
-              padding: '8px 12px 0',
-              alignItems: 'center',
-            }}
-          >
-            <button
-              type="button"
-              onClick={a.montarOperacao}
-              data-testid="architect-montar-operacao"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                // Alvo mínimo de toque: no celular este botão fica ao lado do campo de texto.
-                minHeight: 44,
-                padding: '8px 12px',
-                borderRadius: 8,
-                border: '1px solid var(--border-subtle)',
-                background: 'transparent',
-                color: 'var(--text-body)',
-                fontSize: 13,
-                cursor: 'pointer',
-              }}
-            >
-              <Icon name="layout-dashboard" size={15} color="var(--intent-brand)" />
-              {a.projetoAtual ? 'Continuar a montagem' : 'Montar operação'}
-            </button>
-          </div>
+          {/* "Montar operação" saiu daqui.
+              Ele existia de quando a conversa do painel e a da página eram duas coisas
+              diferentes e era preciso atravessar de uma para a outra. Com uma conversa só,
+              ele levava para onde a pessoa já estava — e, com projeto aberto, dizia
+              "Continuar a montagem" ao lado da montagem em andamento. A porta para a
+              proposta é "Abrir a proposta", e ela só aparece quando existe proposta. */}
 
           <form
             onSubmit={(e) => {
