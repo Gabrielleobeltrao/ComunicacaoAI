@@ -27,11 +27,17 @@ const DETALHE = {
   adapterConfig: { recorderId: 'r1' },
   updatedAt: NOW,
   datasets: [
-    { key: 'ordens', name: 'ordens', mutability: 'append_only', fields: ['ticker', 'preco'], schema: { type: 'object', properties: { ticker: { type: 'string' }, preco: { type: 'number' } } } },
+    { key: 'ordens', name: 'ordens', mutability: 'mutable', fields: ['ticker', 'preco'], schema: { type: 'object', properties: { ticker: { type: 'string' }, preco: { type: 'number' } } } },
+    // Um conjunto que SÓ ACRESCENTA, para a tela ter de dizer por que ali não se corrige.
+    { key: 'fechamentos', name: 'fechamentos', mutability: 'append_only', fields: ['ticker'], schema: { type: 'object', properties: { ticker: { type: 'string' } } } },
   ],
 }
 
 let consultas: { limit?: number; skip?: number }[] = []
+let patchesEnviados: Record<string, unknown>[] = []
+let apagados: string[] = []
+let conjuntosApagados: string[] = []
+let linhasApagadas: string[] = []
 let criado: Record<string, unknown> | null = null
 let grantSalvo: Record<string, unknown> | null = null
 
@@ -44,7 +50,7 @@ const GRANTS = {
 const IMPACTO = {
   dataStoreId: DB_ID,
   name: 'Operações',
-  datasets: [{ key: 'ordens', mutability: 'append_only' }],
+  datasets: [{ key: 'ordens', mutability: 'mutable' }, { key: 'fechamentos', mutability: 'append_only' }],
   grants: 1,
   accessibleBy: [{ agentId: 'a1', name: 'Marina', origin: 'sector' }],
   recommendation: 'prefer_archive',
@@ -53,6 +59,10 @@ const IMPACTO = {
 async function stub(page: Page, opts: { listStatus?: number; empty?: boolean } = {}) {
   criado = null
   grantSalvo = null
+  patchesEnviados = []
+  apagados = []
+  conjuntosApagados = []
+  linhasApagadas = []
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   const user = { id: 'u1', email: 'qa@local.test', name: 'QA', emailVerified: true, createdAt: NOW, updatedAt: NOW }
   await page.route('**/api/auth/**', (r) =>
@@ -70,12 +80,17 @@ async function stub(page: Page, opts: { listStatus?: number; empty?: boolean } =
     const limite = Number(pedido.limit ?? 20)
     const pulo = Number(pedido.skip ?? 0)
     const linhas = Array.from({ length: Math.max(0, Math.min(limite, 137 - pulo)) }, (_, i) => ({
+      // A identidade da linha, que é por onde a tela aponta qual corrigir ou apagar.
+      rowId: `r${pulo + i + 1}`,
       ticker: `T${pulo + i}`,
       preco: 10 + pulo + i,
       occurredAt: NOW,
     }))
     return r.fulfill({ json: { rows: linhas, total: 137, returned: linhas.length, truncated: pulo + linhas.length < 137, freshness: NOW } })
   })
+  await page.route(`**/api/databases/${DB_ID}/datasets/fechamentos/query`, (r) =>
+    r.fulfill({ json: { rows: [{ rowId: 'f1', ticker: 'VALE3', occurredAt: NOW }], total: 1, returned: 1, truncated: false, freshness: NOW } }),
+  )
   await page.route(`**/api/databases/${DB_ID}/datasets`, (r) => {
     criado = r.request().postDataJSON() as Record<string, unknown>
     return r.fulfill({ status: 201, json: { key: String(criado.key) } })
@@ -91,7 +106,41 @@ async function stub(page: Page, opts: { listStatus?: number; empty?: boolean } =
     }
     return r.fulfill({ json: GRANTS })
   })
-  await page.route(`**/api/databases/${DB_ID}`, (r) => r.fulfill({ json: DETALHE }))
+  // A linha: apagar e corrigir, apontadas pelo `rowId`.
+  await page.route(`**/api/databases/${DB_ID}/datasets/*/rows/*`, (r) => {
+    const rowId = r.request().url().split('/').pop() ?? ''
+    if (r.request().method() === 'DELETE') {
+      linhasApagadas.push(rowId)
+      return r.fulfill({ status: 204, body: '' })
+    }
+    patchesEnviados.push({ rowId, ...(r.request().postDataJSON() as Record<string, unknown>) })
+    return r.fulfill({ json: { updated: 1 } })
+  })
+
+  // O conjunto: apagar e editar respondem no mesmo caminho, por método.
+  await page.route(`**/api/databases/${DB_ID}/datasets/*`, (r) => {
+    const chave = r.request().url().split('/').pop() ?? ''
+    if (r.request().method() === 'DELETE') {
+      conjuntosApagados.push(chave)
+      return r.fulfill({ status: 204, body: '' })
+    }
+    if (r.request().method() === 'PATCH') {
+      patchesEnviados.push({ dataset: chave, ...(r.request().postDataJSON() as Record<string, unknown>) })
+      return r.fulfill({ json: { key: chave, name: chave, mutability: 'mutable' } })
+    }
+    return r.fulfill({ json: DETALHE.datasets })
+  })
+  await page.route(`**/api/databases/${DB_ID}`, (r) => {
+    if (r.request().method() === 'DELETE') {
+      apagados.push(DB_ID)
+      return r.fulfill({ status: 204, body: '' })
+    }
+    if (r.request().method() === 'PATCH') {
+      patchesEnviados.push({ id: DB_ID, ...(r.request().postDataJSON() as Record<string, unknown>) })
+      return r.fulfill({ json: { id: DB_ID, name: 'ok', status: 'active' } })
+    }
+    return r.fulfill({ json: DETALHE })
+  })
   await page.route('**/api/databases', (r) => {
     if (r.request().method() === 'POST') {
       criado = r.request().postDataJSON() as Record<string, unknown>
@@ -107,17 +156,23 @@ test('a lista diz a ORIGEM de cada database, e o estado', async ({ page }) => {
   await page.goto('/databases')
   await expect(page.getByTestId('databases-list')).toBeVisible()
   // Mercado não é memória nem conhecimento — e a tela diz de onde vem.
-  await expect(page.getByTestId('database-000000000000000000000db2')).toContainText('Dados de mercado')
-  await expect(page.getByTestId('database-000000000000000000000db2')).toContainText('pausado')
-  await expect(page.getByTestId(`database-${DB_ID}`)).toContainText('Histórico interno')
+  // A lista virou uma lista de PASTAS: o mesmo conteúdo, num lugar que se abre.
+  await expect(page.getByTestId('pasta-000000000000000000000db2')).toContainText('Dados de mercado')
+  await expect(page.getByTestId('pasta-000000000000000000000db2')).toContainText('pausado')
+  await expect(page.getByTestId(`pasta-${DB_ID}`)).toContainText('Histórico interno')
 })
 
 test('abrir um database mostra os conjuntos e a consulta', async ({ page }) => {
   await stub(page)
   await page.goto('/databases')
-  await page.getByTestId(`database-${DB_ID}`).click()
+  // A tela inteira continua existindo — abrir a pasta mostra o que tem dentro; o ícone de
+  // abrir leva à tela com a consulta.
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await expect(page.getByTestId('item-fechamentos')).toContainText('só acrescenta')
+  await page.getByTestId(`pasta-abrir-${DB_ID}`).click()
   await expect(page.getByTestId('database-detail')).toBeVisible()
-  await expect(page.getByTestId('dataset-ordens')).toContainText('só acrescenta')
+  // A tela do Database NÃO repete a lista de conjuntos: quem escolhe é a pasta.
+  await expect(page.getByTestId('database-datasets')).toHaveCount(0)
 
   // "Quantos vieram" nunca é apresentado como "quantos existem".
   await expect(page.getByTestId('dataset-query-counts')).toContainText('20 de 137')
@@ -126,11 +181,13 @@ test('abrir um database mostra os conjuntos e a consulta', async ({ page }) => {
 
 test('criar um conjunto monta o schema a partir de campo:tipo', async ({ page }) => {
   await stub(page)
-  await page.goto(`/databases?id=${DB_ID}`)
-  await page.getByTestId('dataset-new').click()
-  await page.getByTestId('dataset-new-key').fill('clientes')
-  await page.getByTestId('dataset-new-fields').fill('nome:string\nidade:number')
-  await page.getByTestId('dataset-new-save').click()
+  // Criar um conjunto é mexer no que a pasta guarda — o botão fica DENTRO da pasta.
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId(`dataset-new-${DB_ID}`).click()
+  await page.getByTestId(`dataset-new-key-${DB_ID}`).fill('clientes')
+  await page.getByTestId(`dataset-new-fields-${DB_ID}`).fill('nome:string\nidade:number')
+  await page.getByTestId(`dataset-new-save-${DB_ID}`).click()
   await expect.poll(() => (criado as { schema?: { properties?: Record<string, { type: string }> } } | null)?.schema?.properties?.idade?.type).toBe('number')
 })
 
@@ -269,4 +326,127 @@ test('AMEAÇA: a última página não pede mais do que existe', async ({ page })
   // 137 registros: a segunda página de 100 tem 37, e não há terceira.
   await expect(page.getByTestId('dataset-pagina')).toContainText('101–137 de 137')
   await expect(page.getByTestId('dataset-proxima')).toBeDisabled()
+})
+
+// --- CONTROLE: editar e apagar, no lugar onde a pessoa está ------------------------------
+//
+// DO RELATO: "os database não têm opção de editar as informações e também não tem como
+// deletar. Quero ter todo o controle da database."
+//
+// O servidor já respondia a tudo — `PATCH /:id`, `DELETE /:id`, `PATCH /:id/datasets/:key`,
+// `DELETE /:id/datasets/:key`. O cliente até tinha `patchDatabase` e `deleteDatabase`
+// escritos. A tela é que nunca ofereceu: uma capacidade que existe e não aparece é uma
+// capacidade que não existe.
+
+test('ACEITAÇÃO: dá para RENOMEAR um database sem sair da lista', async ({ page }) => {
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+
+  await page.getByTestId(`pasta-editar-${DB_ID}`).click()
+  const campo = page.getByTestId('pasta-editar-nome')
+  await expect(campo).toHaveValue('Operações')
+  await campo.fill('Operações consolidadas')
+  await page.getByTestId('pasta-editar-salvar').click()
+
+  await expect.poll(() => patchesEnviados).toContainEqual({ id: DB_ID, name: 'Operações consolidadas' })
+})
+
+test('ACEITAÇÃO: apagar PEDE confirmação e diz o que vai junto', async ({ page }) => {
+  /**
+   * Apagar um Database leva os conjuntos e os registros. Um botão que apaga no primeiro
+   * clique, sem dizer o que leva junto, é a diferença entre uma limpeza e um acidente.
+   */
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId(`pasta-apagar-${DB_ID}`).click()
+
+  const dialogo = page.getByRole('dialog')
+  await expect(dialogo).toBeVisible()
+  await expect(dialogo).toContainText(/registro|conjunto/i)
+  await expect.poll(() => apagados).toEqual([])
+
+  await page.getByTestId('pasta-apagar-confirmar').click()
+  await expect.poll(() => apagados).toContain(DB_ID)
+})
+
+test('ACEITAÇÃO: o conjunto dentro da pasta também se edita e se apaga', async ({ page }) => {
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+
+  // Aberta, a pasta mostra o que tem dentro.
+  await expect(page.getByTestId('item-ordens')).toBeVisible()
+  await page.getByTestId('item-apagar-ordens').click()
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await page.getByTestId('pasta-apagar-confirmar').click()
+  await expect.poll(() => conjuntosApagados).toContain('ordens')
+})
+
+test('ACEITAÇÃO: o conjunto dentro da pasta também se RENOMEIA', async ({ page }) => {
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId('item-editar-ordens').click()
+  await page.getByTestId('item-editar-nome').fill('Ordens do dia')
+  await page.getByTestId('item-editar-salvar').click()
+  await expect.poll(() => patchesEnviados).toContainEqual({ dataset: 'ordens', name: 'Ordens do dia' })
+})
+
+test('ACEITAÇÃO: na tabela de valores, cada linha se apaga', async ({ page }) => {
+  /**
+   * "Quero conseguir editar, deletar… e nos valores todos também." A consulta mostrava
+   * números sem identidade: não havia como dizer QUAL linha corrigir. Agora ela devolve
+   * `rowId`, e é por ele que a tela aponta.
+   */
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-abrir-${DB_ID}`).click()
+  await expect(page.getByTestId('dataset-query-counts')).toBeVisible()
+
+  await page.getByTestId('linha-apagar-r1').click()
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await page.getByTestId('linha-apagar-confirmar').click()
+  await expect.poll(() => linhasApagadas).toContain('r1')
+})
+
+test('ACEITAÇÃO: na tabela de valores, uma linha se CORRIGE', async ({ page }) => {
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-abrir-${DB_ID}`).click()
+  await expect(page.getByTestId('dataset-query-counts')).toBeVisible()
+
+  await page.getByTestId('linha-editar-r1').click()
+  await page.getByTestId('linha-campo-ticker').fill('PETR4')
+  await page.getByTestId('linha-salvar').click()
+  // Vai o registro inteiro, e não só o campo mexido: é assim que o servidor grava a linha.
+  await expect.poll(() => patchesEnviados).toContainEqual({ rowId: 'r1', row: { ticker: 'PETR4', preco: 10 } })
+})
+
+test('AMEAÇA: onde só se acrescenta, não há botão de corrigir — há o motivo', async ({ page }) => {
+  /**
+   * O servidor recusa mexer numa série append_only. Um botão que sempre falha é pior que
+   * botão nenhum: no lugar dele vai a razão, escrita.
+   */
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId('item-abrir-fechamentos').click()
+  await expect(page.getByTestId('linhas-travadas')).toContainText('só acrescenta')
+  await expect(page.getByTestId('linha-apagar-f1')).toHaveCount(0)
+})
+
+test('ACEITAÇÃO: clicar num conjunto da pasta abre a consulta DELE, e não a do primeiro', async ({ page }) => {
+  /**
+   * A tela do Database repetia a lista de conjuntos que a pasta já mostra — duas listas da
+   * mesma coisa, e a de dentro só confundia. Agora quem escolhe é a pasta, e o conjunto
+   * escolhido é o que abre.
+   */
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId('item-abrir-fechamentos').click()
+  await expect(page.getByTestId('database-detail-sub')).toContainText('fechamentos')
+  await expect(page.getByTestId('dataset-query')).toContainText('VALE3')
 })
