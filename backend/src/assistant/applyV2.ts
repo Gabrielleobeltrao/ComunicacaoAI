@@ -464,10 +464,10 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
 
     const { ensureDatasetForRecorder } = await import('../databases/migration.js')
     const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(ownerId, recorder)
-    const minutos = Math.round(w.everyMs / 60_000)
+    const { tamanhoDaJanela } = await import('./diff.js')
     return {
       id: `${dataStoreId.toString()}:${datasetKey}`,
-      message: `${w.rules.map((r) => r.to).join(' e ')} a cada ${minutos >= 1 ? `${minutos} min` : `${Math.round(w.everyMs / 1000)}s`}`,
+      message: `${w.rules.map((r) => r.to).join(' e ')} a cada ${tamanhoDaJanela(w.everyMs)}`,
     }
   }
 

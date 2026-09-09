@@ -202,3 +202,29 @@ test('o resumo do inventário mostra O QUE TEM DENTRO de um conjunto, não só o
   assert.match(linha, /Bitcoin/, 'o nome do conjunto sumiu')
   assert.match(linha, /preco_bitcoin/, `o resumo não diz o que tem dentro: ${linha}`)
 })
+
+test('AMEAÇA: o catálogo diz que RESUMIR POR JANELA já existe, sem função cadastrada', async () => {
+  /**
+   * O pedido do dono, literal: "salvar o valor mínimo e máximo de bitcoin em um intervalo de
+   * 5 minutos". O motor de Históricos fecha janelas e grava as sete contas determinísticas
+   * desde sempre. O catálogo não contava isso — e mandava, em letras maiúsculas: "se o
+   * cálculo que a operação precisa não está na lista acima, isso é PENDÊNCIA declarada".
+   *
+   * O modelo obedeceu. Cinco rodadas dizendo "depende de uma função determinística que não
+   * existe", uma proposta sem nada a criar, e a pergunta dele depois de aplicar: "onde está
+   * a função para identificar e salvar as informações?".
+   *
+   * Omitir a capacidade não deixa o modelo em dúvida: faz ele concluir que ela não existe.
+   */
+  const texto = manifestForPrompt(await buildCapabilityManifest(DONO))
+  assert.match(texto, /janela/i, 'o catálogo não diz que dá para resumir por janela')
+  for (const conta of ['menor', 'maior', 'média', 'soma', 'contagem']) {
+    assert.ok(texto.toLowerCase().includes(conta.toLowerCase()), `falta a conta "${conta}" no catálogo`)
+  }
+  assert.match(texto, /5 minutos/, 'sem um exemplo concreto, "janela" não é reconhecível no pedido de alguém')
+  // E o desmentido explícito: é essa frase que ele repetiu cinco vezes.
+  assert.match(texto, /depende de uma função determinística que não existe.{0,40}FALSO/s)
+  // A pendência continua existindo — ela é legítima quando falta o tamanho ou o campo.
+  assert.match(texto, /precisa do TAMANHO/)
+  assert.match(texto, /CAMPO/)
+})

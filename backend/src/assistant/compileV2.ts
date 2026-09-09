@@ -2,6 +2,7 @@ import { classifyBrief } from './classify.js'
 import type { Classification, ResourceDecision } from './classify.js'
 import { nomeDoAgente, nomesEmUso, slug } from './compile.js'
 import { conjuntoQueServe } from './nextQuestion.js'
+import { tamanhoDaJanela } from './diff.js'
 import type { AssistantCapabilityManifest, CapabilityApp } from './capabilities.js'
 import type { BriefJob, OperationBrief } from './brief.js'
 import type { OfficeInventory } from './inventory.js'
@@ -1556,15 +1557,15 @@ function compilarJanela(
     }
   }
 
-  const minutos = Math.round(janela.everyMs / 60_000)
+  const cada = tamanhoDaJanela(janela.everyMs)
   bp.operations.histories.push({
     key: `janela-${raiz}`,
     action: 'create',
     ...ESSENCIAL,
-    rationale: `${janela.rules.map((r) => r.to).join(' e ')} de "${janela.rules[0].from}" a cada ${minutos >= 1 ? `${minutos} min` : `${Math.round(janela.everyMs / 1000)}s`} — contas determinísticas do motor de Históricos`,
+    rationale: `${janela.rules.map((r) => r.to).join(' e ')} de "${janela.rules[0].from}" a cada ${cada} — contas determinísticas do motor de Históricos`,
     dependsOn: [fonteKey],
     sourceKey: fonteKey,
-    name: `${janela.rules.map((r) => r.to).join(' e ')} a cada ${minutos >= 1 ? `${minutos} min` : `${Math.round(janela.everyMs / 1000)}s`}`,
+    name: `${janela.rules.map((r) => r.to).join(' e ')} a cada ${cada}`,
     window: janela,
   })
 }
