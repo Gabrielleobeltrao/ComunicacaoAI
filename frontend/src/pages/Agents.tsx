@@ -79,7 +79,7 @@ export function Agents() {
   }, [sectors])
 
   // Round-robin faces over the full team (built from all agents, not the filtered view).
-  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
+  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => ({ id: a._id, name: a.name }))), [agents])
 
   const activeFilters = (filterSector ? 1 : 0) + (filterProvider ? 1 : 0)
 

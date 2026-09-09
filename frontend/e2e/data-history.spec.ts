@@ -422,3 +422,25 @@ test('a tela do histórico mostra onde ele guarda e por quanto tempo', async ({ 
   await expect(page.getByTestId('recorder-storage-info')).toContainText('Banco interno')
   await expect(page.getByTestId('recorder-storage-info')).toContainText('90 dias')
 })
+
+test('ACEITAÇÃO: o histórico se RENOMEIA e se abre da própria lista, sem trocar de tela', async ({ page }) => {
+  /**
+   * "Quero esse visual também nos Históricos." A mesma pasta dos Databases: o que a regra
+   * guarda fica dentro dela, e as ações ficam onde a coisa está.
+   */
+  const patches: Record<string, unknown>[] = []
+  await stub(page)
+  await page.route('**/api/data-history/recorders/rec-1', async (r) => {
+    if (r.request().method() === 'PATCH') {
+      patches.push(r.request().postDataJSON() as Record<string, unknown>)
+      return r.fulfill({ json: { ...RECORDER } })
+    }
+    return r.fulfill({ json: { ...RECORDER, storedRecords: 42 } })
+  })
+  await page.goto('/historicos')
+
+  await page.getByTestId('pasta-editar-rec-1').click()
+  await page.getByTestId('pasta-editar-nome').fill('BTC de 5 em 5')
+  await page.getByTestId('pasta-editar-salvar').click()
+  await expect.poll(() => patches).toContainEqual({ name: 'BTC de 5 em 5' })
+})

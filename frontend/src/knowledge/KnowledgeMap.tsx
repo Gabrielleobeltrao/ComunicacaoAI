@@ -146,7 +146,7 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
     return { x: r.x * normal, y: r.y * normal, z: r.z * normal }
   }, [centro, normal])
   const retratos = useMemo(
-    () => buildCharacterResolver(posicionados.filter((n) => n.kind === 'agent').map((n) => n.ownerId ?? n.id)),
+    () => buildCharacterResolver(posicionados.filter((n) => n.kind === 'agent').map((n) => ({ id: n.ownerId ?? n.id, name: n.label }))),
     [posicionados],
   )
   const porId = useMemo(() => new Map(posicionados.map((n) => [n.id, n])), [posicionados])

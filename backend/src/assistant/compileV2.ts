@@ -1,6 +1,6 @@
 import { classifyBrief } from './classify.js'
 import type { Classification, ResourceDecision } from './classify.js'
-import { slug } from './compile.js'
+import { nomeDoAgente, nomesEmUso, slug } from './compile.js'
 import type { AssistantCapabilityManifest, CapabilityApp } from './capabilities.js'
 import type { BriefJob, OperationBrief } from './brief.js'
 import type { OfficeInventory } from './inventory.js'
@@ -432,7 +432,7 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
   }
 
   // --- 3. as peças, por classificação -------------------------------------------------------
-  const NOMES = ['Marina', 'Rafael', 'Tereza', 'Bruno', 'Helena', 'Caio', 'Alice', 'Otávio', 'Lívia', 'Gustavo']
+  const usados = nomesEmUso(inventory)
   let indiceDeAgente = 0
   const agentePorTrabalho = new Map<string, string>()
 
@@ -482,7 +482,7 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
 
     if (decision.kind === 'agent') {
       const key = slug(decision.jobId) || `agente-${indiceDeAgente}`
-      const nome = NOMES[indiceDeAgente % NOMES.length]
+      const nome = nomeDoAgente(indiceDeAgente, usados)
       agentePorTrabalho.set(decision.jobId, key)
       const agente: BlueprintAgentV2 = {
         key,

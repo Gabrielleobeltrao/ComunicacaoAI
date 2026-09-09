@@ -6,7 +6,7 @@ import type { AgentSummary, SectorSummary } from '../lib/types'
 // The sector page's hero (plan §6): the SAME live crop the card shows. The crop is
 // decorative — the aria-label carries the same information for screen readers (§6.4).
 export function SectorHero({ sector, agents, floorName }: { sector: SectorSummary; agents: AgentSummary[]; floorName: string }) {
-  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
+  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => ({ id: a._id, name: a.name }))), [agents])
   const count = sector.members.length
   const description = `Sala do setor ${sector.name} com ${count} ${count === 1 ? 'agente' : 'agentes'} no andar ${floorName}.`
 

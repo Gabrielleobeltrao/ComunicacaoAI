@@ -318,6 +318,10 @@ const RULES: Rule[] = [
   R('PUT', 'api/databases/:/grants', { entityType: 'database', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/databases/:/grants/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/databases/:/datasets/:/rows', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  // Corrigir e apagar uma linha mexem no que foi GRAVADO — o registro de auditoria é o
+  // único lugar onde depois se pergunta quem trocou aquele número, e quando.
+  R('PATCH', 'api/databases/:/datasets/:/rows/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/databases/:/datasets/:/rows/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/databases/:/datasets/:/query', null, { why: 'read, not a change' }),
 
   R('POST', 'api/assistant/projects', { entityType: 'assistant_project', action: 'create' }),

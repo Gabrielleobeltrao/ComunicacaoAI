@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
-import { Badge, Button, Card, Input, Textarea } from '../ui'
+import { ListaDePastas } from '../components/PastaDeDados'
+import { Button, Card, Dialog, IconButton, Input, Textarea } from '../ui'
 import * as api from '../lib/databases'
 import { DatabaseGrants } from '../components/DatabaseGrants'
 import type { DatabaseDetail, DatabaseSummary, DatasetSummary, QueryResult } from '../lib/databases'
@@ -19,11 +20,23 @@ export function Databases() {
   const [lista, setLista] = useState<DatabaseSummary[] | null>(null)
   const [erro, setErro] = useState<string | null>(null)
   const [criando, setCriando] = useState(false)
+  /**
+   * Os conjuntos de cada Database, carregados quando a lista chega.
+   *
+   * A lista resumida traz só a CONTAGEM. Sem os nomes, a pasta abriria dizendo "1
+   * conjunto" sem dizer qual — que é a mesma tela de antes com uma seta a mais.
+   */
+  const [conjuntos, setConjuntos] = useState<Record<string, api.DatabaseDetail['datasets']>>({})
 
   const carregar = useCallback(async () => {
     setErro(null)
     try {
-      setLista((await api.listDatabases()).items)
+      const items = (await api.listDatabases()).items
+      setLista(items)
+      // Em paralelo, e tolerante: um Database que recusar a leitura não pode impedir a
+      // lista inteira de aparecer.
+      const detalhes = await Promise.all(items.map((d) => api.getDatabase(d.id).catch(() => null)))
+      setConjuntos(Object.fromEntries(detalhes.filter((x) => x !== null).map((x) => [x!.id, x!.datasets])))
     } catch (e) {
       setErro((e as Error).message)
     }
@@ -33,10 +46,12 @@ export function Databases() {
     void carregar()
   }, [carregar])
 
-  const abrir = (id: string | null) => {
+  const abrir = (id: string | null, conjunto?: string) => {
     const p = new URLSearchParams(params)
     if (id) p.set('id', id)
     else p.delete('id')
+    if (conjunto) p.set('conjunto', conjunto)
+    else p.delete('conjunto')
     setParams(p, { replace: true })
   }
 
@@ -72,35 +87,48 @@ export function Databases() {
             )}
 
             {lista && lista.length > 0 && (
-              <Card>
-                <div className="flex flex-col gap-2" data-testid="databases-list">
-                  {lista.map((d) => (
-                    <button
-                      key={d.id}
-                      type="button"
-                      onClick={() => abrir(d.id)}
-                      data-testid={`database-${d.id}`}
-                      className="flex flex-wrap items-start gap-2"
-                      style={{ textAlign: 'left', background: 'transparent', border: 0, padding: '8px 4px', cursor: 'pointer', minHeight: 'var(--hit-min, 44px)' }}
-                    >
-                      <Badge tone={d.status === 'active' ? 'success' : 'warning'}>{api.STATUS_LABEL[d.status]}</Badge>
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <span style={{ fontSize: 13.5, fontWeight: 600 }}>{d.name}</span>
-                        {d.description && <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{d.description}</p>}
-                        {/* Origem em voz alta: mercado não é memória, e histórico não é RAG. */}
-                        <span style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>
-                          {api.ADAPTER_LABEL[d.adapterKind]} · {d.datasets} dataset(s)
-                        </span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </Card>
+              /**
+               * PASTAS, e não uma fileira de botões.
+               *
+               * Para ver o que tinha dentro de um Database era preciso ABRIR OUTRA TELA e
+               * voltar para olhar o próximo. E não havia como renomear nem apagar de lugar
+               * nenhum — o servidor respondia às duas desde sempre, e a tela nunca ofereceu.
+               */
+              <ListaDePastas
+                testid="databases-list"
+                aoMudar={() => void carregar()}
+                pastas={lista.map((d) => ({
+                  chave: d.id,
+                  nome: d.name,
+                  detalhe: d.description || `${api.ADAPTER_LABEL[d.adapterKind]} · ${d.datasets} conjunto(s)`,
+                  marcas: [
+                    { texto: api.STATUS_LABEL[d.status], tom: d.status === 'active' ? ('success' as const) : ('warning' as const) },
+                    { texto: api.ADAPTER_LABEL[d.adapterKind], tom: 'neutral' as const },
+                  ],
+                  itens: (conjuntos[d.id] ?? []).map((c) => ({
+                    chave: c.key,
+                    nome: c.name || c.key,
+                    ...((c.fields ?? []).length ? { detalhe: (c.fields ?? []).join(', ') } : {}),
+                    marcas: [{ texto: api.MUTABILITY_LABEL[c.mutability], tom: 'neutral' as const }],
+                    aoRenomear: (nome: string) => api.patchDataset(d.id, c.key, { name: nome }),
+                    aoApagar: () => api.deleteDataset(d.id, c.key),
+                    avisoAoApagar: `O conjunto "${c.name || c.key}" e TODOS os registros dele são apagados. O Database continua de pé.`,
+                    aoAbrir: () => abrir(d.id, c.key),
+                  })),
+                  vazio: 'Nenhum conjunto declarado ainda — crie o primeiro aqui embaixo.',
+                  // Criar um conjunto é mexer no que a pasta guarda: o lugar disso é a pasta.
+                  rodape: <NovoDataset databaseId={d.id} onCriado={() => void carregar()} />,
+                  aoRenomear: (nome) => api.patchDatabase(d.id, { name: nome }),
+                  aoApagar: () => api.deleteDatabase(d.id),
+                  avisoAoApagar: `O Database "${d.name}", os conjuntos dele e TODOS os registros guardados são apagados. Quem tinha acesso perde o acesso junto.`,
+                  aoAbrirTela: () => abrir(d.id),
+                }))}
+              />
             )}
           </>
         )}
 
-        {aberto && <DetalheDoDatabase id={aberto} onVoltar={() => abrir(null)} onMudou={carregar} />}
+        {aberto && <DetalheDoDatabase id={aberto} conjunto={params.get('conjunto')} onVoltar={() => abrir(null)} />}
       </div>
     </AppLayout>
   )
@@ -162,7 +190,7 @@ function NovoDatabase({ onCriado }: { onCriado: () => void }) {
   )
 }
 
-function DetalheDoDatabase({ id, onVoltar, onMudou }: { id: string; onVoltar: () => void; onMudou: () => void }) {
+function DetalheDoDatabase({ id, conjunto, onVoltar }: { id: string; conjunto: string | null; onVoltar: () => void }) {
   const [detalhe, setDetalhe] = useState<DatabaseDetail | null>(null)
   const [erro, setErro] = useState<string | null>(null)
   const [dataset, setDataset] = useState<DatasetSummary | null>(null)
@@ -172,11 +200,11 @@ function DetalheDoDatabase({ id, onVoltar, onMudou }: { id: string; onVoltar: ()
     try {
       const d = await api.getDatabase(id)
       setDetalhe(d)
-      setDataset((atual) => d.datasets.find((x) => x.key === atual?.key) ?? d.datasets[0] ?? null)
+      setDataset((atual) => d.datasets.find((x) => x.key === (atual?.key ?? conjunto)) ?? d.datasets[0] ?? null)
     } catch (e) {
       setErro((e as Error).message)
     }
-  }, [id])
+  }, [id, conjunto])
 
   useEffect(() => {
     void carregar()
@@ -199,45 +227,14 @@ function DetalheDoDatabase({ id, onVoltar, onMudou }: { id: string; onVoltar: ()
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div style={{ minWidth: 0 }}>
             <strong style={{ fontSize: 15 }}>{detalhe.name}</strong>
-            <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+            <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="database-detail-sub">
               {api.ADAPTER_LABEL[detalhe.adapterKind]} · {api.STATUS_LABEL[detalhe.status]}
+              {dataset ? ` · ${dataset.name || dataset.key}` : ''}
             </p>
           </div>
           <Button variant="secondary" onClick={onVoltar} data-testid="database-back">
             Voltar
           </Button>
-        </div>
-      </Card>
-
-      <Card>
-        <div className="flex flex-col gap-2" data-testid="database-datasets">
-          <strong style={{ fontSize: 13 }}>Conjuntos de dados</strong>
-          {detalhe.datasets.length === 0 && (
-            <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Nenhum dataset ainda.</p>
-          )}
-          <div className="flex flex-wrap gap-2">
-            {detalhe.datasets.map((d) => (
-              <button
-                key={d.key}
-                type="button"
-                onClick={() => setDataset(d)}
-                data-testid={`dataset-${d.key}`}
-                style={{
-                  minHeight: 40,
-                  padding: '0 12px',
-                  borderRadius: 999,
-                  border: '1px solid var(--border-subtle)',
-                  background: dataset?.key === d.key ? 'var(--intent-brand)' : 'var(--surface-card)',
-                  color: dataset?.key === d.key ? '#fff' : 'var(--text-muted)',
-                  fontSize: 12.5,
-                  cursor: 'pointer',
-                }}
-              >
-                {d.name} · {api.MUTABILITY_LABEL[d.mutability]}
-              </button>
-            ))}
-          </div>
-          <NovoDataset databaseId={id} onCriado={() => { void carregar(); onMudou() }} />
         </div>
       </Card>
 
@@ -278,7 +275,7 @@ function NovoDataset({ databaseId, onCriado }: { databaseId: string; onCriado: (
   if (!aberto) {
     return (
       <div>
-        <Button variant="secondary" onClick={() => setAberto(true)} data-testid="dataset-new">
+        <Button variant="secondary" onClick={() => setAberto(true)} data-testid={`dataset-new-${databaseId}`}>
           Adicionar conjunto
         </Button>
       </div>
@@ -286,22 +283,22 @@ function NovoDataset({ databaseId, onCriado }: { databaseId: string; onCriado: (
   }
 
   return (
-    <div className="flex flex-col gap-2" style={{ padding: 10, borderRadius: 10, background: 'var(--surface-sunken)' }} data-testid="dataset-new-form">
+    <div className="flex flex-col gap-2" style={{ padding: 10, borderRadius: 10, background: 'var(--surface-sunken)' }} data-testid={`dataset-new-form-${databaseId}`}>
       <label className="flex flex-col gap-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
         Chave (letras minúsculas, números e _)
-        <Input value={chave} onChange={(e) => setChave(e.target.value)} data-testid="dataset-new-key" />
+        <Input value={chave} onChange={(e) => setChave(e.target.value)} data-testid={`dataset-new-key-${databaseId}`} />
       </label>
       <label className="flex flex-col gap-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
         Campos — um por linha, no formato nome:tipo
-        <Textarea rows={4} value={campos} onChange={(e) => setCampos(e.target.value)} data-testid="dataset-new-fields" />
+        <Textarea rows={4} value={campos} onChange={(e) => setCampos(e.target.value)} data-testid={`dataset-new-fields-${databaseId}`} />
       </label>
       {erro && (
-        <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="dataset-new-error">
+        <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid={`dataset-new-error-${databaseId}`}>
           {erro}
         </p>
       )}
       <div className="flex gap-2">
-        <Button onClick={salvar} disabled={!chave.trim()} data-testid="dataset-new-save">
+        <Button onClick={salvar} disabled={!chave.trim()} data-testid={`dataset-new-save-${databaseId}`}>
           Salvar
         </Button>
         <Button variant="secondary" onClick={() => setAberto(false)}>
@@ -355,6 +352,59 @@ function ConsultaDoDataset({ databaseId, dataset }: { databaseId: string; datase
   useEffect(() => {
     setPulo(0)
   }, [databaseId, dataset.key])
+
+  /**
+   * CORRIGIR e APAGAR uma linha.
+   *
+   * A tabela mostrava e mais nada: um valor digitado errado ontem ficava errado para sempre,
+   * ou dava trabalho de apagar o conjunto inteiro e regravar. Quem aponta qual linha é o
+   * `rowId` que a consulta devolve — por isso ele não vira coluna, ele é a identidade.
+   *
+   * Só aparece onde faz sentido: numa série que só acrescenta o servidor recusa, e um botão
+   * que sempre falha é pior que botão nenhum. No lugar dele vai o motivo, escrito.
+   */
+  const [editando, setEditando] = useState<{ rowId: string; valores: Record<string, string> } | null>(null)
+  const [aApagar, setAApagar] = useState<string | null>(null)
+  const [ocupado, setOcupado] = useState(false)
+
+  const podeMexer = dataset.mutability === 'mutable'
+  const colunas = resultado?.rows.length ? Object.keys(resultado.rows[0]).filter((c) => c !== 'rowId') : []
+  const editaveis = colunas.filter((c) => c !== 'occurredAt')
+
+  const mexer = async (acao: () => Promise<unknown>) => {
+    setOcupado(true)
+    setErro(null)
+    try {
+      await acao()
+      setEditando(null)
+      setAApagar(null)
+      await consultar()
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setOcupado(false)
+    }
+  }
+
+  /**
+   * O campo digitado é texto; o conjunto tem forma. Um `preco: number` não aceita `"10"` —
+   * o servidor valida contra o schema e recusa. Quem sabe a forma de cada campo é o schema,
+   * então é ele quem manda na conversão, e não um palpite sobre o que parece número.
+   */
+  const tipoDoCampo = (c: string) =>
+    String(((dataset.schema as { properties?: Record<string, { type?: unknown }> } | undefined)?.properties?.[c]?.type as string) ?? 'string')
+
+  const comAForma = (valores: Record<string, string>) =>
+    Object.fromEntries(
+      Object.entries(valores).map(([c, v]) => {
+        const tipo = tipoDoCampo(c)
+        if (tipo === 'number' || tipo === 'integer') return [c, v.trim() === '' || Number.isNaN(Number(v)) ? v : Number(v)]
+        if (tipo === 'boolean') return [c, v === 'true' ? true : v === 'false' ? false : v]
+        return [c, v]
+      }),
+    )
+
+  const salvarLinha = () => (editando ? mexer(() => api.patchRow(databaseId, dataset.key, editando.rowId, comAForma(editando.valores))) : undefined)
 
   return (
     <Card>
@@ -440,30 +490,104 @@ function ConsultaDoDataset({ databaseId, dataset }: { databaseId: string; datase
                 <table style={{ fontSize: 12.5, borderCollapse: 'collapse', minWidth: '100%' }} data-testid="dataset-query-table">
                   <thead>
                     <tr>
-                      {Object.keys(resultado.rows[0]).map((c) => (
+                      {colunas.map((c) => (
                         <th key={c} style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>
                           {c}
                         </th>
                       ))}
+                      {podeMexer && <th style={{ borderBottom: '1px solid var(--border-subtle)' }} />}
                     </tr>
                   </thead>
                   <tbody>
-                    {resultado.rows.map((linha, i) => (
-                      <tr key={i}>
-                        {Object.values(linha).map((v, j) => (
-                          <td key={j} style={{ padding: '4px 8px', borderBottom: '1px solid var(--border-subtle)', whiteSpace: 'nowrap' }}>
-                            {v instanceof Object ? JSON.stringify(v) : String(v ?? '')}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
+                    {resultado.rows.map((linha, i) => {
+                      const rowId = String(linha.rowId ?? '')
+                      const emEdicao = editando?.rowId === rowId
+                      return (
+                        <tr key={rowId || i} data-testid={rowId ? `linha-${rowId}` : undefined}>
+                          {colunas.map((c) => (
+                            <td key={c} style={{ padding: '4px 8px', borderBottom: '1px solid var(--border-subtle)', whiteSpace: 'nowrap' }}>
+                              {emEdicao && editaveis.includes(c) ? (
+                                <Input
+                                  value={editando.valores[c] ?? ''}
+                                  onChange={(e) => setEditando({ ...editando, valores: { ...editando.valores, [c]: e.target.value } })}
+                                  data-testid={`linha-campo-${c}`}
+                                  style={{ minWidth: 120, fontSize: 12.5 }}
+                                />
+                              ) : linha[c] instanceof Object ? (
+                                JSON.stringify(linha[c])
+                              ) : (
+                                String(linha[c] ?? '')
+                              )}
+                            </td>
+                          ))}
+                          {podeMexer && (
+                            <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border-subtle)', whiteSpace: 'nowrap' }}>
+                              {emEdicao ? (
+                                <span className="flex items-center gap-1">
+                                  <Button size="sm" onClick={() => void salvarLinha()} disabled={ocupado} data-testid="linha-salvar">
+                                    Salvar
+                                  </Button>
+                                  <Button size="sm" variant="secondary" onClick={() => setEditando(null)} data-testid="linha-cancelar">
+                                    Cancelar
+                                  </Button>
+                                </span>
+                              ) : (
+                                <span className="flex items-center gap-1">
+                                  <IconButton
+                                    icon="pencil"
+                                    label="Corrigir esta linha"
+                                    data-testid={`linha-editar-${rowId}`}
+                                    onClick={() =>
+                                      setEditando({
+                                        rowId,
+                                        valores: Object.fromEntries(
+                                          editaveis.map((c) => [c, linha[c] instanceof Object ? JSON.stringify(linha[c]) : String(linha[c] ?? '')]),
+                                        ),
+                                      })
+                                    }
+                                  />
+                                  <IconButton icon="trash-2" label="Apagar esta linha" data-testid={`linha-apagar-${rowId}`} onClick={() => setAApagar(rowId)} />
+                                </span>
+                              )}
+                            </td>
+                          )}
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
             )}
+            {!podeMexer && resultado.rows.length > 0 && (
+              <p style={{ margin: 0, fontSize: 12, color: 'var(--text-faint)' }} data-testid="linhas-travadas">
+                Este conjunto é {api.MUTABILITY_LABEL[dataset.mutability]} — corrigir e apagar linha não valem aqui.
+              </p>
+            )}
           </>
         )}
       </div>
+
+      <Dialog
+        open={aApagar !== null}
+        title="Apagar esta linha?"
+        onClose={() => setAApagar(null)}
+        footer={
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="secondary" onClick={() => setAApagar(null)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => void (aApagar && mexer(() => api.deleteRow(databaseId, dataset.key, aApagar)))}
+              disabled={ocupado}
+              data-testid="linha-apagar-confirmar"
+            >
+              Apagar
+            </Button>
+          </div>
+        }
+      >
+        <p style={{ margin: 0, fontSize: 13.5 }}>O registro sai da série e isto não tem desfazer.</p>
+      </Dialog>
     </Card>
   )
 }

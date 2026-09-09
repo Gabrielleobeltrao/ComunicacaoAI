@@ -46,7 +46,27 @@ const NOMES = [
   'Lívia', 'Gustavo', 'Nina', 'Daniel', 'Sofia', 'Renato', 'Clara', 'Vitor',
 ]
 
-const nomeDoAgente = (indice: number): string => NOMES[indice % NOMES.length]
+/**
+ * O PRÓXIMO NOME LIVRE, e não o próximo da fila.
+ *
+ * A escolha por posição era estável dentro de uma proposta e cega fora dela: cada montagem
+ * recomeçava no índice 0, então toda conta acabava com uma Marina, depois outra Marina, e o
+ * dono não conseguia distinguir por quem estava chamando. Quem já está no escritório é
+ * quem decide o que sobrou — por isso os nomes em uso entram na conta.
+ *
+ * A ordem continua sendo por posição: o mesmo Brief com o mesmo escritório dá os mesmos
+ * nomes, e uma revisão não renomeia a equipe inteira.
+ */
+export function nomesEmUso(inventory: OfficeInventory | null): Set<string> {
+  return new Set((inventory?.sections.agent?.items ?? []).map((a) => a.label.trim().toLowerCase()))
+}
+
+export function nomeDoAgente(indice: number, usados: Set<string> = new Set()): string {
+  const livres = NOMES.filter((n) => !usados.has(n.toLowerCase()))
+  // Se a lista inteira já está tomada, o nome repete com um número — nunca vazio, nunca colidindo.
+  if (livres.length === 0) return `${NOMES[indice % NOMES.length]} ${Math.floor(indice / NOMES.length) + 2}`
+  return livres[indice % livres.length]
+}
 
 /** O que o servidor decidiu sobre cada trabalho, junto com o que ele vai virar. */
 export interface CompiledJob {
@@ -310,7 +330,7 @@ export function compileBrief(
 
     if (decision.kind === 'agent') {
       const key = slug(decision.jobId) || `agente-${indiceDeAgente}`
-      const nome = nomeDoAgente(indiceDeAgente)
+      const nome = nomeDoAgente(indiceDeAgente, nomesEmUso(inventory))
       porTrabalho.set(decision.jobId, key)
       const agente: BlueprintAgent = {
         key,

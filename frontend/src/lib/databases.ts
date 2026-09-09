@@ -87,12 +87,33 @@ export const listDatabases = () => req<{ items: DatabaseSummary[] }>('/api/datab
 export const getDatabase = (id: string) => req<DatabaseDetail>(`/api/databases/${id}`)
 export const createDatabase = (body: { name: string; description?: string; adapterKind: AdapterKind; adapterConfig?: Record<string, unknown> }) =>
   req<{ id: string; name: string }>('/api/databases', { method: 'POST', body })
-export const patchDatabase = (id: string, body: { name?: string; status?: StoreStatus }) =>
+export const patchDatabase = (id: string, body: { name?: string; description?: string; status?: StoreStatus }) =>
   req<{ id: string }>(`/api/databases/${id}`, { method: 'PATCH', body })
 export const deleteDatabase = (id: string) => req<null>(`/api/databases/${id}`, { method: 'DELETE' })
 
+/**
+ * MUDAR e APAGAR um conjunto.
+ *
+ * O servidor já respondia às duas desde sempre; o cliente parou no criar. Uma rota que
+ * existe e ninguém chama é uma capacidade que, para quem usa, não existe.
+ */
+export const patchDataset = (id: string, key: string, body: { name?: string; mutability?: Mutability }) =>
+  req<{ key: string; name: string; mutability: Mutability }>(`/api/databases/${id}/datasets/${key}`, { method: 'PATCH', body })
+export const deleteDataset = (id: string, key: string) => req<null>(`/api/databases/${id}/datasets/${key}`, { method: 'DELETE' })
+
 export const createDataset = (id: string, body: { key: string; name: string; schema: Record<string, unknown> }) =>
   req<{ key: string }>(`/api/databases/${id}/datasets`, { method: 'POST', body })
+
+/**
+ * CORRIGIR e APAGAR uma linha.
+ *
+ * A consulta devolve `rowId` em cada linha — é por ele que se aponta qual. Uma série que só
+ * acrescenta recusa as duas, e a recusa vem com o motivo escrito.
+ */
+export const patchRow = (id: string, key: string, rowId: string, row: Record<string, unknown>) =>
+  req<{ updated: number }>(`/api/databases/${id}/datasets/${key}/rows/${rowId}`, { method: 'PATCH', body: { row } })
+export const deleteRow = (id: string, key: string, rowId: string) =>
+  req<null>(`/api/databases/${id}/datasets/${key}/rows/${rowId}`, { method: 'DELETE' })
 
 export const queryDataset = (id: string, key: string, body: Record<string, unknown>) =>
   req<QueryResult>(`/api/databases/${id}/datasets/${key}/query`, { method: 'POST', body })

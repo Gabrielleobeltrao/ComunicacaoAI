@@ -356,7 +356,7 @@ export function AgentDetail() {
   const building = useOptionalBuildingContext()
   const navigate = useNavigate()
   const { agents } = useAgentsAndWidgets()
-  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
+  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => ({ id: a._id, name: a.name }))), [agents])
   const [overview, setOverview] = useState<AgentOverview | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
