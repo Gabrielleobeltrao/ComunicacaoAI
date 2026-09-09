@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { AppLayout } from '../../components/AppLayout'
-import { Badge, Button, Card, Dialog, EmptyState, Icon, IconButton } from '../../ui'
-import { MODE_LABEL, SOURCE_LABEL, deleteRecorder, listRecorders } from '../../lib/dataHistory'
+import { Button, EmptyState, Icon } from '../../ui'
+import { ListaDePastas } from '../../components/PastaDeDados'
+import { MODE_LABEL, SOURCE_LABEL, deleteRecorder, listRecorders, updateRecorder } from '../../lib/dataHistory'
 import type { DataRecorder } from '../../lib/dataHistory'
 
 /**
@@ -15,7 +16,6 @@ import type { DataRecorder } from '../../lib/dataHistory'
 export function DataRecorders() {
   const [lista, setLista] = useState<DataRecorder[] | null>(null)
   const [erro, setErro] = useState<string | null>(null)
-  const [aApagar, setAApagar] = useState<DataRecorder | null>(null)
   const navigate = useNavigate()
 
   const carregar = () => {
@@ -24,17 +24,6 @@ export function DataRecorders() {
       .catch((e) => setErro((e as Error).message))
   }
   useEffect(carregar, [])
-
-  async function apagar() {
-    if (!aApagar) return
-    try {
-      await deleteRecorder(aApagar.id)
-      setAApagar(null)
-      carregar()
-    } catch (e) {
-      setErro((e as Error).message)
-    }
-  }
 
   return (
     <AppLayout current="/historicos" title="Históricos" subtitle="Guarde o que acontece na sua operação e consulte depois — sem programar.">
@@ -63,35 +52,36 @@ export function DataRecorders() {
             body="Escolha uma fonte, diga quando guardar e o que guardar. Nada é gravado antes de você ativar."
           />
         ) : (
-          <div className="flex flex-col gap-2" data-testid="recorder-list">
-            {lista.map((r) => (
-              <Card key={r.id}>
-                <div className="flex flex-wrap items-start gap-3">
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/historicos/${r.id}`)}
-                    style={{ flex: 1, minWidth: 0, textAlign: 'left', border: 0, background: 'transparent', padding: 0, minHeight: 44, cursor: 'pointer' }}
-                    data-testid={`recorder-${r.id}`}
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span style={{ fontWeight: 600 }}>{r.name}</span>
-                      <Badge tone={r.enabled ? 'success' : 'neutral'}>{r.enabled ? 'Ativo' : 'Desligado'}</Badge>
-                      <Badge tone="brand">{MODE_LABEL[r.mode]}</Badge>
-                    </div>
-                    <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>
-                      {SOURCE_LABEL[r.source.kind]} · {r.source.ref} · {r.recordCount.toLocaleString('pt-BR')} registro(s)
-                    </p>
-                    {r.lastError && (
-                      <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="recorder-last-error">
-                        {r.lastError.message}
-                      </p>
-                    )}
-                  </button>
-                  <IconButton icon="trash-2" label={`Apagar “${r.name}”`} onClick={() => setAApagar(r)} data-testid={`delete-recorder-${r.id}`} />
-                </div>
-              </Card>
-            ))}
-          </div>
+          /*
+           * O MESMO DESENHO DOS DATABASES: uma pasta por histórico, e dentro dela o que ele
+           * guarda. Eram duas telas com a mesma forma — um recipiente com itens — desenhadas
+           * de dois jeitos; quem usa aprendia duas vezes a mesma coisa.
+           */
+          <ListaDePastas
+            testid="recorder-list"
+            aoMudar={carregar}
+            pastas={lista.map((r) => ({
+              chave: r.id,
+              nome: r.name,
+              detalhe: `${SOURCE_LABEL[r.source.kind]} · ${r.source.ref} · ${r.recordCount.toLocaleString('pt-BR')} registro(s)${r.lastError ? ` · ${r.lastError.message}` : ''}`,
+              marcas: [
+                { texto: r.enabled ? 'Ativo' : 'Desligado', tom: r.enabled ? ('success' as const) : ('neutral' as const) },
+                { texto: MODE_LABEL[r.mode], tom: 'brand' as const },
+              ],
+              vazio: 'Guarda o registro inteiro — nenhum campo foi escolhido.',
+              // Tirar um campo é mexer na regra, e a regra inteira volta com o campo a menos.
+              itens: (r.selectedFields ?? []).map((campo) => ({
+                chave: `${r.id}-${campo}`,
+                nome: campo,
+                aoApagar: () => updateRecorder(r.id, { selectedFields: (r.selectedFields ?? []).filter((c) => c !== campo) }),
+                avisoAoApagar: `“${campo}” deixa de ser guardado daqui para a frente. O que já foi gravado continua lá.`,
+              })),
+              aoRenomear: (nome) => updateRecorder(r.id, { name: nome }),
+              aoAbrirTela: () => navigate(`/historicos/${r.id}`),
+              aoApagar: () => deleteRecorder(r.id),
+              avisoAoApagar: 'A regra e todos os registros que ela guardou são apagados. As fontes continuam funcionando — o que some é o histórico.',
+            }))}
+          />
         )}
 
         <p style={{ color: 'var(--text-muted)', fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -99,26 +89,6 @@ export function DataRecorders() {
           O dado ao vivo continua sendo só o valor de agora. O histórico é outra coisa, e só existe onde você pedir.
         </p>
 
-        <Dialog
-          open={aApagar !== null}
-          title="Apagar este histórico?"
-          subtitle={aApagar?.name}
-          onClose={() => setAApagar(null)}
-          footer={
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button variant="secondary" onClick={() => setAApagar(null)}>
-                Cancelar
-              </Button>
-              <Button onClick={() => void apagar()} data-testid="confirm-delete-recorder">
-                Apagar
-              </Button>
-            </div>
-          }
-        >
-          <p style={{ margin: 0, fontSize: 13.5 }}>
-            A regra e <strong>todos os registros que ela guardou</strong> são apagados. As fontes continuam funcionando — o que some é o histórico.
-          </p>
-        </Dialog>
       </div>
     </AppLayout>
   )
