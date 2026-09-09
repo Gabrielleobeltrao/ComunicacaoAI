@@ -72,7 +72,7 @@ export function OfficeFloor({
   readOnly?: boolean
 }) {
   const navigate = useNavigate()
-  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
+  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => ({ id: a._id, name: a.name }))), [agents])
 
   const hostRef = useRef<HTMLDivElement>(null)
   const [hostW, setHostW] = useState(0)

@@ -31,7 +31,7 @@ export function SectorManager({ sectors, loading, agents, floorId, onChange, onA
   const fid = useActiveFloorId()
   const agentNameById = useMemo(() => new Map(agents.map((a) => [a._id, a.name])), [agents])
   // Character faces for the crop sprites (same resolver as the map).
-  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
+  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => ({ id: a._id, name: a.name }))), [agents])
 
   return (
     <div className="space-y-4">

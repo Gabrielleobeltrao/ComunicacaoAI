@@ -31,7 +31,7 @@ export function AgentCard({ agent, stats, sectorName, portrait, needsSetup }: { 
       style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-        <AgentAvatar name={agent.name} src={portrait ?? portraitFor(agent._id)} color={accent} size="lg" status={status} />
+        <AgentAvatar name={agent.name} src={portrait ?? portraitFor(agent._id, agent.name)} color={accent} size="lg" status={status} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, flex: 1 }}>
           <span
             style={{
