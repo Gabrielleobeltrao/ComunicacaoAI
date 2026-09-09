@@ -888,3 +888,32 @@ test('ACEITAÇÃO: respondida "é outra origem", ele NÃO reusa — abre a colet
   assert.equal(cria.blueprint.resources.databases.some((d) => d.agentAccess === 'read'), false, 'ignorou a resposta e reusou assim mesmo')
   assert.ok(cria.pending.some((p) => p.kind === 'source_config'))
 })
+
+// --- O NOME DE QUEM CHEGA -------------------------------------------------------------------
+//
+// Toda montagem recomeçava no índice 0 da lista de nomes: a conta acumulava uma Marina,
+// depois outra Marina, e o dono não conseguia dizer por quem estava chamando. Quem já está
+// no escritório é quem decide o que sobrou.
+const inventarioComAgentes = (nomes) => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: { id: '000000000000000000000b01', name: 'Prédio' },
+  sections: {
+    agent: { kind: 'agent', total: nomes.length, truncated: false, items: nomes.map((n, i) => ({ id: `a${i}`, label: n, ownerScope: 'building:x' })) },
+  },
+})
+
+const agentesDe = (bp) => bp.organization.agents
+
+test('o nome do agente pula quem já existe na conta', () => {
+  const brief = {
+    ...emptyBrief('Atendimento'),
+    jobs: [{ id: 'atender', name: 'Atender o cliente', trigger: 'chega mensagem', input: 'x', decision: 'y', action: 'z', output: 'w' }],
+  }
+  const semNinguem = agentesDe(compilar(brief).blueprint)
+  assert.ok(semNinguem.length > 0, 'a montagem tem de produzir ao menos um agente')
+
+  const usado = semNinguem[0].name
+  const comEle = agentesDe(c2.compileBriefV2({ brief, manifest: manifesto(), inventory: inventarioComAgentes([usado]), base: { title: 'X', objective: 'Y' } }).blueprint)
+  assert.notEqual(comEle[0].name, usado, 'o nome já em uso não pode ser oferecido de novo')
+})

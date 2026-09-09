@@ -507,3 +507,36 @@ test('sem resposta, continua no primeiro — e a pergunta continua de pé', () =
   const { blueprint } = compileBrief(brief, manifesto, { title: 'Mínimo', objective: 'x' }, inventarioAndares(['Salão', 'Bastidores']), {})
   assert.equal(blueprint.floors[0].name, 'Salão')
 })
+
+// O NOME DE QUEM CHEGA não pode ser sempre o mesmo.
+//
+// A escolha era por posição e cada montagem recomeçava no índice 0: a conta acabava com
+// uma Marina, depois outra Marina, e o dono não conseguia dizer por quem estava chamando.
+// Quem já está no escritório é quem decide o que sobrou.
+const inventarioCom = (nomes) => ({
+  ownerId: 'acc1',
+  at: new Date(),
+  building: { id: 'b1', name: 'Prédio' },
+  sections: { agent: { kind: 'agent', items: nomes.map((n, i) => ({ id: `a${i}`, label: n, ownerScope: 'building:b1' })), total: nomes.length, truncated: false } },
+})
+
+test('o nome do agente pula quem já existe na conta', () => {
+  const base = { title: 'T', objective: 'O' }
+  const semNinguem = compileBrief(briefCompleto(), manifesto, base)
+  const primeiro = semNinguem.blueprint.agents[0]
+  assert.ok(primeiro, 'a montagem tem de produzir ao menos um agente')
+
+  const comEle = compileBrief(briefCompleto(), manifesto, base, inventarioCom([primeiro.name]))
+  const depois = comEle.blueprint.agents[0]
+  assert.notEqual(depois.name, primeiro.name, 'o nome já em uso não pode ser oferecido de novo')
+})
+
+test('com a lista inteira tomada, o nome ganha número — nunca fica vazio nem colide', () => {
+  const base = { title: 'T', objective: 'O' }
+  const todos = ['Marina', 'Rafael', 'Tereza', 'Bruno', 'Helena', 'Caio', 'Alice', 'Otávio', 'Lívia', 'Gustavo', 'Nina', 'Daniel', 'Sofia', 'Renato', 'Clara', 'Vitor']
+  const r = compileBrief(briefCompleto(), manifesto, base, inventarioCom(todos))
+  for (const a of r.blueprint.agents) {
+    assert.ok(a.name.trim().length > 0, 'nome vazio')
+    assert.ok(!todos.includes(a.name), `"${a.name}" já estava em uso`)
+  }
+})
