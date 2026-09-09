@@ -7,8 +7,8 @@ import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
 import { BuildingProvider } from './contexts/BuildingContext'
-import { ArchitectAssistantProvider } from './components/ArchitectAssistant'
-import { ArchitectLegacyRedirect, CommunityRedirect, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect, ResourcesRedirect } from './pages/redirects'
+import { AssistantProvider } from './components/Assistant'
+import { AssistantLegacyRedirect, RotaAntigaDoAssistente, CommunityRedirect, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect, ResourcesRedirect } from './pages/redirects'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
@@ -36,8 +36,8 @@ const sobDemanda = <T extends Record<string, unknown>, K extends keyof T>(carreg
 const Docs = sobDemanda(() => import('./pages/Docs'), 'Docs')
 const Apps = sobDemanda(() => import('./pages/Apps'), 'Apps')
 const Building = sobDemanda(() => import('./pages/Building'), 'Building')
-const ArchitectProjects = sobDemanda(() => import('./pages/architect/Projects'), 'ArchitectProjects')
-const ArchitectProject = sobDemanda(() => import('./pages/architect/Project'), 'ArchitectProject')
+const AssistantProjects = sobDemanda(() => import('./pages/assistant/Projects'), 'AssistantProjects')
+const AssistantProject = sobDemanda(() => import('./pages/assistant/Project'), 'AssistantProject')
 const DataRecorders = sobDemanda(() => import('./pages/dataHistory/Recorders'), 'DataRecorders')
 const RecorderForm = sobDemanda(() => import('./pages/dataHistory/RecorderForm'), 'RecorderForm')
 const RecorderDetail = sobDemanda(() => import('./pages/dataHistory/RecorderDetail'), 'RecorderDetail')
@@ -171,7 +171,7 @@ function App() {
       )}
 
       {/* Históricos: a camada genérica de registro e agregação. É do PRÉDIO, como o
-          Arquiteto — o que ela guarda vem de qualquer fonte da conta, e não de um
+          Assistente — o que ela guarda vem de qualquer fonte da conta, e não de um
           andar. Existe nos dois modos de navegação. */}
       <Route path="/historicos" element={<P><DataRecorders /></P>} />
       <Route path="/historicos/novo" element={<P><RecorderForm /></P>} />
@@ -180,9 +180,12 @@ function App() {
       {/* Montar operação é do PRÉDIO, não de um andar: ela pode criar ou reutilizar
           vários. Por isso mora aqui, ao lado das outras áreas globais, e existe nos
           dois modos de navegação. */}
-      <Route path="/architect" element={<P><ArchitectProjects /></P>} />
-      <Route path="/architect/new" element={<ArchitectLegacyRedirect />} />
-      <Route path="/architect/:projectId" element={<P><ArchitectProject /></P>} />
+      <Route path="/assistant" element={<P><AssistantProjects /></P>} />
+      <Route path="/assistant/new" element={<AssistantLegacyRedirect />} />
+      <Route path="/assistant/:projectId" element={<P><AssistantProject /></P>} />
+      {/* O nome antigo continua chegando — ver `RotaAntigaDoAssistente`. */}
+      <Route path="/architect" element={<RotaAntigaDoAssistente />} />
+      <Route path="/architect/:projectId" element={<RotaAntigaDoAssistente />} />
 
       {/* Global areas (both modes). /widgets and /chats predate the App pages and
           keep working: they land on the canonical App route with the query intact. */}
@@ -199,14 +202,14 @@ function App() {
   )
 
   /**
-   * O Arquiteto fica ACIMA das rotas — uma instância só, para o app inteiro.
+   * O Assistente fica ACIMA das rotas — uma instância só, para o app inteiro.
    *
    * Dentro de uma página ele seria remontado a cada navegação, e a conversa (e o rascunho)
    * morreriam junto. É essa a diferença entre um chat global e um chat por tela.
    */
   return v2 ? (
     <BuildingProvider>
-      <ArchitectAssistantProvider>{routes}</ArchitectAssistantProvider>
+      <AssistantProvider>{routes}</AssistantProvider>
     </BuildingProvider>
   ) : (
     routes

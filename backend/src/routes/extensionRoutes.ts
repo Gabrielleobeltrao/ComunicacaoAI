@@ -271,10 +271,10 @@ extensionRouter.post('/installed/:packageId', async (req, res, next) => {
 })
 
 /**
- * Instalar um TEMPLATE: registra a instalação e abre o projeto do Arquiteto.
+ * Instalar um TEMPLATE: registra a instalação e abre o projeto do Assistente.
  *
  * Nada é criado no escritório aqui. Prévia, diff, aplicação e rollback são os do
- * Arquiteto — e é lá que uma pessoa aprova antes de qualquer efeito.
+ * Assistente — e é lá que uma pessoa aprova antes de qualquer efeito.
  */
 extensionRouter.post('/installed/:packageId/template', async (req, res, next) => {
   const id = oid(String(req.params.packageId))

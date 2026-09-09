@@ -2,7 +2,7 @@
  * O CATÁLOGO — importado por quem executa E por quem descreve.
  *
  * As funções entram no registro por efeito de import. Enquanto essa lista viveu só dentro de
- * `functionExecutor`, o manifesto do arquiteto listava o que por acaso já tivesse sido
+ * `functionExecutor`, o manifesto do assistente listava o que por acaso já tivesse sido
  * carregado por outro caminho: pedir um plano antes de qualquer execução deixava
  * `calculate_rsi` de fora, e o compilador declarava "nenhuma função registrada faz este
  * cálculo" para a única conta que ele sabe fazer com exatidão — devolvendo o RSI para o

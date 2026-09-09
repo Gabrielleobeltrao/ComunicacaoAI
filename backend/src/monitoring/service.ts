@@ -1,5 +1,5 @@
 import { ObjectId } from 'mongodb'
-import type { ArchitectStamp } from '../architectStamp.js'
+import type { AssistantStamp } from '../assistantStamp.js'
 import { db } from '../db.js'
 import { criarRecorder } from '../dataHistory/recorders.js'
 import { ingestFact, limparCacheDeRecorders } from '../dataHistory/engine.js'
@@ -49,8 +49,8 @@ export class MonitoringError extends Error {
 const MAX_POR_CONTA = 200
 
 export interface SourceInput {
-  /** De onde ela veio, quando veio do Arquiteto. Fecha a janela entre criar e registrar. */
-  architect?: ArchitectStamp
+  /** De onde ela veio, quando veio do Assistente. Fecha a janela entre criar e registrar. */
+  assistant?: AssistantStamp
   name: string
   description?: string
   kind: MonitoringSourceKind
@@ -258,7 +258,7 @@ export async function createSource(ownerId: string, input: SourceInput): Promise
     // servidor de terceiro de minuto em minuto.
     status: 'draft',
     // A marca vai na MESMA escrita: gravá-la depois reabriria a janela que ela fecha.
-    ...(input.architect ? { architect: input.architect } : {}),
+    ...(input.assistant ? { assistant: input.assistant } : {}),
     telemetry: emptyTelemetry(),
     createdAt: agora,
     updatedAt: agora,

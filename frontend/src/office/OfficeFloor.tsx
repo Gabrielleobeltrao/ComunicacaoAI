@@ -64,7 +64,7 @@ export function OfficeFloor({
   /**
    * SIMULAÇÃO: nada aqui existe no banco ainda.
    *
-   * Usado pela prévia do Arquiteto, que desenha um rascunho. Duas coisas mudam, e as
+   * Usado pela prévia do Assistente, que desenha um rascunho. Duas coisas mudam, e as
    * duas pelo mesmo motivo — o que está no mapa não é um recurso: o estado ao vivo não
    * é consultado (não há execução de agente que não existe) e clicar não navega (o id é
    * temporário; a navegação levaria a uma página de nada).

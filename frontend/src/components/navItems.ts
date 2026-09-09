@@ -13,7 +13,7 @@ export const NAV: NavLink[] = [
   ...(featureFlags.aiBuilding ? [{ to: '/building', label: 'Prédio', icon: 'building-2' } as NavLink] : []),
   { to: '/dashboard', label: 'Escritório', icon: 'layout-dashboard' },
   // Sem "Montar operação" aqui, pelo mesmo motivo da navegação nova: ela é um modo de trabalho
-  // do Arquiteto, não um módulo ao lado de Agentes e Setores. A porta é o botão dentro do chat.
+  // do Assistente, não um módulo ao lado de Agentes e Setores. A porta é o botão dentro do chat.
   // "Automação" is not a product surface: scheduled work lives inside each agent
   // as Rotinas, so there is no standalone Automações nav entry.
   { to: '/agents', label: 'Agentes', icon: 'users-round' },

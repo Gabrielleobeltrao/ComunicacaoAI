@@ -1,17 +1,17 @@
 import { ObjectId } from 'mongodb'
-import { computeBlueprintHash } from '../architect/blueprint.js'
-import { asV2 } from '../architect/blueprintV2.js'
-import { architectV2Enabled } from '../architect/flags.js'
-import { loadOwnershipContext } from '../architect/context.js'
-import { createProject, patchProject } from '../architect/repository.js'
-import type { ArchitectProject } from '../architect/repository.js'
-import { validateOfficeBlueprint } from '../architect/validate.js'
-import type { OfficeBlueprintV1 } from '../architect/types.js'
+import { computeBlueprintHash } from '../assistant/blueprint.js'
+import { asV2 } from '../assistant/blueprintV2.js'
+import { assistantV2Enabled } from '../assistant/flags.js'
+import { loadOwnershipContext } from '../assistant/context.js'
+import { createProject, patchProject } from '../assistant/repository.js'
+import type { AssistantProject } from '../assistant/repository.js'
+import { validateOfficeBlueprint } from '../assistant/validate.js'
+import type { OfficeBlueprintV1 } from '../assistant/types.js'
 import { ExtensionError, getVersion, packagesCollection } from './packages.js'
 import { install } from './installs.js'
 import type { ExtensionInstallation } from './types.js'
 
-// INSTALAR UM TEMPLATE — pelo Arquiteto, e não por um segundo aplicador.
+// INSTALAR UM TEMPLATE — pelo Assistente, e não por um segundo aplicador.
 //
 // Um template é um BLUEPRINT congelado. Aplicar um blueprint já é um caminho inteiro
 // pronto: prévia do que será criado e do que será reutilizado, diff, aplicação idempotente
@@ -20,7 +20,7 @@ import type { ExtensionInstallation } from './types.js'
 // escritório" — e a que estivesse errada só apareceria depois de estragar a conta de
 // alguém.
 //
-// Por isso instalar um template faz uma coisa só: cria um PROJETO do Arquiteto com o
+// Por isso instalar um template faz uma coisa só: cria um PROJETO do Assistente com o
 // blueprint do template. Daí em diante é o fluxo de sempre, incluindo a aprovação humana
 // antes de qualquer efeito.
 
@@ -83,14 +83,14 @@ export function validateTemplateManifest(manifest: unknown): { valid: boolean; e
 
 export interface TemplateInstallResult {
   installation: ExtensionInstallation
-  project: ArchitectProject
+  project: AssistantProject
   blueprintHash: string
 }
 
 /**
- * Instala um template: registra a instalação e abre o projeto do Arquiteto.
+ * Instala um template: registra a instalação e abre o projeto do Assistente.
  *
- * Nada é criado no escritório aqui. A prévia, o diff e a aplicação são os do Arquiteto —
+ * Nada é criado no escritório aqui. A prévia, o diff e a aplicação são os do Assistente —
  * e é lá que uma pessoa aprova antes de qualquer efeito externo.
  */
 export async function installTemplate(ownerId: string, packageId: ObjectId, opcoes: { version?: string } = {}): Promise<TemplateInstallResult> {
@@ -125,7 +125,7 @@ export async function installTemplate(ownerId: string, packageId: ObjectId, opco
    * proposta — inventar a responsabilidade que falta pareceria mais amigável e seria
    * mentira na ficha do agente.
    */
-  const v2 = architectV2Enabled() ? asV2(blueprint, 'create') : null
+  const v2 = assistantV2Enabled() ? asV2(blueprint, 'create') : null
   const hash = computeBlueprintHash(blueprint, v2?.blueprint)
   const comBlueprint = await patchProject(ownerId, projeto._id, {
     blueprint,

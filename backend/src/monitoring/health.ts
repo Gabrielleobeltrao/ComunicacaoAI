@@ -33,7 +33,7 @@ export function computeHealth(
    *
    * Ler sem guarda estourava aqui — e como a saúde é calculada na LISTAGEM, um único
    * documento antigo derrubava o inventário inteiro: a tela de fontes, o assistente e a
-   * prévia do Arquiteto, todos por causa de um campo ausente num registro.
+   * prévia do Assistente, todos por causa de um campo ausente num registro.
    */
   const t: MonitoringTelemetry = source.telemetry ?? emptyTelemetry()
   const f: MonitoringFreshness = source.freshness

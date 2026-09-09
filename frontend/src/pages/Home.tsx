@@ -30,7 +30,7 @@ const VALUES: [string, string, string][] = [
  * "quanto trabalho isso dá?" é a que decide a maioria das visitas.
  */
 const PASSOS: [string, string, string][] = [
-  ['message-square', 'Descreva a operação', 'Em português, para o Arquiteto: quem atende o quê, com base em qual política, e quando você quer ser avisado.'],
+  ['message-square', 'Descreva a operação', 'Em português, para o Assistente: quem atende o quê, com base em qual política, e quando você quer ser avisado.'],
   ['eye', 'Leia a prévia', 'Ele monta setores, agentes, conhecimento e monitores — e mostra tudo antes de criar. Nada acontece sem a sua confirmação.'],
   ['activity', 'Veja rodando', 'A Atividade mostra a cadeia inteira de cada resposta: quem falou com quem, o que foi lido e quanto custou.'],
 ]

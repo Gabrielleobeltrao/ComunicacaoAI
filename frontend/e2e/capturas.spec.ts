@@ -208,9 +208,9 @@ async function stub(page: Page) {
   await page.route('**/api/resources**', (r) => r.fulfill({ json: { kinds: [], byKind: {}, items: [] } }))
 }
 
-/** Escondido nas capturas: o balão do Arquiteto cobre o canto de toda tela. */
+/** Escondido nas capturas: o balão do Assistente cobre o canto de toda tela. */
 async function semBalao(page: Page) {
-  await page.addStyleTag({ content: '[data-testid="architect-launcher"], [data-testid="architect-assistant"] { display: none !important }' })
+  await page.addStyleTag({ content: '[data-testid="assistant-launcher"], [data-testid="assistant-assistant"] { display: none !important }' })
 }
 
 test('escritório', async ({ page }) => {

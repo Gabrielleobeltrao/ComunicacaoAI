@@ -1,0 +1,191 @@
+import { useState } from 'react'
+import { Button, Checkbox, Dialog, Icon } from '../../ui'
+import type { AssistantPreview } from '../../lib/assistant'
+import { ACTION_LABEL, KIND_LABEL } from './shared'
+
+const NO_AR_LABEL: Record<'source' | 'monitor' | 'flow', string> = {
+  source: 'Fonte',
+  monitor: 'Monitor',
+  flow: 'Flow',
+}
+
+/**
+ * A confirmação.
+ *
+ * Três coisas exigem um clique a mais, cada uma por um motivo. Alteração em recurso que
+ * já existe vem DESMARCADA: quem abriu a tela para criar uma operação não espera que
+ * ela mexa no que já estava lá. Permissão de App vem desmarcada porque dar acesso a
+ * uma conexão é uma decisão à parte de criar um agente.
+ *
+ * E ENTRAR NO AR é a terceira. Criar um monitor não é o mesmo que ligá-lo: o recurso
+ * criado fica parado até alguém olhar, e aplicar uma proposta não pode colocar a operação
+ * para rodar sozinha no mesmo instante. Só aparece aqui o que tem teste declarado — o
+ * servidor não ativa nada sem prova, e oferecer o resto seria um checkbox que mente.
+ */
+export function ApplyDialog({
+  preview,
+  conexoes,
+  aberto,
+  aplicando,
+  erro,
+  onFechar,
+  onConfirmar,
+}: {
+  preview: AssistantPreview
+  /** Por onde uma entrega pode sair. Vazio = não há conexão nesta conta. */
+  conexoes: { id: string; name: string; provider: string }[]
+  aberto: boolean
+  aplicando: boolean
+  erro: string | null
+  onFechar: () => void
+  onConfirmar: (aprovado: {
+    approvedAppKeys: string[]
+    approvedUpdateKeys: string[]
+    approvedActivationKeys: string[]
+    deliveryConnections: { key: string; connectionId: string }[]
+  }) => void
+}) {
+  const alteracoes = preview.items.filter((i) => i.requiresApproval)
+  const apps = preview.items.filter((i) => i.kind === 'app' && i.action !== 'wait_user')
+  const ligaveis = preview.activatable ?? []
+  const [aprovados, setAprovados] = useState<string[]>([])
+  const [alteracoesOk, setAlteracoesOk] = useState<string[]>([])
+  // Nasce vazia de propósito: o padrão é nada entrar no ar.
+  const [noAr, setNoAr] = useState<string[]>([])
+  // Entrega → conexão escolhida. Sem escolha, a entrega fica pendente.
+  const [porOnde, setPorOnde] = useState<Record<string, string>>({})
+  const entregas = preview.pendingDeliveries ?? []
+
+  const podeAplicar = alteracoes.every((a) => alteracoesOk.includes(a.key)) && !aplicando
+
+  return (
+    <Dialog open={aberto} onClose={onFechar} title="Revisar antes de aplicar">
+      <div className="flex flex-col gap-3" data-testid="assistant-apply-dialog" style={{ maxHeight: '70dvh', overflowY: 'auto' }}>
+        <p style={{ fontSize: 13 }}>
+          Vou criar {preview.counts.create} {preview.counts.create === 1 ? 'item' : 'itens'}.
+          {preview.counts.waitUser > 0 && ` ${preview.counts.waitUser} ${preview.counts.waitUser === 1 ? 'depende' : 'dependem'} de você e ficam pendentes.`}
+        </p>
+
+        <ul style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: 0, padding: 0, listStyle: 'none' }}>
+          {preview.items
+            .filter((i) => i.action === 'create')
+            .map((i) => (
+              <li key={`${i.kind}-${i.key}`} style={{ fontSize: 13, display: 'flex', gap: 6 }}>
+                <Icon name="plus" size={14} color="var(--intent-brand)" />
+                <span style={{ overflowWrap: 'anywhere' }}>
+                  {KIND_LABEL[i.kind]}: {i.label}
+                </span>
+              </li>
+            ))}
+        </ul>
+
+        {alteracoes.length > 0 && (
+          <div className="flex flex-col gap-2" data-testid="assistant-approve-updates">
+            <strong style={{ fontSize: 13 }}>Estas mudanças mexem em algo que já existe</strong>
+            {alteracoes.map((a) => (
+              <Checkbox
+                key={a.key}
+                checked={alteracoesOk.includes(a.key)}
+                onChange={(v) => setAlteracoesOk((atual) => (v ? [...atual, a.key] : atual.filter((k) => k !== a.key)))}
+                label={`${ACTION_LABEL[a.action]} ${KIND_LABEL[a.kind]}: ${a.label}`}
+              />
+            ))}
+          </div>
+        )}
+
+        {apps.length > 0 && (
+          <div className="flex flex-col gap-2" data-testid="assistant-approve-apps">
+            <strong style={{ fontSize: 13 }}>Dar acesso a estes Apps</strong>
+            {apps.map((a) => (
+              <Checkbox
+                key={a.key}
+                checked={aprovados.includes(a.label)}
+                onChange={(v) => setAprovados((atual) => (v ? [...atual, a.label] : atual.filter((k) => k !== a.label)))}
+                label={a.label}
+              />
+            ))}
+            <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Sem marcar, os agentes são criados sem acesso e o item fica na checklist.</p>
+          </div>
+        )}
+
+        {ligaveis.length > 0 && (
+          <div className="flex flex-col gap-2" data-testid="assistant-approve-activation">
+            <strong style={{ fontSize: 13 }}>O que já entra no ar</strong>
+            {ligaveis.map((a) => (
+              <div key={`${a.kind}-${a.key}`} className="flex flex-col">
+                <Checkbox
+                  checked={noAr.includes(a.key)}
+                  onChange={(v) => setNoAr((atual) => (v ? [...atual, a.key] : atual.filter((k) => k !== a.key)))}
+                  label={`${NO_AR_LABEL[a.kind]}: ${a.label}`}
+                />
+                {/* O que o teste vai observar. Sem isto, "entra no ar" é um checkbox sem
+                    critério — e a pessoa marca sem saber o que está sendo provado. */}
+                <span style={{ fontSize: 12, color: 'var(--text-muted)', paddingLeft: 28 }}>{a.expectation}</span>
+              </div>
+            ))}
+            <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Sem marcar, tudo é criado parado e você liga depois. O que for marcado só entra no ar se passar no teste.
+            </p>
+          </div>
+        )}
+
+        {entregas.length > 0 && (
+          <div className="flex flex-col gap-2" data-testid="assistant-delivery-connection">
+            <strong style={{ fontSize: 13 }}>Por onde a resposta sai</strong>
+            {entregas.map((d) => (
+              <label key={d.key} className="flex flex-col gap-1" style={{ fontSize: 13 }}>
+                <span>{d.label}</span>
+                <select
+                  value={porOnde[d.key] ?? ''}
+                  onChange={(e) => setPorOnde((atual) => ({ ...atual, [d.key]: e.target.value }))}
+                  data-testid={`assistant-delivery-${d.key}`}
+                  style={{ padding: '6px 8px', borderRadius: 'var(--radius-xs)', border: '1px solid var(--border-subtle)', background: 'var(--surface-card)', color: 'inherit' }}
+                >
+                  {/* O padrão é NÃO escolher: uma entrega ligada por engano manda mensagem
+                      para alguém que não pediu. */}
+                  <option value="">Escolher depois</option>
+                  {conexoes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.provider})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
+            <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              {conexoes.length === 0
+                ? 'Você ainda não tem uma conexão de envio. A entrega fica pendente até criar uma.'
+                : 'Sem escolher, a entrega é criada pendente e você liga depois.'}
+            </p>
+          </div>
+        )}
+
+        {erro && (
+          <p role="alert" style={{ color: 'var(--intent-danger-text)', fontSize: 13 }} data-testid="assistant-apply-error">
+            {erro}
+          </p>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={onFechar} disabled={aplicando}>
+            Cancelar
+          </Button>
+          {/* O que foi marcado VAI no pedido, e o servidor confere de novo. Sem isto,
+              o checkbox seria só um pedágio visual antes de aplicar tudo. */}
+          <Button onClick={() =>
+              onConfirmar({
+                approvedAppKeys: aprovados,
+                approvedUpdateKeys: alteracoesOk,
+                approvedActivationKeys: noAr,
+                deliveryConnections: Object.entries(porOnde)
+                  .filter(([, id]) => id)
+                  .map(([key, connectionId]) => ({ key, connectionId })),
+              })
+            } disabled={!podeAplicar} data-testid="assistant-apply-confirm">
+            {aplicando ? 'Aplicando…' : 'Confirmar e criar'}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  )
+}

@@ -392,7 +392,7 @@ test('as telas do MVP cabem em 320, 390, 768 e 1440', async ({ page }) => {
     ['execuções', '/executions'],
     ['apps', '/apps'],
     ['memórias', '/memories'],
-    ['montar operação', '/architect'],
+    ['montar operação', '/assistant'],
     ['ajustes', '/settings'],
     ['registros', '/settings/logs'],
   ] as const
@@ -480,7 +480,7 @@ test('nos toques, os controles têm alvo mínimo de 44px', async ({ browser }) =
     '/executions',
     '/apps',
     '/memories',
-    '/architect',
+    '/assistant',
     '/settings',
     '/settings/logs',
   ]
@@ -553,7 +553,7 @@ test('no celular, o menu abre, navega e fecha', async ({ browser }) => {
   await ctx.close()
 })
 
-test('“Montar operação” é um MODO do Arquiteto, e a porta é o chat', async ({ page }) => {
+test('“Montar operação” é um MODO do Assistente, e a porta é o chat', async ({ page }) => {
   test.setTimeout(120_000)
   await irPara(page, '/login')
   await page.locator('input[type="email"]').fill(CONTA.email)
@@ -564,7 +564,7 @@ test('“Montar operação” é um MODO do Arquiteto, e a porta é o chat', asy
   /**
    * Ela morou em três lugares ao mesmo tempo: a navegação, o menu de andares e a folha de
    * andares do celular. O problema não era a quantidade — era o que a quantidade dizia.
-   * Listada ao lado de Agentes e Setores, ela parecia um MÓDULO irmão deles, e "Arquiteto",
+   * Listada ao lado de Agentes e Setores, ela parecia um MÓDULO irmão deles, e "Assistente",
    * "Blueprint" e "Montar operação" viravam três produtos que a pessoa precisava descobrir
    * sozinha que eram a mesma coisa.
    *
@@ -574,30 +574,30 @@ test('“Montar operação” é um MODO do Arquiteto, e a porta é o chat', asy
 
   await page.getByTestId('building-switcher').first().click()
   await expect(page.getByTestId('create-floor')).toBeVisible()
-  await expect(page.getByTestId('open-architect')).toHaveCount(0)
+  await expect(page.getByTestId('open-assistant')).toHaveCount(0)
   await page.keyboard.press('Escape')
 
   // O painel abre e é a conversa. O botão de atravessar para "montar" saiu: com uma
   // conversa só, ele levava para onde a pessoa já estava.
-  await page.getByTestId('architect-launcher').click()
-  await expect(page.getByTestId('architect-input')).toBeVisible()
-  await expect(page.getByTestId('architect-montar-operacao')).toHaveCount(0)
-  await page.getByTestId('architect-close').click()
+  await page.getByTestId('assistant-launcher').click()
+  await expect(page.getByTestId('assistant-input')).toBeVisible()
+  await expect(page.getByTestId('assistant-montar-operacao')).toHaveCount(0)
+  await page.getByTestId('assistant-close').click()
 
   // A tela completa continua existindo, pela rota.
-  await page.goto('/architect')
-  await expect(page.getByTestId('architect-projects')).toBeVisible()
+  await page.goto('/assistant')
+  await expect(page.getByTestId('assistant-projects')).toBeVisible()
 
   // A rota canônica responde direto: tirar o item de menu não tira a tela nem quebra favorito.
-  await irPara(page, '/architect')
-  await expect(page.getByTestId('architect-projects')).toBeVisible()
+  await irPara(page, '/assistant')
+  await expect(page.getByTestId('assistant-projects')).toBeVisible()
 
   // E no celular a folha de andares também não a repete.
   const andares = await (await page.request.get('/api/floors')).json()
   await page.setViewportSize({ width: 390, height: 844 })
   await irPara(page, `/floors/${andares[0].id}`)
   await page.getByRole('button', { name: /Trocar andar\. Andar atual:/ }).click()
-  await expect(page.getByTestId('floor-picker-architect')).toHaveCount(0)
+  await expect(page.getByTestId('floor-picker-assistant')).toHaveCount(0)
 })
 
 /**

@@ -101,7 +101,7 @@ export function Widget() {
    * e uma remontagem qualquer produz o mesmo efeito em produção. Sem esta trava, cada
    * abertura do chat pedia DUAS sessões: duas conversas criadas, duas vagas gastas do
    * limite por IP, e o histórico carregado pertencendo à segunda enquanto a primeira
-   * ficava órfã. É a mesma trava que a tela do Arquiteto já usa para não pagar duas
+   * ficava órfã. É a mesma trava que a tela do Assistente já usa para não pagar duas
    * inferências por montagem.
    */
   const jaCarregou = useRef<string | null>(null)

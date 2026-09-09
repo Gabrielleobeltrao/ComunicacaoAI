@@ -105,7 +105,7 @@ export function useAgentStates(enabled: boolean, explicitFloorId?: string | null
      *
      * Faltava esta linha. Com `enabled: false` a sondagem não começava, mas a busca do
      * andar ativo saía assim mesmo — `GET /api/floors` a cada montagem, para escolher um
-     * andar que ninguém ia consultar. Na prévia do Arquiteto isso é pior que desperdício:
+     * andar que ninguém ia consultar. Na prévia do Assistente isso é pior que desperdício:
      * ela desenha um rascunho, e um rascunho não tem andar no banco para descobrir.
      */
     if (!enabled) return

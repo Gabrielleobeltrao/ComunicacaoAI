@@ -1,5 +1,5 @@
 import { ObjectId } from 'mongodb'
-import type { ArchitectStamp } from '../architectStamp.js'
+import type { AssistantStamp } from '../assistantStamp.js'
 import { db } from '../db.js'
 import { getAutomation } from '../automations/service.js'
 import { EVENT_TYPES, isEventType } from '../events/types.js'
@@ -25,8 +25,8 @@ export class MonitorError extends Error {
 }
 
 export interface MonitorInput {
-  /** De onde ele veio, quando veio do Arquiteto. Fecha a janela entre criar e registrar. */
-  architect?: ArchitectStamp
+  /** De onde ele veio, quando veio do Assistente. Fecha a janela entre criar e registrar. */
+  assistant?: AssistantStamp
   name: string
   source: MonitorDefinition['source']
   condition: unknown
@@ -159,7 +159,7 @@ export async function createMonitor(ownerId: string, input: MonitorInput): Promi
     _id: new ObjectId(),
     ownerId,
     ...campos,
-    ...(input.architect ? { architect: input.architect } : {}),
+    ...(input.assistant ? { assistant: input.assistant } : {}),
     status: 'draft',
     createdAt: agora,
     updatedAt: agora,
