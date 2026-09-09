@@ -88,6 +88,40 @@ export function validateOfficeBlueprint(bruto: unknown, ctx: BlueprintOwnershipC
   if (texto(bp.title).length > L.MAX_TITLE_CHARS) erro('title', 'too_long', `título acima de ${L.MAX_TITLE_CHARS} caracteres`)
   if (texto(bp.objective).length > L.MAX_LONG_TEXT_CHARS) erro('objective', 'too_long', 'objetivo longo demais')
 
+  /**
+   * UMA PROPOSTA TEM DE CRIAR ALGUMA COISA.
+   *
+   * Do banco real: o dono pediu para guardar o mínimo e o máximo do bitcoin a cada 5
+   * minutos. Todo trabalho virou pendência — não há função no catálogo que leia um
+   * WebSocket continuamente, nem que grave linha a linha —, e o que sobrou no desenho foi
+   * um andar `reuse`, que já existia. O validador aprovou, o projeto virou `ready`, o botão
+   * de aplicar ficou disponível, ele aplicou, e a aplicação terminou com `completed` tendo
+   * criado NADA. A pergunta seguinte dele foi "onde está a função?".
+   *
+   * Um desenho que não cria nem muda nada não é uma proposta: é a constatação de que a
+   * plataforma ainda não sabe fazer aquilo. E isso se diz, não se aplica.
+   */
+  // `reuse` é a ÚNICA ação que não faz nada: ela aponta para o que já existe. Criar, alterar
+  // e arquivar são trabalho — uma proposta que só muda a descrição de um agente é legítima, e
+  // contar apenas `create` a recusaria junto com a proposta vazia.
+  const mexe = <T extends { action?: string }>(lista: T[] | undefined) => (lista ?? []).some((x) => x.action !== 'reuse')
+  const mexeEmAlgo =
+    mexe(bp.floors) ||
+    mexe(bp.agents) ||
+    mexe(bp.sectors) ||
+    mexe(bp.routines) ||
+    (bp.appRequirements ?? []).length > 0 ||
+    (bp.knowledgeRequirements ?? []).length > 0 ||
+    Boolean(bp.buildingPatch)
+  if (isRecord(bruto) && bp.version === 1 && !mexeEmAlgo) {
+    erro(
+      '',
+      'nothing_to_apply',
+      'este desenho não cria nem muda nada — aplicá-lo não teria efeito',
+      'Diga o que falta na plataforma para montar esta operação, em vez de oferecer uma proposta vazia.',
+    )
+  }
+
   // --- listas, tetos e keys ----------------------------------------------------------
   const listas: [keyof OfficeBlueprintV1, number][] = [
     ['floors', L.MAX_FLOORS],

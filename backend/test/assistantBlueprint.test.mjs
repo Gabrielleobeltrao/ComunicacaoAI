@@ -474,3 +474,72 @@ test('o conhecimento do prédio não inventa um destino', () => {
   ).find((i) => i.id === 'knowledge:geral')
   assert.equal(item.linkTarget, undefined, 'a base do prédio não é uma tela de recurso')
 })
+
+// --- UMA PROPOSTA TEM DE CRIAR ALGUMA COISA --------------------------------------------------
+//
+// Do banco real do dono: ele pediu para guardar o mínimo e o máximo do bitcoin a cada 5
+// minutos. Todo trabalho virou pendência, e o que sobrou no desenho foi um andar `reuse` —
+// que já existia. O validador aprovou, o projeto virou `ready`, ele aplicou, e a aplicação
+// terminou `completed` tendo criado NADA. A pergunta seguinte dele: "onde está a função?".
+
+const soReuso = () => ({
+  version: 1,
+  title: 'Guardar min/máx do bitcoin',
+  objective: 'Consolidar janelas de 5 minutos',
+  floors: [{ key: 'operacao', action: 'reuse', name: 'Operações', mission: 'x', workMode: 'organization', layer: 'essential', layerReason: 'y', rationale: 'z', resourceId: '000000000000000000000f01' }],
+  agents: [],
+  sectors: [],
+  routines: [],
+  appRequirements: [],
+  knowledgeRequirements: [],
+  assumptions: [],
+  warnings: [],
+  checklist: [],
+})
+
+test('AMEAÇA: um desenho que só reaproveita o que já existe NÃO é aplicável', () => {
+  const r = validateOfficeBlueprint(soReuso(), emptyOwnershipContext())
+  assert.equal(r.valid, false, 'aplicar isto termina em "completed" tendo criado nada')
+  const issue = r.issues.find((i) => i.code === 'nothing_to_apply')
+  assert.ok(issue, `faltou a recusa: ${JSON.stringify(r.issues.map((i) => i.code))}`)
+  assert.match(issue.message, /não cria nem muda nada/)
+})
+
+test('basta UM item a criar para o desenho voltar a valer', () => {
+  const bp = soReuso()
+  bp.agents = [
+    {
+      key: 'marina',
+      action: 'create',
+      name: 'Marina',
+      floorKey: 'operacao',
+      preset: 'analyst',
+      role: 'Consolida as janelas',
+      objective: 'Guardar mínimo e máximo a cada 5 minutos',
+      instructions: 'Leia o preço e consolide.',
+      delegationPolicy: 'none',
+      activationMode: 'manual',
+      layer: 'essential',
+      layerReason: 'é quem faz o trabalho',
+      rationale: 'exige julgamento sobre a janela',
+    },
+  ]
+  const r = validateOfficeBlueprint(bp, emptyOwnershipContext())
+  assert.equal(r.issues.some((i) => i.code === 'nothing_to_apply'), false, 'com algo a criar, a recusa não se aplica')
+})
+
+test('um App ou um conhecimento pedidos também contam como coisa a fazer', () => {
+  const bp = soReuso()
+  bp.appRequirements = [{ key: 'ws', appKey: 'websocket', reason: 'ler o preço', required: true, actionKeys: [], agentKeys: [] }]
+  const r = validateOfficeBlueprint(bp, emptyOwnershipContext())
+  assert.equal(r.issues.some((i) => i.code === 'nothing_to_apply'), false)
+})
+
+test('alterar o que já existe TAMBÉM é trabalho — só reaproveitar é que não é', () => {
+  // Uma proposta que só muda a descrição de um agente é legítima. Contar apenas `create`
+  // recusaria ela junto com a proposta vazia.
+  const bp = soReuso()
+  bp.agents = [{ key: 'marcos', action: 'update', name: 'Marcos', floorKey: 'operacao', resourceId: '000000000000000000000a01', role: 'Novo papel', objective: 'x', instructions: 'y', preset: 'analyst', delegationPolicy: 'none', activationMode: 'manual', layer: 'essential', layerReason: 'z', rationale: 'w' }]
+  const r = validateOfficeBlueprint(bp, emptyOwnershipContext())
+  assert.equal(r.issues.some((i) => i.code === 'nothing_to_apply'), false, 'alterar um agente existente é trabalho de verdade')
+})
