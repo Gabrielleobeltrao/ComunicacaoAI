@@ -421,6 +421,56 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
     }
   }
 
+  if (kind === 'history' && item.window) {
+    /**
+     * A SÉRIE RESUMIDA POR JANELA — um recorder próprio, na mesma fonte.
+     *
+     * O de 15 em 15 segundos continua gravando cada leitura; este fecha a janela de 5
+     * minutos e grava UMA linha com o mínimo e o máximo. São duas séries porque são duas
+     * perguntas: "quanto está agora" e "quanto variou naquele bloco".
+     *
+     * `aggregate_only` de propósito: guardar cada tique de novo dobraria o volume para
+     * repetir o que a série de origem já tem.
+     */
+    const w = item.window as { everyMs: number; rules: { from: string; op: string; to: string }[] }
+    const fonteId = idDe('source', item.sourceKey)
+    if (!fonteId || !ObjectId.isValid(fonteId)) throw new Error(`a fonte "${String(item.sourceKey)}" não foi criada`)
+    const { getSource } = await import('../monitoring/service.js')
+    const fonte = await getSource(ownerId, new ObjectId(fonteId))
+    if (!fonte?.destination.recorderId) {
+      return { pendency: 'a janela precisa da fonte no ar: ative a fonte e aplique de novo' }
+    }
+
+    const { criarRecorder, listarRecorders, obterRecorder } = await import('../dataHistory/recorders.js')
+    const origem = await obterRecorder(ownerId, fonte.destination.recorderId)
+    if (!origem) return { pendency: 'o histórico desta fonte não existe mais' }
+
+    // Aplicar duas vezes não cria duas séries: a mesma fonte com a mesma janela é a mesma.
+    const existente = (await listarRecorders(ownerId)).find(
+      (r) => r.mode === 'window_aggregate' && r.intervalMs === Math.round(w.everyMs) && r.source.kind === origem.source.kind && r.source.ref === origem.source.ref,
+    )
+    const recorder =
+      existente ??
+      (await criarRecorder(ownerId, {
+        name: String(item.name ?? item.key),
+        source: origem.source,
+        mode: 'window_aggregate',
+        intervalMs: Math.round(w.everyMs),
+        persistPolicy: 'aggregate_only',
+        aggregations: w.rules.map((r) => ({ from: r.from, op: r.op as never, to: r.to })),
+        retention: item.retentionDays ? { mode: 'ttl', days: Number(item.retentionDays) } : { mode: 'forever' },
+        ...(marcaDe(ctx, key) ? { assistant: marcaDe(ctx, key)! } : {}),
+      }))
+
+    const { ensureDatasetForRecorder } = await import('../databases/migration.js')
+    const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(ownerId, recorder)
+    const minutos = Math.round(w.everyMs / 60_000)
+    return {
+      id: `${dataStoreId.toString()}:${datasetKey}`,
+      message: `${w.rules.map((r) => r.to).join(' e ')} a cada ${minutos >= 1 ? `${minutos} min` : `${Math.round(w.everyMs / 1000)}s`}`,
+    }
+  }
+
   if (kind === 'history') {
     /**
      * O histórico é um DESTINO da fonte, e não um recurso próprio.

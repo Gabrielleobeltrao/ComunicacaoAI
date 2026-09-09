@@ -38,7 +38,7 @@ after(async () => {
 })
 
 beforeEach(async () => {
-  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'data_stores', 'dataset_definitions', 'monitoring_sources', 'monitors', 'automations', 'automation_versions', 'widgets', 'connections', 'tools', 'data_store_grants'])
+  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'data_stores', 'dataset_definitions', 'monitoring_sources', 'monitors', 'data_recorders', 'automations', 'automation_versions', 'widgets', 'connections', 'tools', 'data_store_grants'])
     await db.collection(c).deleteMany({})
 
   predio = new ObjectId()
@@ -640,4 +640,113 @@ test('ACEITAÇÃO: a chave do PLANO muda, a do conjunto não — e ele reaprovei
   const passo = segunda.find((p) => p.kind === 'dataset')
   assert.notEqual(passo.status, 'failed', `estourou: ${JSON.stringify(passo)}`)
   assert.equal(await db.collection('dataset_definitions').countDocuments({ ownerId: DONO, key: 'diario' }), 1, 'duplicou o conjunto')
+})
+
+// --- A JANELA DE 5 MINUTOS -------------------------------------------------------------------
+//
+// O pedido do dono, literal: "salvar o valor mínimo e máximo de bitcoin em um intervalo de 5
+// minutos". O motor de Históricos faz isso desde sempre — `window_aggregate` com `min` e `max`
+// são operações determinísticas de primeira classe. O que faltava era o PLANO saber dizer.
+//
+// Sem isto, o único caminho era `derive`, que exige uma função registrada no catálogo. Não há
+// nenhuma, então o pedido virava pendência declarada rodada após rodada, e a aplicação
+// terminava "completed" tendo criado nada.
+
+/**
+ * A fonte no ar, como a Central a deixa: rascunho aplicado, testado e ativado — o que
+ * materializa o recorder de origem. Só depois disso a janela tem de onde ler.
+ *
+ * O mapa volta com a fonte já resolvida, para a rodada seguinte NÃO criar uma segunda.
+ */
+const comFonteAtiva = async (bp) => {
+  const passos = await aplicar(bp)
+  const fonte = passos.find((p) => p.kind === 'source')
+  // A fonte nasce rascunho. Quem materializa o recorder de origem é a ATIVAÇÃO — e o teste
+  // usa o caminho de produção, não um `$set` à mão: escrever o estado na unha testaria o
+  // formato que eu inventei, e não o que a Central grava.
+  const { setSourceStatus, getSource } = await import('../dist/monitoring/service.js')
+  // O portão de ativação exige que a fonte tenha lido alguma coisa — e ele está certo. Aqui
+  // o teste satisfaz a PRÉ-CONDIÇÃO (o teste da fonte deu ok), não o que está sob teste.
+  await db.collection('monitoring_sources').updateOne({ _id: new ObjectId(fonte.resourceId) }, { $set: { 'telemetry.lastTestOkAt': new Date() } })
+  await setSourceStatus(DONO, new ObjectId(fonte.resourceId), 'active')
+  const noAr = await getSource(DONO, new ObjectId(fonte.resourceId))
+  const { obterRecorder } = await import('../dist/dataHistory/recorders.js')
+  const origem = await obterRecorder(DONO, noAr.destination.recorderId)
+  assert.ok(origem, 'a ativação tem de materializar o histórico da fonte')
+  const mapa = mapaInicial()
+  mapa.set('source:fonte', fonte.resourceId)
+  return { passos, origem, mapa }
+}
+
+/** Aplicar reaproveitando o que já foi criado — é assim que a segunda rodada acontece. */
+const aplicarCom = (bp, mapa) =>
+  applyV2Resources({ ownerId: DONO, blueprint: bp, resourceMap: mapa, approvedKeys: new Set(chavesDe(bp)) })
+
+const planoDaJanela = () => {
+  const bp = base()
+  bp.operations.sources = [
+    item({
+      key: 'fonte',
+      name: 'Bitcoin',
+      kind: 'api_polling',
+      config: { url: 'https://api.exemplo.test/btc', method: 'GET' },
+      mapping: { version: 1, fields: [{ to: 'price', from: 'price', required: true }] },
+      cadence: { mode: 'interval', intervalMs: 15_000 },
+    }),
+  ]
+  bp.operations.histories = [
+    item({
+      key: 'janela-5m',
+      dependsOn: ['fonte'],
+      sourceKey: 'fonte',
+      name: 'Mínimo e máximo do bitcoin a cada 5 minutos',
+      window: {
+        everyMs: 300_000,
+        rules: [
+          { from: 'price', op: 'min', to: 'minimo' },
+          { from: 'price', op: 'max', to: 'maximo' },
+        ],
+      },
+    }),
+  ]
+  return bp
+}
+
+test('ACEITAÇÃO: "mínimo e máximo a cada 5 minutos" vira um Histórico de verdade', async () => {
+  const bp = planoDaJanela()
+  const { mapa } = await comFonteAtiva(bp)
+  const passos = await aplicarCom(bp, mapa)
+  const passo = passos.find((p) => p.kind === 'history')
+  assert.equal(passo.status, 'created', `a janela não foi criada: ${passo.message}`)
+
+  const { listarRecorders } = await import('../dist/dataHistory/recorders.js')
+  const janela = (await listarRecorders(DONO)).find((r) => r.mode === 'window_aggregate')
+  assert.ok(janela, 'nenhum recorder de janela foi criado')
+  assert.equal(janela.intervalMs, 300_000, 'a janela tem de ser a que o plano pediu')
+  assert.deepEqual(
+    janela.aggregations.map((a) => `${a.from}:${a.op}:${a.to}`).sort(),
+    ['price:max:maximo', 'price:min:minimo'],
+    'as contas gravadas têm de ser as que o plano declarou',
+  )
+  // Guardar cada tique de novo dobraria o volume para repetir o que a origem já tem.
+  assert.equal(janela.persistPolicy, 'aggregate_only')
+})
+
+test('AMEAÇA: aplicar duas vezes NÃO cria duas séries da mesma janela', async () => {
+  const bp = planoDaJanela()
+  const { mapa } = await comFonteAtiva(bp)
+  await aplicarCom(bp, mapa)
+  await aplicarCom(bp, mapaInicial().set('source:fonte', mapa.get('source:fonte')))
+  const { listarRecorders } = await import('../dist/dataHistory/recorders.js')
+  const janelas = (await listarRecorders(DONO)).filter((r) => r.mode === 'window_aggregate')
+  assert.equal(janelas.length, 1, 'duas séries da mesma janela gravariam a mesma linha duas vezes')
+})
+
+test('a série de 15 segundos continua intacta — a janela é OUTRA série', async () => {
+  const bp = planoDaJanela()
+  const { origem, mapa } = await comFonteAtiva(bp)
+  await aplicarCom(bp, mapa)
+  const { obterRecorder } = await import('../dist/dataHistory/recorders.js')
+  const antes = await obterRecorder(DONO, origem._id)
+  assert.equal(antes.mode, 'every_event', 'a série original não pode virar janela: são duas perguntas diferentes')
 })

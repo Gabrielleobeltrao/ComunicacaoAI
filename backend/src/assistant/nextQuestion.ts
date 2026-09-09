@@ -60,7 +60,7 @@ const slugDeAssunto = (texto: string) =>
  * Casa por TERMO DISTINTIVO — o mesmo critério que o compilador usa para decidir reuso.
  * Aqui ele não decide nada: só encontra o candidato de que a pergunta precisa.
  */
-function conjuntoQueServe(inventory: OfficeInventory | null, texto: string): { label: string; campos: string } | null {
+export function conjuntoQueServe(inventory: OfficeInventory | null, texto: string): { label: string; campos: string } | null {
   const termos = termosDoAssunto(texto)
   if (!termos.length) return null
   const conjuntos = inventory?.sections.dataset?.items ?? []
