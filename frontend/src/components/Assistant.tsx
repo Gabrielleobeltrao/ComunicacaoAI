@@ -288,21 +288,33 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const uiContext = useMemo(() => idsDoCaminho(location.pathname), [location.pathname])
 
   /**
-   * Recarrega a linha e PENDURA a porta da proposta na última fala do Assistente.
+   * Recarrega a linha e PENDURA a porta da proposta na rodada que MEXEU no plano.
    *
-   * Só quando ainda não há porta pendurada: uma vez presa a uma rodada, ela fica onde
-   * estava — mover a porta a cada resposta nova seria o mesmo defeito com outro nome.
+   * Duas regras erradas já moraram aqui. No fim da lista para sempre, a porta acompanhava a
+   * conversa: três mensagens depois, falando de apagar um agente, continuava ali pedindo
+   * clique. Presa à primeira rodada, ela ficava para trás: quem faz cinco ajustes rola até o
+   * fim, não acha a porta, e "o botão de proposta se perde quando estou fazendo ajustes".
+   *
+   * A regra certa não é primeira nem última — é a rodada que mudou a proposta, e o servidor
+   * já diz qual foi: o `blueprintHash` muda com o plano. Rodada que só respondeu uma pergunta
+   * deixa a porta onde ela estava.
    */
-  const recarregarLinha = useCallback(async (id: string, temProposta: boolean) => {
+  const hashDaPorta = useRef<string | null>(null)
+  const recarregarLinha = useCallback(async (id: string, temProposta: boolean, hash: string | null) => {
     const linhas = await arq.listMessages(id)
     setMensagens(linhas.map(daLinha))
-    if (temProposta) {
-      setIdDaProposta((atual) => {
-        if (atual && linhas.some((m) => m.id === atual)) return atual
-        const ultimaDoAssistente = [...linhas].reverse().find((m) => m.role === 'assistant')
-        return ultimaDoAssistente?.id ?? null
-      })
-    }
+    if (!temProposta) return
+    // O carimbo é atualizado AQUI, e não dentro do `setIdDaProposta`: o updater de estado
+    // pode ser chamado duas vezes, e na segunda o `hash` já seria o "anterior" — a porta
+    // nunca sairia do lugar.
+    const mudou = hash !== hashDaPorta.current
+    hashDaPorta.current = hash
+    setIdDaProposta((atual) => {
+      // A mensagem em que a porta está pendurada pode ter sumido (conversa nova, projeto
+      // trocado): aí ela vai para a última, que é onde a proposta acabou de ser descrita.
+      if (!mudou && atual && linhas.some((m) => m.id === atual)) return atual
+      return [...linhas].reverse().find((m) => m.role === 'assistant')?.id ?? null
+    })
   }, [])
 
   /** Uma mensagem gravada, no formato que este painel desenha. */
@@ -337,9 +349,44 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         : null,
     )
     setMensagens(linhas.map(daLinha))
+    // Recarregar a página não é uma rodada nova: a porta vai para a última fala, e o hash é
+    // carimbado junto para a PRÓXIMA rodada saber se mexeu em alguma coisa.
+    hashDaPorta.current = p.blueprintHash ?? null
     setIdDaProposta(p.hasBlueprint ? ([...linhas].reverse().find((m) => m.role === 'assistant')?.id ?? null) : null)
     return p
   }, [])
+
+  /**
+   * A RODADA — uma só, para o que é digitado e para o que é clicado.
+   *
+   * `responder` era uma cópia de `enviar` sem o resgate do catch, e a diferença custava uma
+   * mensagem: quando a rodada falhava, o eco otimista da resposta clicada ficava na tela sem
+   * nunca ter sido gravado. A pessoa via a própria frase ali, recarregava, e ela sumia —
+   * "está perdendo as mensagens". A linha gravada é a verdade, nos dois caminhos.
+   */
+  const rodada = useCallback(
+    async (id: string, texto: string) => {
+      try {
+        const r = await arq.sendMessage(id, texto)
+        setProjeto(r)
+        setPergunta(r.question)
+        await recarregarLinha(id, r.hasBlueprint, r.blueprintHash ?? null)
+        setPhase(r.hasBlueprint ? 'done' : 'preparing_proposal')
+      } catch (e) {
+        setErro((e as Error).message)
+        setUltimoErro({ code: (e as arq.AssistantError).code ?? 'error', message: (e as Error).message })
+        setPhase('failed')
+        // A linha gravada é a verdade: recarregá-la desfaz o eco otimista que não virou nada.
+        await arq
+          .listMessages(id)
+          .then((linhas) => setMensagens(linhas.map(daLinha)))
+          .catch(() => undefined)
+      } finally {
+        setEnviando(false)
+      }
+    },
+    [recarregarLinha],
+  )
 
   const enviar = useCallback(async () => {
     const texto = rascunho.trim()
@@ -361,24 +408,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
      * do zero cada frase, e abrir um projeto novo a cada pedido de ajuste.
      */
     if (projeto) {
-      try {
-        const r = await arq.sendMessage(projeto.id, texto)
-        setProjeto(r)
-        setPergunta(r.question)
-        await recarregarLinha(projeto.id, r.hasBlueprint)
-        setPhase(r.hasBlueprint ? 'done' : 'preparing_proposal')
-      } catch (e) {
-        setErro((e as Error).message)
-        setUltimoErro({ code: (e as arq.AssistantError).code ?? 'error', message: (e as Error).message })
-        setPhase('failed')
-        // A linha gravada é a verdade: recarregá-la desfaz o eco otimista que não virou nada.
-        await arq
-          .listMessages(projeto.id)
-          .then((linhas) => setMensagens(linhas.map(daLinha)))
-          .catch(() => undefined)
-      } finally {
-        setEnviando(false)
-      }
+      await rodada(projeto.id, texto)
       return
     }
 
@@ -429,7 +459,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
       // SEMPRE: erro de rede, resposta estranha ou sucesso soltam o campo do mesmo jeito.
       setEnviando(false)
     }
-  }, [rascunho, enviando, uiContext, projeto, entrarNoProjeto])
+  }, [rascunho, enviando, uiContext, projeto, entrarNoProjeto, rodada])
 
   /**
    * O "sim" vai para um endpoint PRÓPRIO, com o id e o hash que o servidor montou.
@@ -537,7 +567,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
           const r = await arq.advanceTurn(p.id)
           setProjeto(r)
           setPergunta(r.question)
-          await recarregarLinha(p.id, r.hasBlueprint)
+          await recarregarLinha(p.id, r.hasBlueprint, r.blueprintHash ?? null)
           setPhase(r.hasBlueprint ? 'done' : 'preparing_proposal')
         } catch (e) {
           setErro((e as Error).message)
@@ -589,21 +619,9 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
       setErro(null)
       setUltimoErro(null)
       setMensagens((m) => [...m, { id: `p-${Date.now()}`, autor: 'pessoa', texto }])
-      try {
-        const r = await arq.sendMessage(projeto.id, texto)
-        setProjeto(r)
-        setPergunta(r.question)
-        await recarregarLinha(projeto.id, r.hasBlueprint)
-        setPhase(r.hasBlueprint ? 'done' : 'preparing_proposal')
-      } catch (e) {
-        setErro((e as Error).message)
-        setUltimoErro({ code: (e as arq.AssistantError).code ?? 'error', message: (e as Error).message })
-        setPhase('failed')
-      } finally {
-        setEnviando(false)
-      }
+      await rodada(projeto.id, texto)
     },
-    [projeto, enviando],
+    [projeto, enviando, rodada],
   )
 
   const novaConversa = useCallback(() => {
@@ -614,6 +632,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     setErro(null)
     setUltimoErro(null)
     setIdDaProposta(null)
+    hashDaPorta.current = null
     setPhase('idle')
     /**
      * A retomada NÃO volta a disparar sozinha, e isso não é sorte: `jaRetomou` é marcado
@@ -639,7 +658,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
       const r = await arq.generateProposal(projeto.id)
       setProjeto(r)
       setPergunta(r.question)
-      setMensagens((await arq.listMessages(projeto.id)).map(daLinha))
+      // A proposta nasce nesta rodada: a porta vem para ela, pela mesma regra de sempre.
+      await recarregarLinha(projeto.id, r.hasBlueprint, r.blueprintHash ?? null)
       setPhase('done')
     } catch (e) {
       setErro((e as Error).message)
@@ -648,7 +668,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     } finally {
       setEnviando(false)
     }
-  }, [projeto, enviando])
+  }, [projeto, enviando, recarregarLinha])
 
   /** O último projeto que esta conversa abriu. Derivado, nunca guardado em paralelo. */
   const projetoAtual = useMemo(() => {
