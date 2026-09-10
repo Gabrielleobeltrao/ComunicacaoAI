@@ -97,6 +97,8 @@ registerFunction({
   version: '1.0.0',
   description: 'Calcula o RSI (Wilder) de uma série de fechamentos. Determinístico: a mesma série dá sempre o mesmo número.',
   capabilities: ['calcular', 'indicador'],
+  // Ela recebe a série que alguém autorizado leu; não vai buscar preço nenhum.
+  semAcessoADados: true,
   inputSchema: {
     type: 'object',
     properties: {

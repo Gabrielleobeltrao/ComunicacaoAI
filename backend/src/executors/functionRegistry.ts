@@ -79,6 +79,17 @@ export interface FunctionContext {
 }
 
 export interface RegisteredFunction {
+  /**
+   * ELA NÃO BUSCA DADO EM LUGAR NENHUM — recebe tudo por parâmetro.
+   *
+   * É o que decide se um agente pode chamá-la direto. `data_history.range` abre o armazém e
+   * lê qualquer série da conta: entregá-la como ferramenta daria leitura irrestrita por fora
+   * do sistema de concessões, que é justamente o que decide quem lê o quê.
+   *
+   * Ausente vale como FALSO. Uma função que não declarou não é exposta — errar para o lado
+   * de não expor custa uma ferramenta a menos; errar para o outro custa um vazamento.
+   */
+  semAcessoADados?: boolean
   /** A chave que o agente guarda. Estável: mudá-la quebra os agentes que a usam. */
   functionName: string
   version: string
@@ -172,6 +183,8 @@ export const findAdapterFor = (functionName: string): FunctionAdapter | null =>
  * descreve a função — é a mesma lista que a tela mostra e que a validação usa.
  */
 export interface PublicFunction {
+  /** Ela não busca dado em lugar nenhum — é o que decide se um agente pode chamá-la. */
+  semAcessoADados?: boolean
   functionName: string
   version: string
   description: string
@@ -192,6 +205,7 @@ export const listPublicFunctions = (): PublicFunction[] =>
       functionName: f.functionName,
       version: f.version,
       description: f.description,
+      ...(f.semAcessoADados ? { semAcessoADados: true } : {}),
       capabilities: f.capabilities,
       inputSchema: f.inputSchema,
       outputSchema: f.outputSchema,

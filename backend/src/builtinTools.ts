@@ -10,6 +10,7 @@ import { sourceSettingsOf } from './agents.js'
 import { getToolsByIds } from './tools.js'
 import type { Tool } from './tools.js'
 import { databaseToolsFor } from './databases/agentTools.js'
+import { functionToolsFor } from './executors/functionTools.js'
 import { executeToolCall } from './toolExecution.js'
 import type { ResolvedTool } from './agentTools.js'
 import { missingCapability, resolveHttpTool } from './agentTools.js'
@@ -307,6 +308,19 @@ export async function resolveAgentTools(
    */
   const bancos = capacidades.externalTools ? await databaseToolsFor({ accountId: ownerId, agent }).catch(() => []) : []
 
+  /**
+   * AS FUNÇÕES DETERMINÍSTICAS — a conta que o modelo não deve fazer de cabeça.
+   *
+   * Elas existiam e nenhum agente as alcançava: o modelo via o nome na proposta e calculava
+   * por conta própria, devolvendo um número plausível com a confiança de sempre. Aqui ele
+   * chama a conta de verdade.
+   *
+   * Mesmo portão do Database (`externalTools`), e pelo mesmo motivo escrito lá: quem CONDUZ
+   * não executa. Um coordenador com a calculadora na mão calcula — é o caminho mais curto — e
+   * o time deixa de existir.
+   */
+  const funcoes = capacidades.externalTools ? functionToolsFor() : []
+
   const assigned = capacidades.externalTools ? await getToolsByIds(ownerId, agent.toolIds ?? []) : []
   /**
    * A VERSÃO publicada de cada ferramenta atribuída — uma consulta para todas.
@@ -363,7 +377,7 @@ export async function resolveAgentTools(
   // concedida, a ferramenta não aparece.
   const realtime = emTempoReal.length ? [realtimeSourceTool(ownerId, agent._id), realtimeWaitTool(ownerId, agent._id)] : []
   const proprias = [...(capacidades.memory ? [memoria] : []), ...(capacidades.webSources ? [fonte] : []), ...realtime, esclarecer]
-  if (enabled.length === 0) return [...proprias, ...http, ...custom, ...bancos, ...fromGrants]
+  if (enabled.length === 0) return [...proprias, ...http, ...custom, ...bancos, ...funcoes, ...fromGrants]
 
   const needsGoogle = enabled.some((b) => getBuiltinApp(b.key)?.connection === 'google')
   const googleConnected = needsGoogle ? (await getGoogleStatus(ownerId)).connected : false
@@ -375,7 +389,7 @@ export async function resolveAgentTools(
     if (app.connection === 'google' && !googleConnected) continue
     builtins.push(...app.resolve(ownerId, entry.config ?? {}))
   }
-  return [...proprias, ...http, ...custom, ...bancos, ...fromGrants, ...builtins]
+  return [...proprias, ...http, ...custom, ...bancos, ...funcoes, ...fromGrants, ...builtins]
 }
 
 /**

@@ -67,6 +67,8 @@ registerFunction({
   version: '1.0.0',
   description: 'Acha o registro cujo campo tem um valor — por id, por código, por nome. Diz quantos bateram.',
   capabilities: ['dados', 'buscar'],
+  // Recebe tudo por parâmetro: nada de armazém, nada de rede.
+  semAcessoADados: true,
   inputSchema: {
     type: 'object',
     properties: {
@@ -112,6 +114,8 @@ registerFunction({
   version: '1.0.0',
   description: 'Compara dois números: diz se é maior, menor ou igual, e por quanto — em valor e em porcentagem.',
   capabilities: ['calcular', 'comparar'],
+  // Recebe tudo por parâmetro: nada de armazém, nada de rede.
+  semAcessoADados: true,
   inputSchema: {
     type: 'object',
     properties: {
@@ -159,6 +163,8 @@ registerFunction({
   version: '1.0.0',
   description: 'A variação entre o primeiro e o último ponto de uma série: em valor e em porcentagem.',
   capabilities: ['calcular', 'dados'],
+  // Recebe tudo por parâmetro: nada de armazém, nada de rede.
+  semAcessoADados: true,
   inputSchema: {
     type: 'object',
     properties: {
@@ -207,6 +213,8 @@ registerFunction({
   version: '1.0.0',
   description: 'Conta quantos registros existem de cada valor de um campo. Ordena do mais frequente para o menos.',
   capabilities: ['dados', 'calcular'],
+  // Recebe tudo por parâmetro: nada de armazém, nada de rede.
+  semAcessoADados: true,
   inputSchema: {
     type: 'object',
     properties: {
@@ -264,6 +272,8 @@ registerFunction({
   version: '1.0.0',
   description: 'Devolve os registros cujo campo numérico passa numa comparação: gt, gte, lt, lte, eq, ne.',
   capabilities: ['dados', 'buscar'],
+  // Recebe tudo por parâmetro: nada de armazém, nada de rede.
+  semAcessoADados: true,
   inputSchema: {
     type: 'object',
     properties: {
