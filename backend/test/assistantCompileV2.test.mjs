@@ -1131,7 +1131,7 @@ test('AMEAÇA: nenhum campo de tempo é resumido, em português ou inglês', () 
   }
 })
 
-test('ACEITAÇÃO: "grave em um novo database" liga a janela ao conjunto que o plano cria', () => {
+test('ACEITAÇÃO: "grave em um novo database" faz a série morar no Database pedido', () => {
   /**
    * É uma frase só — "grave em um novo database o máximo e o mínimo a cada 5 minutos" — e
    * eram duas partes do compilador decidindo onde o dado mora, sem se falarem.
@@ -1145,9 +1145,11 @@ test('ACEITAÇÃO: "grave em um novo database" liga a janela ao conjunto que o p
   const { blueprint } = compilar(brief)
   const janela = blueprint.operations.histories.find((h) => h.window)
   assert.ok(janela, 'a janela tem de existir')
-  const conjunto = blueprint.resources.datasets.find((d) => d.key === janela.datasetKey)
-  assert.ok(conjunto, `a janela aponta para um conjunto que o plano não cria: ${janela.datasetKey}`)
-  assert.ok(janela.dependsOn.includes(conjunto.key), 'sem a dependência, a janela é aplicada antes do conjunto existir')
+  // A série mora no DATABASE: quem define a forma das linhas é a regra da janela, e o
+  // conjunto dela nasce com os campos que o motor realmente grava.
+  const base = blueprint.resources.databases.find((d) => d.key === janela.databaseKey)
+  assert.ok(base, `a janela aponta para um Database que o plano não cria: ${janela.databaseKey}`)
+  assert.ok(janela.dependsOn.includes(base.key), 'sem a dependência, a janela é aplicada antes do Database existir')
 })
 
 // --- O MODELO DECLARA, O CÓDIGO DECIDE -------------------------------------------------------
@@ -1315,4 +1317,74 @@ test('sem janela nenhuma, a lista volta vazia — ela não inventa cobertura', (
     jobs: [{ id: 'atender', name: 'Atender o cliente', trigger: 'chega mensagem', input: 'x', decision: 'y', action: 'z', output: 'w' }],
   })
   assert.deepEqual(r.trabalhosComJanela, [])
+})
+
+// --- O CAMPO TEM DE EXISTIR NA ORIGEM --------------------------------------------------------
+//
+// Do banco do dono: a origem gravava {"preco_bitcoin": "77131.82"} e a janela procurava
+// "preco". Ela recebeu oito leituras (count: 8) e fechou sem acumular nada — o motor rodou, o
+// recorder existia, e o conjunto ficava vazio para sempre. Nada quebra, nada avisa.
+
+test('ACEITAÇÃO: o campo declarado é CORRIGIDO para o nome real da origem', () => {
+  const inv = fonteChamada('Bitcoin', 'preco_bitcoin')
+  const brief = {
+    ...emptyBrief('Consolidar'),
+    jobs: [{ id: 'j', name: 'Guardar o mínimo e o máximo do preco a cada 5 minutos', trigger: 't', input: 'Bitcoin', decision: '', action: 'consolidar', output: 'linha' }],
+    liveDataNeeds: [{ source: 'Bitcoin', freshness: '15s', required: true }],
+    recordsToKeep: [],
+  }
+  const { blueprint } = c2.compileBriefV2({
+    brief,
+    manifest: manifesto(),
+    inventory: inv,
+    base: { title: 'X', objective: 'Y' },
+    windows: [{ source: 'Bitcoin', field: 'preco', everyMs: 300_000, ops: ['min', 'max'] }],
+  })
+  const j = blueprint.operations.histories.find((h) => h.window)
+  assert.ok(j, 'a janela tem de existir')
+  assert.equal(j.window.rules[0].from, 'preco_bitcoin', 'o modelo acertou a intenção e errou o nome; a fonte sabe o nome certo')
+})
+
+test('AMEAÇA: campo que não existe NEM parecido vira pendência, e a janela não sai', () => {
+  const inv = fonteChamada('Sensor', 'temperatura, umidade')
+  const brief = {
+    ...emptyBrief('Consolidar'),
+    jobs: [{ id: 'j', name: 'Guardar o mínimo do volume a cada 5 minutos', trigger: 't', input: 'Sensor', decision: '', action: 'consolidar', output: 'linha' }],
+    liveDataNeeds: [{ source: 'Sensor', freshness: '1m', required: true }],
+    recordsToKeep: [],
+  }
+  const r = c2.compileBriefV2({
+    brief,
+    manifest: manifesto(),
+    inventory: inv,
+    base: { title: 'X', objective: 'Y' },
+    windows: [{ source: 'Sensor', field: 'volume', everyMs: 300_000, ops: ['min'] }],
+  })
+  assert.equal(r.blueprint.operations.histories.some((h) => h.window), false, 'uma janela sobre campo inexistente roda e não acumula nada')
+  const p = r.pending.find((x) => x.kind === 'window_field')
+  assert.ok(p, `a janela sumiu calada: ${JSON.stringify(r.pending)}`)
+  assert.match(p.because, /não existe/)
+  assert.match(p.because, /temperatura/, 'a pendência tem de dizer quais campos existem')
+})
+
+test('AMEAÇA: a janela NÃO ganha um segundo conjunto ao lado do dela', () => {
+  /**
+   * Do banco do dono: um Database com dois conjuntos para a mesma coisa — o do plano, com
+   * campos que o modelo inventou, e o do recorder, com os que o motor grava. O motor escreve
+   * no dele; o outro fica vazio para sempre, parecendo defeito.
+   */
+  const inv = fonteChamada('Bitcoin', 'preco_bitcoin')
+  const brief = {
+    ...emptyBrief('Consolidar'),
+    jobs: [{ id: 'j', name: 'Guardar o mínimo e o máximo a cada 5 minutos', trigger: 't', input: 'Bitcoin', decision: '', action: 'consolidar', output: 'linha' }],
+    liveDataNeeds: [{ source: 'Bitcoin', freshness: '15s', required: true }],
+    recordsToKeep: [{ subject: 'Histórico consolidado', fields: ['timestamp_inicio_janela', 'preco_minimo', 'preco_maximo'], retentionDays: null }],
+  }
+  const { blueprint } = c2.compileBriefV2({ brief, manifest: manifesto(), inventory: inv, base: { title: 'X', objective: 'Y' } })
+  const janela = blueprint.operations.histories.find((h) => h.window)
+  assert.ok(janela, 'a janela tem de existir')
+  assert.ok(janela.databaseKey, 'a série precisa saber em qual Database mora')
+  assert.equal(blueprint.resources.datasets.length, 0, `o plano criou um conjunto ao lado do da janela: ${JSON.stringify(blueprint.resources.datasets.map((d) => d.datasetKey))}`)
+  // O Database continua sendo criado: é onde a série do recorder vai morar.
+  assert.ok(blueprint.resources.databases.some((d) => d.key === janela.databaseKey))
 })

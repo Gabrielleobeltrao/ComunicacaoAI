@@ -595,6 +595,38 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
         (normalizarCampo(textoDoPedido).includes(normalizarCampo(w.field)) || normalizarCampo(textoDoPedido).includes(normalizarCampo(w.source))),
     )
     if (declarada) usadas.add(declarada)
+
+    /**
+     * O CAMPO TEM DE EXISTIR NA ORIGEM — senão a janela roda e não acumula nada.
+     *
+     * Do banco do dono: a origem gravava `{"preco_bitcoin": "77131.82"}` e a janela
+     * procurava `preco`. Ela recebeu oito leituras (`count: 8`) e fechou sem `acc` nenhum:
+     * o motor rodou, o recorder existia, e o conjunto ficava vazio para sempre. É o defeito
+     * mais caro possível — nada quebra, nada avisa, e a pessoa espera.
+     *
+     * O modelo escreveu "preco" querendo dizer o preço. Corrigir para o nome real é melhor
+     * que recusar: ele acertou a intenção e errou o nome, e a fonte sabe o nome certo.
+     */
+    const camposReais = (fonteDaJanela?.campos ?? '')
+      .split(/[,;\s]+/)
+      .map((c) => c.trim())
+      .filter(Boolean)
+    if (declarada && camposReais.length) {
+      const exato = camposReais.find((c) => c === declarada.field)
+      const parecido = camposReais.find(
+        (c) => normalizarCampo(c) === normalizarCampo(declarada.field) || normalizarCampo(c).includes(normalizarCampo(declarada.field)) || normalizarCampo(declarada.field).includes(normalizarCampo(c)),
+      )
+      if (!exato && parecido) declarada.field = parecido
+      else if (!exato && !parecido) {
+        pending.push({
+          kind: 'window_field',
+          ref: job?.name ?? decision.jobId,
+          because: `"${declarada.field}" não existe em "${fonteDaJanela?.label}" — os campos dela são: ${camposReais.join(', ')}`,
+        })
+        usadas.add(declarada)
+        continue
+      }
+    }
     const janela = declarada
       ? {
           everyMs: declarada.everyMs,
@@ -908,6 +940,19 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
     })
 
     /**
+     * A SÉRIE RESUMIDA PASSA A MORAR AQUI — e é ela que define a forma das linhas.
+     *
+     * Ligar antes de decidir sobre o conjunto não é arrumação: é a decisão. Quem sabe os
+     * campos de uma série resumida é a REGRA da janela, e não o modelo.
+     */
+    for (const h of bp.operations.histories) {
+      if (h.window && !h.databaseKey) {
+        h.databaseKey = dbKey
+        h.dependsOn = [...new Set([...(h.dependsOn ?? []), dbKey])]
+      }
+    }
+
+    /**
      * O conjunto declara os CAMPOS, e o domínio recusa um schema sem eles.
      *
      * Quando o Brief não diz quais são, a proposta não inventa: o conjunto fica como
@@ -918,6 +963,18 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
       pending.push({ kind: 'dataset_fields', ref: registro.subject, because: 'falta dizer quais campos guardar: um conjunto sem campos não pode ser consultado nem observado' })
       continue
     }
+    /**
+     * QUANDO A JANELA É A SÉRIE, o plano não declara um segundo conjunto.
+     *
+     * Do banco do dono, um Database com DOIS conjuntos para a mesma coisa: o que o plano
+     * criou, com os campos que o modelo inventou (`preco_minimo`, `timestamp_inicio_janela`),
+     * e o que o recorder cria, com os nomes que o motor realmente grava (`minimo`, `maximo`).
+     * O motor escreve no dele; o outro fica vazio para sempre, ao lado, parecendo defeito.
+     *
+     * Quem sabe a forma das linhas de uma série resumida é a REGRA da janela, não o modelo.
+     */
+    if (bp.operations.histories.some((h) => h.window && h.databaseKey === dbKey)) continue
+
     bp.resources.datasets.push({
       key: `conjunto-${raiz}`,
       action: 'create',
@@ -947,12 +1004,6 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
      * Só a janela que ainda não tem destino: uma já ligada não é realocada por um registro
      * que apareceu depois.
      */
-    for (const h of bp.operations.histories) {
-      if (h.window && !h.datasetKey) {
-        h.datasetKey = `conjunto-${raiz}`
-        h.dependsOn = [...new Set([...(h.dependsOn ?? []), `conjunto-${raiz}`])]
-      }
-    }
     bp.acceptanceTests.push({
       key: `teste-${dbKey}`,
       kind: 'database_permission',

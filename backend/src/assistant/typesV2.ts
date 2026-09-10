@@ -262,6 +262,14 @@ export interface BlueprintHistoryV2 extends BlueprintItemBaseV2 {
    * Presente, `sourceKey` não precisa apontar para nada.
    */
   originRef?: string | null
+  /**
+   * ONDE a série resumida mora — o Database, e não um conjunto.
+   *
+   * Quem sabe a forma das linhas é a REGRA da janela: os nomes das contas são o que o motor
+   * grava. Apontar para um conjunto declarado no plano criava DOIS conjuntos para a mesma
+   * série — o do plano, com campos inventados, e o do recorder, com os campos de verdade.
+   */
+  databaseKey?: string | null
   /** Como a série se chama para quem olha a tela. Sem ele, ela nasce com a chave. */
   name?: string
   /** O conjunto que a série alimenta. Sem ele, o monitor não tem o que observar. */
