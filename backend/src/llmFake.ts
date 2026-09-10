@@ -41,7 +41,16 @@ export async function generateAgentReply(
   opts: { runConfig?: unknown } = {},
 ): Promise<{ text: string; usage: { inputTokens: number; outputTokens: number }; toolCalls: ToolCallRecord[] }> {
   const last = history[history.length - 1]?.content ?? objective
-  const text = reply(last)
+  /**
+   * O laço de ferramentas do Assistente entra POR AQUI.
+   *
+   * É o mesmo prompt da chamada estruturada — mesma marca, mesmo contrato de resposta —,
+   * só que servido pelo laço que sabe declarar ferramenta. Devolver "[fake] ..." fazia a
+   * jornada inteira (perguntar, propor, aplicar) virar resposta ilegível assim que a flag
+   * de ferramentas passou a nascer ligada. Prompt que não é do Assistente continua caindo
+   * no eco de sempre: `respostaDoDuble` devolve vazio para o resto.
+   */
+  const text = respostaDoDuble(objective) || reply(last)
   return {
     text,
     usage: { inputTokens: countTokens(objective + knowledge.join('') + memory + last), outputTokens: countTokens(text) },

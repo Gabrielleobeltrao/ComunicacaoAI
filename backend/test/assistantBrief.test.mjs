@@ -325,3 +325,26 @@ test('AMEAÇA: o prompt leva UMA pergunta — duas no texto com um botão só fo
   assert.equal(temBotao(escolhida), true)
   assert.equal(escolhida.id, 'origem:bitcoin')
 })
+
+test('a flag das ferramentas nasce LIGADA — e o rollback continua sendo uma variável', async () => {
+  /**
+   * Ela ficou desligada tempo demais: com ela apagada o turno continuava sendo o compilador
+   * adivinhando pela frase, e o dono viu isso em produção — o plano saía certo e nenhuma
+   * ferramenta era chamada. Uma virada que ninguém liga é uma virada que não aconteceu.
+   */
+  const { assistantToolsEnabled } = await import('../dist/assistant/flags.js')
+  const antes = process.env.ASSISTANT_TOOLS
+  try {
+    delete process.env.ASSISTANT_TOOLS
+    assert.equal(assistantToolsEnabled(), true, 'ausência tem de deixar ligado')
+    for (const off of ['0', 'false', 'off', 'OFF']) {
+      process.env.ASSISTANT_TOOLS = off
+      assert.equal(assistantToolsEnabled(), false, `"${off}" tem de desligar: o rollback é uma variável, não um deploy`)
+    }
+    process.env.ASSISTANT_TOOLS = '1'
+    assert.equal(assistantToolsEnabled(), true)
+  } finally {
+    if (antes === undefined) delete process.env.ASSISTANT_TOOLS
+    else process.env.ASSISTANT_TOOLS = antes
+  }
+})

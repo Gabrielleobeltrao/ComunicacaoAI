@@ -404,7 +404,10 @@ async function runTurn(
    */
   const servidosPelaJanela = (compiladoV2?.trabalhosComJanela ?? []).map(soLetras)
   const pendencias = [...(compilado?.pending ?? []), ...(compiladoV2?.pending ?? [])].filter((p) => {
-    if (p.kind !== 'function') return true
+    // `tool` entra junto: do teste real do dono, "Coletar valor atual do bitcoin
+    // continuamente — nenhum App do catálogo executa este trabalho", numa conta onde a fonte
+    // "Bitcoin" coleta há dias. A janela lê dela; não há App nenhum a conectar.
+    if (p.kind !== 'function' && p.kind !== 'tool') return true
     const alvo = soLetras(p.ref)
     return !servidosPelaJanela.some((j) => j.includes(alvo) || alvo.includes(j))
   })
