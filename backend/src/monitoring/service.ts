@@ -14,7 +14,7 @@ import { backoffDelay, computeHealth, isDue, nextReadAt } from './health.js'
 import { nextFireAt } from '../automations/scheduleClock.js'
 import { validateMapping } from './mapping.js'
 import { registrarEvento } from './history.js'
-import { KIND_CAPABILITIES, MONITORING_SOURCE_KINDS, emptyTelemetry } from './types.js'
+import { fonteDoRecorder, KIND_CAPABILITIES, MONITORING_SOURCE_KINDS, emptyTelemetry } from './types.js'
 import type { MonitoringSource, MonitoringSourceKind, MonitoringStatus } from './types.js'
 
 // A CENTRAL — e o que ela deliberadamente não é.
@@ -234,14 +234,6 @@ export const sourceKeyOf = (id: ObjectId | string) => `manual:monitoring:${id.to
  * Os que a Central PUXA usam `manual`, que é a porta que o motor já oferecia justamente
  * para uma integração nova entrar sem código novo dentro dele.
  */
-function fonteDoRecorder(fonte: MonitoringSource): { kind: 'event' | 'live_data' | 'manual'; ref: string } {
-  if (fonte.kind === 'internal_event' && fonte.config.eventType) return { kind: 'event', ref: fonte.config.eventType }
-  // Um SSE não tem instalação: ele é entregue por este processo, como um evento próprio.
-  if (fonte.kind === 'websocket' && fonte.config.protocol !== 'sse' && fonte.config.installationId) {
-    return { kind: 'live_data', ref: fonte.config.installationId }
-  }
-  return { kind: 'manual', ref: `monitoring:${fonte._id.toString()}` }
-}
 
 export async function createSource(ownerId: string, input: SourceInput): Promise<MonitoringSource> {
   if ((await sources.countDocuments({ ownerId })) >= MAX_POR_CONTA) {

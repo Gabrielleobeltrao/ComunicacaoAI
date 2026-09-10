@@ -320,3 +320,26 @@ export interface FieldMapping {
   itemsPath?: string | null
   fields: FieldRule[]
 }
+
+
+/**
+ * A REFERÊNCIA pela qual o motor entrega o fato a esta fonte.
+ *
+ * Vive aqui, e não no serviço, porque é regra pura — e porque quem LISTA o que vive de uma
+ * fonte precisa da mesma conta que o materializador faz. Repetir só o caso comum
+ * (`monitoring:<id>`) deixava as séries de `internal_event` e `websocket` invisíveis: a lista
+ * saía vazia como se não houvesse nenhuma.
+ */
+export function fonteDoRecorder(fonte: {
+  _id: { toString(): string }
+  kind: string
+  config: unknown
+}): { kind: 'event' | 'live_data' | 'manual'; ref: string } {
+  const config = (fonte.config ?? {}) as Record<string, unknown>
+  if (fonte.kind === 'internal_event' && config.eventType) return { kind: 'event', ref: String(config.eventType) }
+  // Um SSE não tem instalação: ele é entregue por este processo, como um evento próprio.
+  if (fonte.kind === 'websocket' && config.protocol !== 'sse' && config.installationId) {
+    return { kind: 'live_data', ref: String(config.installationId) }
+  }
+  return { kind: 'manual', ref: `monitoring:${fonte._id.toString()}` }
+}

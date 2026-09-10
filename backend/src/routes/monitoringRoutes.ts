@@ -14,7 +14,8 @@ import {
   testSource,
   updateSource,
 } from '../monitoring/service.js'
-import { KIND_CAPABILITIES, MONITORING_SOURCE_KINDS } from '../monitoring/types.js'
+import { KIND_CAPABILITIES, MONITORING_SOURCE_KINDS, fonteDoRecorder } from '../monitoring/types.js'
+import type { MonitoringSource } from '../monitoring/types.js'
 import { computeHealth, nextReadAt } from '../monitoring/health.js'
 import { rotateWebhookSecret } from '../monitoring/webhookSource.js'
 import { GrantError, deleteSourceGrant, listSourceGrants, putSourceGrant, resolveSourceAccess } from '../monitoring/access.js'
@@ -159,10 +160,12 @@ monitoringRouter.get('/sources', async (_req, res) => {
    */
   const { listarRecorders } = await import('../dataHistory/recorders.js')
   const series = await listarRecorders(res.locals.userId).catch(() => [])
-  const seriesDaFonte = (f: { _id: { toString(): string } }) => {
-    const ref = `monitoring:${f._id.toString()}`
+  const seriesDaFonte = (f: MonitoringSource) => {
+    // A MESMA conta que o motor faz para entregar o fato. `internal_event` e `websocket`
+    // usam outra referência, e repetir só o caso comum deixaria as séries deles invisíveis.
+    const alvo = fonteDoRecorder(f)
     return series
-      .filter((r) => r.source?.ref === ref)
+      .filter((r) => r.source?.kind === alvo.kind && r.source?.ref === alvo.ref)
       .map((r) => ({
         id: r._id.toString(),
         name: r.name,
