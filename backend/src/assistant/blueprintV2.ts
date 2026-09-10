@@ -204,7 +204,8 @@ export function validateBlueprintV2(bruto: unknown): BlueprintV2ValidationResult
   })
   bp.operations?.histories?.forEach((h, i) => {
     const p = `operations.histories[${i}]`
-    conferir(p, 'sourceKey', h.sourceKey)
+    // Com a origem declarada, não há fonte a ligar: a série já recebe dado.
+    if (!h.originRef) conferir(p, 'sourceKey', h.sourceKey)
     if (!h.window) return
     /**
      * A JANELA é validada AQUI, e não só no motor.

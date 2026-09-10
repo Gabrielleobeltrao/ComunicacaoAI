@@ -444,18 +444,36 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
      * repetir o que a série de origem já tem.
      */
     const w = item.window as { everyMs: number; rules: { from: string; op: string; to: string }[] }
-    const fonteId = idDe('source', item.sourceKey)
-    // Pendência, e não exceção: derrubar a aplicação aqui desfaz o que já deu certo antes.
-    if (!fonteId || !ObjectId.isValid(fonteId)) return { pendency: `a fonte "${String(item.sourceKey)}" ainda não existe: resolva a fonte e aplique de novo` }
-    const { getSource } = await import('../monitoring/service.js')
-    const fonte = await getSource(ownerId, new ObjectId(fonteId))
-    if (!fonte?.destination.recorderId) {
-      return { pendency: 'a janela precisa da fonte no ar: ative a fonte e aplique de novo' }
+    const { obterRecorder: lerRecorder } = await import('../dataHistory/recorders.js')
+
+    /**
+     * A ORIGEM: uma série que JÁ RECEBE dado, ou uma fonte deste plano.
+     *
+     * O primeiro caso é o comum — a conta coleta há meses e o pedido é resumir o que já
+     * entra. O endereço dele é `storeId:datasetKey`, e o `datasetKey` de uma série é o id do
+     * recorder que a alimenta (ver `ensureDatasetForRecorder`). É por aí que se chega nela
+     * sem precisar de fonte nenhuma.
+     */
+    let origem = null
+    const ref = String(item.originRef ?? '')
+    if (ref.includes(':')) {
+      const idDoRecorder = ref.split(':')[1]
+      if (ObjectId.isValid(idDoRecorder)) origem = await lerRecorder(ownerId, new ObjectId(idDoRecorder))
+      if (!origem) return { pendency: 'a série de origem não existe mais nesta conta: escolha outra e aplique de novo' }
+    } else {
+      const fonteId = idDe('source', item.sourceKey)
+      // Pendência, e não exceção: derrubar a aplicação aqui desfaz o que já deu certo antes.
+      if (!fonteId || !ObjectId.isValid(fonteId)) return { pendency: `a fonte "${String(item.sourceKey)}" ainda não existe: resolva a fonte e aplique de novo` }
+      const { getSource } = await import('../monitoring/service.js')
+      const fonte = await getSource(ownerId, new ObjectId(fonteId))
+      if (!fonte?.destination.recorderId) {
+        return { pendency: 'a janela precisa da fonte no ar: ative a fonte e aplique de novo' }
+      }
+      origem = await lerRecorder(ownerId, fonte.destination.recorderId)
+      if (!origem) return { pendency: 'o histórico desta fonte não existe mais' }
     }
 
-    const { criarRecorder, listarRecorders, obterRecorder } = await import('../dataHistory/recorders.js')
-    const origem = await obterRecorder(ownerId, fonte.destination.recorderId)
-    if (!origem) return { pendency: 'o histórico desta fonte não existe mais' }
+    const { criarRecorder, listarRecorders } = await import('../dataHistory/recorders.js')
 
     // Aplicar duas vezes não cria duas séries: a mesma fonte com a mesma janela é a mesma.
     const existente = (await listarRecorders(ownerId)).find(

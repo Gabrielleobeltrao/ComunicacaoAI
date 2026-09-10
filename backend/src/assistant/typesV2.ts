@@ -250,6 +250,18 @@ export interface BlueprintLiveDestinationV2 extends BlueprintItemBaseV2 {
 
 export interface BlueprintHistoryV2 extends BlueprintItemBaseV2 {
   sourceKey: string
+  /**
+   * A SÉRIE QUE JÁ EXISTE, quando a origem não é uma fonte a ligar.
+   *
+   * O caso mais comum de todos: a conta já coleta o dado há meses, e o pedido é resumir o
+   * que já está entrando. Antes disto, a janela exigia um item de FONTE — e o que a busca
+   * achava era um conjunto, cujo id tem a forma `storeId:datasetKey`. O apply, esperando um
+   * id de fonte, recusava com "a fonte ainda não existe" e a janela nunca nascia.
+   *
+   * Aqui a origem é declarada pelo que ela é: o endereço do conjunto que já recebe o dado.
+   * Presente, `sourceKey` não precisa apontar para nada.
+   */
+  originRef?: string | null
   /** Como a série se chama para quem olha a tela. Sem ele, ela nasce com a chave. */
   name?: string
   /** O conjunto que a série alimenta. Sem ele, o monitor não tem o que observar. */
