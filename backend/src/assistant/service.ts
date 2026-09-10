@@ -391,7 +391,24 @@ async function runTurn(
       campo: h.window?.rules?.[0]?.from ?? '',
       everyMs: Number(h.window?.everyMs ?? 0),
     }))
-  const resumo = resumoDaMudanca(mudancas, [...(compilado?.pending ?? []), ...(compiladoV2?.pending ?? [])], { repetido, janelas })
+  /**
+   * A CONTA QUE O MOTOR JÁ FAZ não é pendência — nem vinda do V1.
+   *
+   * Do teste real do dono, na MESMA mensagem: "Vai gravar: minimo e maximo de 'preco' a cada
+   * 5 min — conta do motor, sem função a cadastrar" e, uma linha abaixo, "Falta: Consolidar
+   * mínimo e máximo do bitcoin — nenhuma função registrada faz este cálculo".
+   *
+   * As duas frases eram verdadeiras para quem as escreveu: o V2 compilou a janela, e o V1 —
+   * que roda antes e emite esta pendência — não sabia que ela existia. Duas metades do mesmo
+   * plano discordando na frente do dono é pior que qualquer uma delas errada sozinha.
+   */
+  const servidosPelaJanela = (compiladoV2?.trabalhosComJanela ?? []).map(soLetras)
+  const pendencias = [...(compilado?.pending ?? []), ...(compiladoV2?.pending ?? [])].filter((p) => {
+    if (p.kind !== 'function') return true
+    const alvo = soLetras(p.ref)
+    return !servidosPelaJanela.some((j) => j.includes(alvo) || alvo.includes(j))
+  })
+  const resumo = resumoDaMudanca(mudancas, pendencias, { repetido, janelas })
   const textoFinal = resumo ? `${turno.assistantText}\n\n${resumo}` : turno.assistantText
   // O "já volto" some quando a resposta de verdade chega: ele existia só para o caso de ela
   // não chegar. Deixá-lo ali gasta um turno da conversa dizendo o que o próximo turno diz.
@@ -661,6 +678,14 @@ function itensQueOV2Cria(projeto: AssistantProject): number {
     0,
   )
 }
+
+/** Só letras e dígitos: compara nome de trabalho sem tropeçar em acento e pontuação. */
+const soLetras = (t: string): string =>
+  String(t ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
 
 export async function validateProject(ownerId: string, projectId: ObjectId) {
   const projeto = await requireProject(ownerId, projectId)
