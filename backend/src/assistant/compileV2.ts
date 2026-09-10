@@ -42,6 +42,19 @@ export interface CompileV2Input {
    * não declarar nada, e para não perder o que já funcionava.
    */
   windows?: { source: string; field: string; everyMs: number; ops: string[] }[]
+  /**
+   * OS RECURSOS que as ferramentas anotaram nesta rodada.
+   *
+   * Eles passaram pelo executor, que já recusou o que não presta. Aqui eles entram no plano
+   * ao lado do que o compilador deriva — sem substituir: o Brief continua produzindo o que
+   * produzia, e o que o modelo declarou se soma.
+   */
+  declarados?: {
+    databases: { chave: string; nome: string; descricao: string; tipo: string; agentes: string[]; acesso: 'read' | 'write'; diasDeRetencao?: number }[]
+    conjuntos: { databaseChave: string; chave: string; nome: string; campos: { nome: string; tipo: string }[]; podeEditar: boolean }[]
+    fontes: { chave: string; nome: string; tipo: string; endereco: string; metodo: string; cabecalhos: string[]; intervaloMs: number; campos: { to: string; from: string; required: boolean }[] }[]
+    monitores: { chave: string; nome: string; conjuntoChave: string; campo: string; operador: string; valor: number; modo: string }[]
+  }
   changeKind: BlueprintChangeKindV2
   /**
    * Os andares que a organização JÁ decidiu, quando ela é decidida em outro lugar.
@@ -133,6 +146,11 @@ export interface ParsedWindow {
   rules: { from: string; op: 'first' | 'last' | 'min' | 'max' | 'avg' | 'sum' | 'count'; to: string }[]
 }
 
+// ponytail: a leitura por regex fica como REDE enquanto `ASSISTANT_TOOLS` estiver desligada
+// para alguém. Ela só entende o que alguém escreveu regra para entender — é o teto que a
+// ferramenta `propor_janela` existe para tirar. Aposentar: quando a flag estiver ligada por
+// padrão e a ferramenta tiver uso real, uma função por vez, conferindo que nenhum turno caiu
+// aqui no período.
 export function parseJanela(texto: string, campo: string | null): ParsedWindow | null {
   const t = String(texto ?? '')
   // "a cada 5 minutos", "de 5 em 5 minutos", "janelas de 5 minutos", "intervalo de 5 min".
@@ -766,6 +784,92 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
    * leitura, a segunda exige série. Sem este bloco, toda proposta nascia sem Database nenhum
    * e a cadeia parava no monitor — que precisa de um conjunto para observar.
    */
+  /**
+   * O QUE AS FERRAMENTAS ANOTARAM entra primeiro, e o Brief não duplica em cima.
+   *
+   * O modelo declarou depois de ler o inventário e levar as recusas; a derivação do Brief é
+   * um palpite bom, mas é palpite. Quando os dois falam do mesmo Database, vale o declarado.
+   */
+  for (const d of input.declarados?.databases ?? []) {
+    if (bp.resources.databases.some((x) => x.key === d.chave)) continue
+    const existente = acharDatabase(inventory, d.nome)
+    bp.resources.databases.push({
+      key: d.chave,
+      action: existente ? 'reuse' : 'create',
+      ...(existente ? { resourceId: existente.id } : {}),
+      ...ESSENCIAL,
+      rationale: existente ? 'este Database já existe: a proposta grava nele' : d.descricao || `"${d.nome}" precisa ficar guardado para poder ser consultado depois`,
+      dependsOn: [],
+      name: existente?.label ?? d.nome,
+      owner: { ownerType: 'account' },
+      adapterKind: d.tipo,
+      agentKeys: d.agentes,
+      agentAccess: d.acesso,
+      ...(d.diasDeRetencao ? { retentionDays: d.diasDeRetencao } : {}),
+    } as never)
+  }
+  for (const c of input.declarados?.conjuntos ?? []) {
+    const base = bp.resources.databases.find((x) => x.key === c.databaseChave)
+    if (!base || bp.resources.datasets.some((x) => x.key === `conjunto-${c.chave}`)) continue
+    bp.resources.datasets.push({
+      key: `conjunto-${c.chave}`,
+      action: 'create',
+      ...ESSENCIAL,
+      rationale: `a forma de cada linha de "${c.nome}"`,
+      dependsOn: [base.key],
+      databaseKey: base.key,
+      datasetKey: c.chave,
+      name: c.nome,
+      // O schema é o que a consulta e a condição do monitor leem. Sem `properties`, o
+      // domínio recusa — e recusa certo.
+      schema: {
+        type: 'object',
+        properties: Object.fromEntries(c.campos.map((f) => [f.nome, { type: f.tipo }])),
+      },
+      mutability: c.podeEditar ? 'mutable' : 'append_only',
+    } as never)
+  }
+
+  for (const f of input.declarados?.fontes ?? []) {
+    if (bp.operations.sources.some((x) => x.key === f.chave)) continue
+    const existente = conjuntoQueServe(inventory, f.nome)
+    bp.operations.sources.push({
+      key: f.chave,
+      action: existente ? 'reuse' : 'create',
+      ...(existente ? { resourceId: existente.id } : {}),
+      ...ESSENCIAL,
+      rationale: existente ? `"${existente.label}" já recebe este dado nesta conta` : `sem uma fonte, "${f.nome}" não tem de onde vir`,
+      dependsOn: [],
+      name: existente?.label ?? f.nome,
+      kind: f.tipo,
+      config: f.endereco ? { url: f.endereco, ...(f.tipo === 'api_polling' ? { method: f.metodo } : {}), ...(f.cabecalhos.length ? { headerNames: f.cabecalhos } : {}) } : {},
+      mapping: { version: 1, fields: f.campos },
+      cadence: f.intervaloMs ? { mode: 'interval', intervalMs: f.intervaloMs } : { mode: 'stream' },
+    } as never)
+    // Sem campos, a fonte nasce mas não sabe o que ler. Pendência declarada, não invenção.
+    if (!f.campos.length) pending.push({ kind: 'source_mapping', ref: f.nome, because: 'falta dizer quais campos ler desta origem' })
+    if (!existente && !f.endereco) pending.push({ kind: 'source_config', ref: f.nome, because: 'falta dizer de onde este dado vem: endereço, App ou conjunto existente' })
+  }
+
+  for (const m of input.declarados?.monitores ?? []) {
+    const conjunto = bp.resources.datasets.find((d) => d.datasetKey === m.conjuntoChave) ?? bp.operations.histories.find((h) => h.key === m.conjuntoChave)
+    if (!conjunto || bp.operations.monitors.some((x) => x.key === m.chave)) continue
+    bp.operations.monitors.push({
+      key: m.chave,
+      action: 'create',
+      ...ESSENCIAL,
+      rationale: `avisa quando ${m.campo} ${m.operador} ${m.valor}`,
+      dependsOn: [conjunto.key],
+      name: m.nome,
+      observes: { kind: 'dataset', datasetKey: conjunto.key },
+      condition: { kind: 'compare', field: m.campo, op: m.operador, value: m.valor },
+      triggerMode: m.modo,
+      debounceMs: 0,
+      cooldownMs: 0,
+      onStale: 'degrade',
+    } as never)
+  }
+
   for (const [i, registro] of (brief.recordsToKeep ?? []).entries()) {
     const raiz = slug(registro.subject) || `registro-${i}`
     const dbKey = `base-${raiz}`
