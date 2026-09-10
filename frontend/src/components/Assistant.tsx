@@ -520,7 +520,16 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         if (!p || p.status !== 'discovery' || p.hasBlueprint || p.pendingQuestion) return
         if (jaIniciou.current === p.id) return
         const linhas = await arq.listMessages(p.id).catch(() => [])
-        if (linhas.length !== 1) return
+        /**
+         * "Já houve resposta?" — e não "quantas mensagens existem?".
+         *
+         * A condição era `linhas.length !== 1`, que encodava "só a frase da pessoa está
+         * aqui". No dia em que quem abre o projeto passou a gravar uma resposta também, ela
+         * virou falsa para sempre: a rodada de partida nunca disparava, e o Assistente ficava
+         * calado até a pessoa cutucar. Contar mensagens é frágil; perguntar se ele já falou
+         * continua verdadeiro independente de quantas linhas existam.
+         */
+        if (linhas.length === 0 || linhas.some((m) => m.role === 'assistant')) return
         jaIniciou.current = p.id
         setEnviando(true)
         setPhase('answering')
