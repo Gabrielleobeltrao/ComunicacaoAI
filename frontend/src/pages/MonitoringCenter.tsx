@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { Badge, Button, Card, Field, Input, Select, Tabs } from '../ui'
 import * as api from '../lib/monitoring'
@@ -212,8 +212,17 @@ function VisaoGeral({ visao }: { visao: { items: OverviewItem[]; summary: Record
 /** A ação da lista: a mensagem pode ser fixa ou vir do resultado da chamada. */
 type Acao = <T>(fn: () => Promise<T>, m?: string | ((r: T) => string)) => Promise<void>
 
+/** Como a regra da serie se le numa etiqueta: "resumo de 5 em 5 min", "toda ocorrencia". */
+const MODO_DA_SERIE = (s: { mode: string; intervalMs: number | null }): string => {
+  if (s.mode !== 'window_aggregate' && s.mode !== 'snapshot_interval') return s.mode === 'every_event' ? 'toda ocorrencia' : s.mode
+  const ms = s.intervalMs ?? 0
+  const cada = ms >= 3_600_000 ? `${Math.round(ms / 3_600_000)} h` : ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)}s`
+  return s.mode === 'window_aggregate' ? `resumo de ${cada} em ${cada}` : `foto a cada ${cada}`
+}
+
 function ListaDeFontes({ fontes, acao, onEditar }: { fontes: SourceSummary[] | null; acao: Acao; onEditar?: (f: SourceSummary) => void }) {
   const [acessosDe, setAcessosDe] = useState<string | null>(null)
+  const navegar = useNavigate()
   if (!fontes) return null
   if (fontes.length === 0) {
     return (
@@ -237,6 +246,34 @@ function ListaDeFontes({ fontes, acao, onEditar }: { fontes: SourceSummary[] | n
               {f.destination.history && f.destination.live ? ' e ' : ''}
               {f.destination.live ? 'ao vivo' : ''}
             </p>
+            {/*
+              O QUE VIVE DESTA FONTE.
+              Do dono, procurando a serie de 5 minutos: "nao sei de onde chega essa
+              informacao, nao sei quem coleta e filtra". Ela era um Historico, e ele a
+              procurou aqui - porque aqui mora a fonte, que e a coisa que ele conhece. Da
+              fonte nao havia caminho nenhum para o que vive dela.
+            */}
+            {(f.series ?? []).length > 0 && (
+              <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }} data-testid={`fonte-series-${f.id}`}>
+                <p style={{ margin: '0 0 6px', fontSize: 11.5, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>
+                  O que vive desta fonte
+                </p>
+                <div className="flex flex-col gap-1">
+                  {(f.series ?? []).map((s) => (
+                    <div key={s.id} className="flex flex-wrap items-center gap-2" style={{ fontSize: 12.5 }}>
+                      <strong style={{ fontWeight: 600 }}>{s.name}</strong>
+                      <Badge tone="neutral">{MODO_DA_SERIE(s)}</Badge>
+                      <span style={{ color: 'var(--text-muted)' }}>
+                        {s.fields.length ? s.fields.join(', ') : 'sem campos declarados'} - {s.recordCount.toLocaleString('pt-BR')} registro(s)
+                      </span>
+                      <Button variant="ghost" size="sm" onClick={() => navegar(`/historicos/${s.id}/editar`)} data-testid={`serie-editar-${s.id}`}>
+                        Editar a regra
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               <Button variant="ghost" onClick={() => acao(() => api.testSource(f.id), 'Fonte testada.')} data-testid="fonte-testar">
                 Testar

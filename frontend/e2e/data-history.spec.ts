@@ -444,3 +444,35 @@ test('ACEITAÇÃO: o histórico se RENOMEIA e se abre da própria lista, sem tro
   await page.getByTestId('pasta-editar-salvar').click()
   await expect.poll(() => patches).toContainEqual({ name: 'BTC de 5 em 5' })
 })
+
+test('ACEITAÇÃO: dá para trocar a regra de 5 para 10 minutos — sem apagar o histórico', async ({ page }) => {
+  /**
+   * Do dono, vendo a série já gravando: "se eu quisesse trocar de cinco em cinco minutos para
+   * dez em dez, eu consigo editar esse que tem?". Não conseguia: as rotas eram criar e ver, e
+   * a tela de detalhe só liga e desliga. A única saída era apagar — e apagar leva junto tudo
+   * o que já foi guardado.
+   */
+  const patches: Record<string, unknown>[] = []
+  await stub(page)
+  await page.route('**/api/data-history/recorders/rec-1', async (r) => {
+    if (r.request().method() === 'PATCH') {
+      patches.push(r.request().postDataJSON() as Record<string, unknown>)
+      return r.fulfill({ json: { ...RECORDER, intervalMs: 600_000 } })
+    }
+    return r.fulfill({ json: { ...RECORDER, mode: 'window_aggregate', intervalMs: 300_000, aggregations: [{ from: 'preco', op: 'min', to: 'minimo' }] } })
+  })
+
+  await page.goto('/historicos/rec-1')
+  await page.getByTestId('edit-recorder').click()
+  await expect(page).toHaveURL(/\/historicos\/rec-1\/editar/)
+
+  // O formulário abre com a regra que EXISTE, e não em branco: editar é continuar, não recomeçar.
+  await expect(page.getByTestId('recorder-name')).toHaveValue(RECORDER.name)
+  await expect(page.getByTestId('recorder-interval')).toHaveValue('300000')
+
+  await page.getByTestId('recorder-interval').selectOption('600000')
+  await page.getByTestId('recorder-activate').click()
+  await expect.poll(() => patches.map((p) => p.intervalMs)).toContain(600_000)
+  // E o nome vai junto: um PATCH que só manda o campo mexido apagaria o resto.
+  await expect.poll(() => patches[0]?.name).toBe(RECORDER.name)
+})

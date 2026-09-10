@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import { AppLayout } from '../../components/AppLayout'
 import { Badge, Button, Card, EmptyState, Field, Input, Select, Switch } from '../../ui'
 import { KIND_LABEL, MODE_LABEL, OP_LABEL, SOURCE_LABEL, aggregateRecords, getRecorder, listKeys, listRecords, retentionLabel, updateRecorder } from '../../lib/dataHistory'
@@ -14,6 +14,7 @@ import type { DataRecorder, HistoryRecord, RecordKind } from '../../lib/dataHist
  */
 export function RecorderDetail() {
   const { recorderId = '' } = useParams()
+  const navigate = useNavigate()
   const [rec, setRec] = useState<DataRecorder | null>(null)
   const [chaves, setChaves] = useState<(string | null)[]>([])
   const [registros, setRegistros] = useState<HistoryRecord[] | null>(null)
@@ -87,7 +88,14 @@ export function RecorderDetail() {
                   {retentionLabel(rec.retention)}
                 </span>
               </div>
-              <Switch checked={rec.enabled} onChange={(v) => void alternar(v)} label="Ativo" data-testid="toggle-recorder" />
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Trocar "de 5 em 5" para "de 10 em 10" não tinha caminho: só dava para
+                    apagar e criar de novo — e apagar leva junto tudo o que já foi guardado. */}
+                <Button variant="secondary" icon="pencil" onClick={() => navigate(`/historicos/${recorderId}/editar`)} data-testid="edit-recorder">
+                  Editar a regra
+                </Button>
+                <Switch checked={rec.enabled} onChange={(v) => void alternar(v)} label="Ativo" data-testid="toggle-recorder" />
+              </div>
             </div>
             {rec.aggregations.length > 0 && (
               <p style={{ margin: '10px 0 0', fontSize: 13, color: 'var(--text-muted)' }} data-testid="recorder-rules">

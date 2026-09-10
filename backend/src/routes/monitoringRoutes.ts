@@ -146,6 +146,34 @@ monitoringRouter.post('/migrate/recorders/rollback', async (_req, res, next) => 
 monitoringRouter.get('/sources', async (_req, res) => {
   const itens = await listSources(res.locals.userId)
   const agora = new Date()
+  /**
+   * O QUE VIVE DE CADA FONTE — as séries que leem dela.
+   *
+   * Do dono, procurando a série de 5 minutos: "eu não sei de onde chega essa informação, não
+   * sei quem coleta e filtra". Ela era um Histórico, e ele a procurou aqui — porque aqui mora
+   * a fonte, que é a coisa que ele conhece. Da fonte não havia caminho nenhum para o que vive
+   * dela: era preciso saber que Históricos existe e adivinhar qual entrada veio daqui.
+   *
+   * A referência é a mesma que o motor usa para entregar o fato, então quem lê desta fonte
+   * aparece aqui sem depender de nome — que é o jeito de errar quando alguém renomeia.
+   */
+  const { listarRecorders } = await import('../dataHistory/recorders.js')
+  const series = await listarRecorders(res.locals.userId).catch(() => [])
+  const seriesDaFonte = (f: { _id: { toString(): string } }) => {
+    const ref = `monitoring:${f._id.toString()}`
+    return series
+      .filter((r) => r.source?.ref === ref)
+      .map((r) => ({
+        id: r._id.toString(),
+        name: r.name,
+        mode: r.mode,
+        intervalMs: r.intervalMs ?? null,
+        // O que ela grava, em nomes: é o que a pessoa procura para saber se é esta a série.
+        fields: r.aggregations?.length ? r.aggregations.map((a) => a.to) : (r.selectedFields ?? []),
+        recordCount: r.recordCount ?? 0,
+        enabled: r.enabled,
+      }))
+  }
   res.json({
     items: itens.map((f) => ({
       id: f._id.toString(),
@@ -167,6 +195,8 @@ monitoringRouter.get('/sources', async (_req, res) => {
        * tela teria de adivinhar por nome, que é o jeito de errar quando alguém renomeia.
        */
       datasetKey: f.destination.recorderId ? f.destination.recorderId.toString() : null,
+      /** As séries que leem desta fonte — para chegar nelas por onde a pessoa procura. */
+      series: seriesDaFonte(f),
       entityKeyPath: f.entityKeyPath,
       dedupe: f.dedupe,
       // A saúde vai junto: a lista é a mesma pergunta da visão geral, com mais detalhe.

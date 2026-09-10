@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import { AppLayout } from '../../components/AppLayout'
 import { Button, Card, Field, Input, Select, Textarea } from '../../ui'
 import {
@@ -14,6 +14,8 @@ import {
   SOURCE_LABEL,
   TIMEZONES,
   createRecorder,
+  getRecorder,
+  updateRecorder,
   emptyRecorder,
   listSources,
   listStorages,
@@ -32,11 +34,21 @@ import type { AggregationOp, FilterOperator, PersistPolicy, PreviewResult, Recor
  */
 const MODOS: RecorderMode[] = ['every_event', 'on_change', 'snapshot_interval', 'schedule_snapshot', 'window_aggregate', 'condition']
 const OPS: AggregationOp[] = ['first', 'last', 'min', 'max', 'avg', 'sum', 'count']
+/**
+ * Os intervalos, com os buracos preenchidos.
+ *
+ * A lista pulava de 5 para 15 minutos e de 15 para 1 hora. "De dez em dez" — o primeiro
+ * ajuste que o dono quis fazer — simplesmente não existia, e a única saída era apagar a
+ * série e criar outra, levando junto tudo o que ela já tinha guardado.
+ */
 const INTERVALOS = [
   { ms: 60_000, label: '1 minuto' },
   { ms: 300_000, label: '5 minutos' },
+  { ms: 600_000, label: '10 minutos' },
   { ms: 900_000, label: '15 minutos' },
+  { ms: 1_800_000, label: '30 minutos' },
   { ms: 3_600_000, label: '1 hora' },
+  { ms: 21_600_000, label: '6 horas' },
   { ms: 86_400_000, label: '1 dia' },
 ]
 
@@ -46,7 +58,18 @@ const AMOSTRA_EXEMPLO = `[
 ]`
 
 export function RecorderForm() {
+  /**
+   * O MESMO formulário cria e EDITA.
+   *
+   * Trocar "de 5 em 5 minutos" para "de 10 em 10" não tinha caminho: as rotas eram criar e
+   * ver, e a tela de detalhe só liga e desliga. Quem quisesse mudar a regra teria de apagar
+   * o histórico — e apagar leva junto tudo o que ele guardou. Um segundo formulário só para
+   * editar divergiria do primeiro no primeiro ajuste; este já sabe perguntar tudo.
+   */
+  const { recorderId } = useParams()
+  const editando = Boolean(recorderId)
   const [form, setForm] = useState(emptyRecorder())
+  const [carregando, setCarregando] = useState(editando)
   /** As fontes desta conta. Ninguém deveria precisar copiar um id de banco. */
   const [fontes, setFontes] = useState<SourceCatalog | null>(null)
   const [buscaEvento, setBuscaEvento] = useState('')
@@ -65,6 +88,34 @@ export function RecorderForm() {
   const [erro, setErro] = useState<string | null>(null)
   const [ocupado, setOcupado] = useState(false)
   const navigate = useNavigate()
+
+  useEffect(() => {
+    if (!recorderId) return
+    getRecorder(recorderId)
+      .then((r) => {
+        // Só o que o formulário edita: id, contagens e carimbos são do servidor, e mandá-los
+        // de volta seria devolver como configuração o que é histórico.
+        setForm({
+          name: r.name,
+          source: r.source,
+          mode: r.mode,
+          entityKeyPath: r.entityKeyPath ?? '',
+          occurredAtPath: r.occurredAtPath ?? '',
+          intervalMs: r.intervalMs ?? 300_000,
+          schedule: r.schedule ?? { cron: '0 8 * * *', timezone: 'America/Sao_Paulo' },
+          persistPolicy: r.persistPolicy,
+          filters: r.filters ?? [],
+          selectedFields: r.selectedFields ?? [],
+          aggregations: r.aggregations ?? [],
+          changePath: r.changePath ?? '',
+          retention: r.retention,
+          storage: r.storage,
+          enabled: r.enabled,
+        })
+      })
+      .catch((e) => setErro((e as Error).message))
+      .finally(() => setCarregando(false))
+  }, [recorderId])
 
   const set = <K extends keyof typeof form>(campo: K, valor: (typeof form)[K]) => setForm((f) => ({ ...f, [campo]: valor }))
 
@@ -113,7 +164,7 @@ export function RecorderForm() {
     setErro(null)
     setOcupado(true)
     try {
-      const r = await createRecorder(corpo())
+      const r = recorderId ? await updateRecorder(recorderId, corpo()) : await createRecorder(corpo())
       navigate(`/historicos/${r.id}`)
     } catch (e) {
       setErro((e as Error).message)
@@ -461,8 +512,8 @@ export function RecorderForm() {
               <Button variant="secondary" onClick={() => void testar()} disabled={ocupado} data-testid="recorder-preview">
                 Testar configuração
               </Button>
-              <Button onClick={() => void ativar()} disabled={ocupado || !form.name.trim()} data-testid="recorder-activate">
-                Ativar
+              <Button onClick={() => void ativar()} disabled={ocupado || carregando || !form.name.trim()} data-testid="recorder-activate">
+                {editando ? 'Salvar' : 'Ativar'}
               </Button>
             </div>
 

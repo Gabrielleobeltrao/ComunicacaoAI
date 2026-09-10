@@ -82,6 +82,13 @@ export interface SourceSummary {
   destination: { live: boolean; history: boolean; retentionDays: number | null }
   /** A chave do conjunto que esta fonte alimenta — só depois de ela ser materializada. */
   datasetKey?: string | null
+  /**
+   * As séries que leem desta fonte — a de cada ocorrência, a resumida por janela.
+   *
+   * Sem isto, da fonte não havia caminho nenhum para o que vive dela: era preciso saber que
+   * a tela de Históricos existe e adivinhar qual entrada veio daqui.
+   */
+  series?: { id: string; name: string; mode: string; intervalMs: number | null; fields: string[]; recordCount: number; enabled: boolean }[]
   nextReadAt: string | null
   telemetry: Telemetry
 }
