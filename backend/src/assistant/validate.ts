@@ -71,7 +71,21 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 const texto = (v: unknown): string => (typeof v === 'string' ? v : '')
 const KEY_RE = /^[a-z0-9][a-z0-9_-]*$/i
 
-export function validateOfficeBlueprint(bruto: unknown, ctx: BlueprintOwnershipContext = emptyOwnershipContext()): BlueprintValidationResult {
+export function validateOfficeBlueprint(
+  bruto: unknown,
+  ctx: BlueprintOwnershipContext = emptyOwnershipContext(),
+  /**
+   * O QUE O V2 ACRESCENTA — porque "não cria nada" é sobre o PLANO INTEIRO.
+   *
+   * Database, conjunto, fonte, histórico, monitor e fluxo só existem no V2. Um plano que
+   * cria uma série resumida e reaproveita o andar tem V1 vazio e V2 cheio — e a recusa de
+   * proposta vazia, lendo só o V1, reprovava justamente os planos que mais entregam. O
+   * projeto ficava em `draft` para sempre e o botão de aplicar nunca liberava.
+   *
+   * Só a CONTAGEM entra: o que valida cada item do V2 é o validador do V2.
+   */
+  opts: { itensDoV2?: number } = {},
+): BlueprintValidationResult {
   const issues: BlueprintIssue[] = []
   const erro = (path: string, code: string, message: string, suggestedAction?: string) =>
     issues.push({ path, code, message, severity: 'error', ...(suggestedAction ? { suggestedAction } : {}) })
@@ -113,7 +127,7 @@ export function validateOfficeBlueprint(bruto: unknown, ctx: BlueprintOwnershipC
     (bp.appRequirements ?? []).length > 0 ||
     (bp.knowledgeRequirements ?? []).length > 0 ||
     Boolean(bp.buildingPatch)
-  if (isRecord(bruto) && bp.version === 1 && !mexeEmAlgo) {
+  if (isRecord(bruto) && bp.version === 1 && !mexeEmAlgo && (opts.itensDoV2 ?? 0) === 0) {
     erro(
       '',
       'nothing_to_apply',
