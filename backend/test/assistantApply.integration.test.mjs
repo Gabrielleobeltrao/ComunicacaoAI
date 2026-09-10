@@ -133,6 +133,76 @@ const projetoPronto = async () => {
 
 const aplicar = (id, hash, chave = 'op-1', extra = {}) => pedir('POST', `/projects/${id}/apply`, { blueprintHash: hash, idempotencyKey: chave, confirm: true, ...extra })
 
+// --- a pergunta e o botão dizem a MESMA coisa -------------------------------------------------
+//
+// Da conta do dono, 10/09: duas rodadas seguidas cujo texto terminava em "sem pedir mais nada
+// de você" e "Nada foi criado ainda: é só a proposta" — e a tela, embaixo, oferecia opções
+// para escolher. Nenhuma pergunta escrita em lugar nenhum, e duas respostas dele gravadas
+// (`origem:bitcoin`, `canal-atendimento`) para perguntas que ele nunca leu.
+//
+// A causa era um `??`: quando a lacuna que o prompt mandou perguntar fechava, o servidor
+// carimbava QUALQUER outra lacuna aberta com botões. A regra é uma só, e vale para qualquer
+// assunto: botão de escolha só existe onde o texto perguntou.
+
+test('AMEAÇA: nenhuma rodada oferece botões sobre uma pergunta que o texto não fez', async () => {
+  // A conta JÁ TEM a origem: é o que abre a lacuna `origem:` — a de mais alto valor e a que
+  // o dono respondeu duas vezes sem nunca ter lido a pergunta.
+  await db.collection('monitoring_sources').insertOne({
+    _id: new ObjectId(),
+    ownerId: DONO,
+    name: 'Cotação CXSE3',
+    kind: 'api_polling',
+    status: 'active',
+    scope: { ownerType: 'account', ownerId: '' },
+    destination: { live: true, history: true },
+    cadence: { mode: 'interval', intervalMs: 60_000 },
+  })
+  const criado = await pedir('POST', '/projects', { objective: 'Observe CXSE3 e me avise quando o RSI cair abaixo de 30' })
+  const id = criado.body.id
+  // Quatro rodadas, incluindo as de AJUSTE depois de a proposta existir — que é onde o dono
+  // viu o defeito.
+  for (const frase of ['observe CXSE3', 'a cada minuto', 'pode manter assim', 'mais nada por enquanto']) {
+    await pedir('POST', `/projects/${id}/messages`, { content: frase })
+    const p = await pedir('GET', `/projects/${id}`)
+    if (!p.body.pendingQuestion) continue
+    const linhas = await pedir('GET', `/projects/${id}/messages`)
+    const ultima = [...linhas.body].reverse().find((m) => m.role === 'assistant')
+    // A pergunta escrita pelo MODELO vale, mesmo com outras palavras — ele escreve melhor em
+    // linguagem de negócio, e é por isso que a lacuna vai no prompt. O que não pode existir é
+    // a mensagem que não pergunta NADA e mostra botões.
+    assert.match(
+      ultima?.content ?? '',
+      /\?/,
+      `depois de "${frase}" a tela oferece "${p.body.pendingQuestion.text}" e o texto não perguntou nada: ${JSON.stringify(ultima?.content)}`,
+    )
+  }
+})
+
+test('AMEAÇA: a rodada que FAZ NASCER a proposta não é anunciada como "nada mudou"', async () => {
+  // Da conta do dono, 10/09, quatro rodadas seguidas: o texto do modelo descrevendo a base
+  // nascendo — "Uma nova base de dados de histórico", "Um conjunto dentro dessa base", "Uma
+  // janela de consolidação" — e, logo abaixo, escrito pelo servidor, "Nada mudou na proposta
+  // nesta rodada". A comparação era feita contra `null` e devolvia lista vazia; a conta não
+  // tinha "não sei" antes da primeira proposta, tinha um escritório VAZIO.
+  const criado = await pedir('POST', '/projects', { objective: 'Quero automatizar o atendimento do meu restaurante' })
+  const id = criado.body.id
+  let antesTinha = false
+  for (const frase of ['quero automatizar', 'pelo site']) {
+    await pedir('POST', `/projects/${id}/messages`, { content: frase })
+    const p = await pedir('GET', `/projects/${id}`)
+    if (!p.body.hasBlueprint || antesTinha) {
+      antesTinha = p.body.hasBlueprint
+      continue
+    }
+    antesTinha = true
+    const linhas = await pedir('GET', `/projects/${id}/messages`)
+    const ultima = [...linhas.body].reverse().find((m) => m.role === 'assistant')
+    assert.doesNotMatch(ultima.content, /nada mudou/i, `a proposta nasceu nesta rodada: ${JSON.stringify(ultima.content)}`)
+    assert.match(ultima.content, /\*\*Criei:\*\*/, 'a rodada que criou a operação inteira precisa dizer o que criou')
+  }
+  assert.equal(antesTinha, true, 'o cenário exige que a proposta tenha nascido em alguma rodada')
+})
+
 // --- confirmação ---------------------------------------------------------------------------
 
 test('sem confirmação explícita, nada é criado', async () => {

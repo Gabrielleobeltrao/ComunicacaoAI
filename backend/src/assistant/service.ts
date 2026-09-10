@@ -1,10 +1,10 @@
 import { ObjectId } from 'mongodb'
 import { ValidationError } from '../building.js'
 import { maskSecrets, containsSecret } from './secrets.js'
-import { mergeBlueprintPatch, computeBlueprintHash } from './blueprint.js'
+import { mergeBlueprintPatch, computeBlueprintHash, emptyBlueprint } from './blueprint.js'
 import { compileBrief, layerCounts, selectLayer } from './compile.js'
 import { compileBriefV2 } from './compileV2.js'
-import { V2_ITEM_PATHS, itemsAt } from './typesV2.js'
+import { V2_ITEM_PATHS, itemsAt, emptyBlueprintV2 } from './typesV2.js'
 import type { OfficeBlueprintV2 } from './typesV2.js'
 import { loadOfficeInventory } from './inventory.js'
 import { assistantToolsEnabled, assistantV2Enabled } from './flags.js'
@@ -365,6 +365,12 @@ async function runTurn(
    */
   const comReuso = consertoDoReuso?.blueprint ?? mesclado
   const blueprint = turno.blueprintPatch && projeto.status === 'applied' ? await marcarOQueJaExiste(ownerId, projeto, comReuso) : comReuso
+  // O MESMO passo do lado V2, e no MESMO lugar: o que a marcação transforma em `reuse`
+  // deixa de contar como novidade, e "o que mudou" abaixo já lê o plano marcado.
+  const v2Recompilado = compiladoV2?.blueprint ?? null
+  const v2Vigente =
+    (turno.blueprintPatch && projeto.status === 'applied' ? await marcarOQueJaExisteV2(ownerId, projeto, v2Recompilado) : v2Recompilado) ??
+    projeto.blueprintV2
 
   /**
    * A RESPOSTA carrega o que ACONTECEU, e não só o que o modelo disse que ia acontecer.
@@ -374,7 +380,24 @@ async function runTurn(
    * idêntico entre elas. A frase do modelo continua — ela é boa em linguagem de negócio.
    * O que muda é ela deixar de ser a única fonte sobre o que o sistema fez.
    */
-  const mudancas = diffBlueprints(recorteDe(projeto), blueprint ? selectLayer(blueprint, camadaDe(projeto)) : null)
+  /**
+   * O RESUMO DA CONVERSA compara com o que a conta TINHA — e antes da primeira proposta ela
+   * tinha um escritório vazio, não um "não sei".
+   *
+   * Um `null` faz `diffBlueprints` devolver lista vazia, que é o contrato certo para a TELA
+   * de mudanças: lá se comparam duas revisões, e na primeira não existe a anterior. Aqui não:
+   * a rodada que criou a operação inteira era anunciada, na mesma mensagem que a descrevia,
+   * como "Nada mudou na proposta nesta rodada" — quatro vezes seguidas na conta do dono.
+   *
+   * E o par do V2 vai junto: um plano que só cria Database, conjunto, fonte e janela não mexe
+   * em NENHUMA lista do V1, então sem ele toda proposta de "guarde isso a cada X minutos"
+   * nascia anunciada como se nada tivesse acontecido.
+   */
+  const planoNovo = blueprint ? selectLayer(blueprint, camadaDe(projeto)) : null
+  const mudancas = diffBlueprints(planoNovo ? (recorteDe(projeto) ?? emptyBlueprint(projeto.title, projeto.objective)) : null, planoNovo, {
+    antes: compiladoV2 ? (projeto.blueprintV2 ?? emptyBlueprintV2(projeto.title, projeto.objective)) : null,
+    depois: compiladoV2 ? v2Vigente : null,
+  })
   /**
    * REPETIR É INFORMAÇÃO. Se a pessoa pediu de novo e nada mudou, algo está travando — e
    * responder com uma frase nova e animada ensina ela a repetir mais alto e depois desistir.
@@ -412,12 +435,6 @@ async function runTurn(
     return !servidosPelaJanela.some((j) => j.includes(alvo) || alvo.includes(j))
   })
   const resumo = resumoDaMudanca(mudancas, pendencias, { repetido, janelas })
-  const textoFinal = resumo ? `${turno.assistantText}\n\n${resumo}` : turno.assistantText
-  // O "já volto" some quando a resposta de verdade chega: ele existia só para o caso de ela
-  // não chegar. Deixá-lo ali gasta um turno da conversa dizendo o que o próximo turno diz.
-  await repo.clearProvisionalMessages(ownerId, projeto._id).catch(() => undefined)
-  await repo.appendMessage(ownerId, projeto._id, 'assistant', textoFinal)
-
   // Os avisos do conserto entram JUNTO dos do modelo: quem lê a proposta lê tudo num
   // lugar só, e não descobre a mudança comparando duas versões.
   if (blueprint) {
@@ -464,10 +481,6 @@ async function runTurn(
    * nada — e o defeito só aparece quando existe um V2, por isso ele passou despercebido
    * enquanto a flag estava desligada.
    */
-  const v2Recompilado = compiladoV2?.blueprint ?? null
-  const v2Vigente =
-    (turno.blueprintPatch && projeto.status === 'applied' ? await marcarOQueJaExisteV2(ownerId, projeto, v2Recompilado) : v2Recompilado) ??
-    projeto.blueprintV2
   const hash = recorte ? computeBlueprintHash(recorte, v2Vigente) : null
   /**
    * A PERGUNTA DE FORMA É DO SERVIDOR — ela não pode depender de o modelo lembrar de fazê-la.
@@ -482,8 +495,23 @@ async function runTurn(
    * carimba a `key`.
    */
   const aindaAbertas = nextQuestions(briefNovo, manifesto, 2, inventario, respondidas)
-  // A pergunta dos botões é a que o TEXTO fez — se ela continuar aberta depois do patch.
-  const daForma = aindaAbertas.find((g) => g.id === aPerguntar?.id && temBotao(g)) ?? aindaAbertas.find(temBotao)
+  /**
+   * A pergunta dos botões é a que o TEXTO fez — se ela continuar aberta depois do patch.
+   *
+   * E SÓ ela. O `?? aindaAbertas.find(temBotao)` que ficava aqui carimbava, quando a lacuna
+   * do prompt fechava, QUALQUER outra lacuna aberta com botões — uma que o modelo nunca
+   * escreveu. Na conta do dono isso rendeu duas rodadas seguidas em que o texto dizia "sem
+   * pedir mais nada de você" e a tela oferecia opções para escolher, sobre origem e sobre
+   * canal, sem nenhuma pergunta escrita em lugar nenhum.
+   *
+   * Uma lacuna que ninguém perguntou não desaparece: ela volta como a lacuna da rodada
+   * seguinte, e aí o modelo a escreve antes de os botões existirem.
+   *
+   * Com `forceProposal` não há lacuna no prompt — a pessoa pediu para ver o desenho agora —,
+   * então também não há botão: `aPerguntar` fica de fora e este `find` não acha nada.
+   */
+  const perguntaDoPrompt = opts.forceProposal ? null : aPerguntar
+  const daForma = aindaAbertas.find((g) => g.id === perguntaDoPrompt?.id && temBotao(g))
   /**
    * A PERGUNTA DA FERRAMENTA vence as duas.
    *
@@ -498,6 +526,31 @@ async function runTurn(
   const pergunta =
     daFerramenta ??
     (daForma ? { key: daForma.id, text: daForma.question, why: daForma.why, choices: daForma.choices ?? [], allowUnknown: false } : turno.question)
+
+  /**
+   * SE O TEXTO NÃO PERGUNTOU, QUEM PERGUNTA É O SERVIDOR.
+   *
+   * A lacuna vai no prompt e o modelo deveria escrevê-la — mas ele nem sempre escreve. Na
+   * conta do dono, 10/09, duas rodadas terminaram em "sem pedir mais nada de você" e "é só a
+   * proposta", e a tela, embaixo, oferecia botões para escolher. Ele respondeu os dois
+   * (`origem:bitcoin`, `canal-atendimento`) sem nunca ter lido a pergunta.
+   *
+   * Deixar de carimbar o botão não serve: a lacuna é real — `origem:` decide se a operação
+   * lê a fonte que já existe ou abre uma coleta nova, e sem resposta o plano ADIVINHA. Então
+   * a pergunta desce junto do texto, e a tela volta a dizer uma coisa só.
+   *
+   * O gatilho é o texto do MODELO não ter interrogação nenhuma. Quando ele perguntou, a
+   * pergunta é dele — ele escreve melhor em linguagem de negócio, e repetir a nossa versão
+   * embaixo da dele seria a mesma pergunta duas vezes.
+   */
+  const textoPerguntou = /\?/.test(turno.assistantText ?? '')
+  const perguntaAFazer = !textoPerguntou && pergunta?.text?.trim() ? pergunta.text.trim() : null
+
+  const textoFinal = [turno.assistantText, perguntaAFazer, resumo].filter(Boolean).join('\n\n')
+  // O "já volto" some quando a resposta de verdade chega: ele existia só para o caso de ela
+  // não chegar. Deixá-lo ali gasta um turno da conversa dizendo o que o próximo turno diz.
+  await repo.clearProvisionalMessages(ownerId, projeto._id).catch(() => undefined)
+  await repo.appendMessage(ownerId, projeto._id, 'assistant', textoFinal)
 
   const patch: Partial<AssistantProject> = {
     // Qual constituição valia quando esta proposta foi feita. Sem isso, mudar o texto
@@ -515,7 +568,9 @@ async function runTurn(
     blueprintHash: hash,
     // A versão anterior só é guardada quando a revisão MUDOU alguma coisa. Uma rodada
     // que só respondeu uma pergunta não pode zerar o "o que mudou" da revisão passada.
-    ...(projeto.blueprint && hash !== projeto.blueprintHash ? { previousBlueprint: recorteDe(projeto) } : {}),
+    ...(projeto.blueprint && hash !== projeto.blueprintHash
+      ? { previousBlueprint: recorteDe(projeto), previousBlueprintV2: projeto.blueprintV2 ?? null }
+      : {}),
     ...(compilado ? { compiled: true } : {}),
     ...(compiladoV2 ? { blueprintVersion: 2 as const, blueprintV2: v2Vigente as OfficeBlueprintV2 } : {}),
     // Proposta na mesa é `draft`; a validação é que promove para `ready`. Um projeto
@@ -853,7 +908,9 @@ export const projectDetail = (p: AssistantProject) => ({
   brief: p.brief ?? null,
   canUndoBrief: Boolean(p.previousBrief),
   // O que a última revisão mexeu. Vazio na primeira proposta: não há com o que comparar.
-  changes: diffBlueprints(p.previousBlueprint, recorteDe(p)),
+  // Sem o par do V2, a tela de mudanças ficava vazia em toda proposta que só cria base,
+  // conjunto, fonte e janela — que é a forma de qualquer pedido de "guarde isso a cada X".
+  changes: diffBlueprints(p.previousBlueprint, recorteDe(p), { antes: p.previousBlueprintV2, depois: p.blueprintV2 }),
   checklist: p.checklist,
   applyState: p.applyState,
 })
