@@ -1275,3 +1275,44 @@ test('o Database declarado que a conta JÁ TEM vira reuse, apontando para o recu
   assert.equal(base.action, 'reuse', 'criar outra base com o mesmo nome é recusado pelo domínio, tarde demais')
   assert.equal(base.resourceId, '000000000000000000000d09')
 })
+
+test('ACEITAÇÃO: o V2 DIZ quais trabalhos a janela resolve — é o que desfaz a contradição', () => {
+  /**
+   * Do teste real do dono, na MESMA mensagem: "Vai gravar: minimo e maximo de 'preco' a cada
+   * 5 min — conta do motor, sem função a cadastrar" e, uma linha abaixo, "Falta: Consolidar
+   * mínimo e máximo do bitcoin — nenhuma função registrada faz este cálculo".
+   *
+   * Duas metades do mesmo plano discordando na frente do dono. O V1 roda antes e não tem como
+   * saber; quem monta o resumo tem os dois lados, e precisa desta lista para desfazer.
+   */
+  const brief = {
+    ...emptyBrief('Consolidar o bitcoin'),
+    jobs: [
+      {
+        id: 'consolidar_bitcoin_5min',
+        name: 'Consolidar mínimo e máximo do bitcoin a cada 5 minutos',
+        trigger: 'janela fechada',
+        input: 'Bitcoin',
+        decision: '',
+        action: 'Ler as leituras de preço e consolidar mínimo e máximo a cada 5 minutos',
+        output: 'uma linha por janela',
+      },
+    ],
+    liveDataNeeds: [{ source: 'Bitcoin', freshness: 'contínuo', required: true }],
+    recordsToKeep: [{ subject: 'Série consolidada', fields: ['timestamp_inicio_janela', 'preco_minimo'], retentionDays: null }],
+  }
+  const r = c2.compileBriefV2({ brief, manifest: manifesto(), inventory: fonteChamada('Bitcoin', 'preco, capturado_em'), base: { title: 'X', objective: 'Y' } })
+  assert.ok(r.blueprint.operations.histories.some((h) => h.window), 'a janela tem de estar no plano')
+  assert.ok(
+    r.trabalhosComJanela.some((t) => t.includes('Consolidar mínimo e máximo')),
+    `o trabalho servido pela janela não foi registrado: ${JSON.stringify(r.trabalhosComJanela)}`,
+  )
+})
+
+test('sem janela nenhuma, a lista volta vazia — ela não inventa cobertura', () => {
+  const r = compilar({
+    ...emptyBrief('Atender'),
+    jobs: [{ id: 'atender', name: 'Atender o cliente', trigger: 'chega mensagem', input: 'x', decision: 'y', action: 'z', output: 'w' }],
+  })
+  assert.deepEqual(r.trabalhosComJanela, [])
+})

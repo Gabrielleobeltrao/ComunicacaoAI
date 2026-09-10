@@ -74,6 +74,14 @@ export interface CompileV2Result {
   classification: Classification
   /** O que foi citado e não existe no catálogo. Pendência declarada, nunca invenção. */
   pending: { kind: string; ref: string; because: string }[]
+  /**
+   * OS TRABALHOS que a série resumida já resolve.
+   *
+   * O V1 roda ANTES e não tem como saber disto — ele declara "nenhuma função registrada faz
+   * este cálculo" para uma conta que o motor faz sozinho. Quem monta o resumo do turno tem
+   * os dois lados na mão, e é lá que a contradição é desfeita.
+   */
+  trabalhosComJanela: string[]
 }
 
 const ESSENCIAL = { layer: 'essential' as const }
@@ -526,6 +534,7 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
   // Uma janela declarada serve a UM trabalho: sem isto, dois trabalhos parecidos ficariam
   // com a mesma série, e o plano gravaria a mesma linha duas vezes.
   const usadas = new Set<{ source: string; field: string; everyMs: number; ops: string[] }>()
+  const trabalhosComJanela: string[] = []
   let indiceDeAgente = 0
   const agentePorTrabalho = new Map<string, string>()
 
@@ -610,6 +619,9 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
       })
     }
     if (janela) {
+      // Fica registrado QUAL trabalho a janela resolve: quem monta o resumo do turno precisa
+      // saber disso para não declarar pendência de uma conta que o motor já faz.
+      trabalhosComJanela.push(job?.name ?? decision.jobId)
       // A janela é COMO o dado é guardado — vale inclusive quando o trabalho também tem um
       // agente. Pular a janela porque existe alguém para conversar sobre ela deixaria a
       // pessoa com o agente e sem o dado, que foi exatamente o que aconteceu.
@@ -1121,7 +1133,7 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
     if (base.agentAccess && !(base.agentKeys ?? []).length) base.agentKeys = bp.organization.agents.map((a) => a.key)
   }
 
-  return { blueprint: bp, classification, pending }
+  return { blueprint: bp, classification, pending, trabalhosComJanela }
 }
 
 /**
