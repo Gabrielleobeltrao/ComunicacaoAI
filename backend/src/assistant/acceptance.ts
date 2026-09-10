@@ -86,6 +86,7 @@ async function rodarUm(ctx: AcceptanceContext, t: BlueprintAcceptanceTestV2): Pr
   if (t.kind === 'flow') return testarFlow(ctx, t)
   if (t.kind === 'agent_contract') return testarContratoDoAgente(ctx, t)
   if (t.kind === 'database_permission') return testarPermissaoDeDatabase(ctx, t)
+  if (t.kind === 'window_field') return testarCampoDaJanela(ctx, t)
 
   /**
    * Os três que ainda não têm caminho observável, cada um por um motivo diferente — e todos
@@ -105,6 +106,68 @@ async function rodarUm(ctx: AcceptanceContext, t: BlueprintAcceptanceTestV2): Pr
 }
 
 // --- fonte: conexão, schema, mapeamento e frescor -------------------------------------------
+
+/**
+ * A SÉRIE RESUMIDA TEM O QUE SOMAR — a prova mais barata desta lista.
+ *
+ * Do banco do dono: a origem gravava `{"preco_bitcoin": "77131.82"}` e a janela procurava
+ * `preco`. Ela recebeu oito leituras e fechou sem acumular nada. O recorder existia, o motor
+ * rodava, e o conjunto ficaria vazio para sempre — nada quebra, nada avisa, e ele esperou.
+ *
+ * Uma leitura da origem responde isso. Não é simulação nem palpite: é o último fato que
+ * entrou de verdade, conferido contra os campos que a janela vai ler.
+ */
+async function testarCampoDaJanela(ctx: AcceptanceContext, t: BlueprintAcceptanceTestV2): Promise<AcceptanceResult> {
+  const id = idDe(ctx, 'history', t.targetKey)
+  if (!id) return resultado(t, 'skipped', 'a série não foi criada nesta aplicação')
+  const idDoRecorder = id.includes(':') ? id.split(':')[1] : id
+  if (!ObjectId.isValid(idDoRecorder)) return resultado(t, 'skipped', 'a série ainda não tem conjunto próprio')
+
+  const { obterRecorder, listarRecorders } = await import('../dataHistory/recorders.js')
+  const janela = await obterRecorder(ctx.ownerId, new ObjectId(idDoRecorder))
+  if (!janela) return resultado(t, 'failed', 'a série resumida não existe mais nesta conta')
+  const regras = janela.aggregations ?? []
+  if (!regras.length) return resultado(t, 'skipped', 'esta série não resume nada')
+
+  // A ORIGEM é quem grava o fato: a série que já recebe o dado, na mesma referência.
+  const origem = (await listarRecorders(ctx.ownerId)).find(
+    (r) => String(r._id) !== idDoRecorder && r.source?.kind === janela.source?.kind && r.source?.ref === janela.source?.ref && r.mode !== 'window_aggregate',
+  )
+  if (!origem) return resultado(t, 'skipped', 'ainda não há uma série de origem gravando: o teste vale quando ela existir')
+
+  const { db } = await import('../db.js')
+  const ultimo = await db
+    .collection('data_history_records')
+    .find({ ownerId: ctx.ownerId, recorderId: new ObjectId(String(origem._id)) })
+    .sort({ _id: -1 })
+    .limit(1)
+    .next()
+  if (!ultimo) return resultado(t, 'skipped', `"${origem.name}" ainda não gravou nada: o teste vale quando houver leitura`)
+
+  const valor = (ultimo.value ?? {}) as Record<string, unknown>
+  const presentes = Object.keys(valor)
+  const faltando = regras.filter((r) => r.op !== 'count' && !(r.from in valor)).map((r) => r.from)
+  if (faltando.length) {
+    // Uma janela que não acha o campo roda para sempre sem acumular: é o pior defeito
+    // possível, porque parece que está funcionando.
+    return resultado(t, 'failed', `a origem não traz ${[...new Set(faltando)].join(', ')} — os campos dela são: ${presentes.join(', ') || 'nenhum'}`)
+  }
+
+  const naoNumericos = regras
+    .filter((r) => r.op !== 'count' && r.op !== 'first' && r.op !== 'last')
+    .filter((r) => !Number.isFinite(Number(valor[r.from])))
+    .map((r) => r.from)
+  if (naoNumericos.length) {
+    return resultado(t, 'failed', `${[...new Set(naoNumericos)].join(', ')} não é número na origem: mínimo, máximo, média e soma precisam de um`)
+  }
+
+  const amostra = regras
+    .filter((r) => r.op !== 'count')
+    .slice(0, 2)
+    .map((r) => `${r.from}=${String(valor[r.from]).slice(0, 20)}`)
+    .join(', ')
+  return resultado(t, 'passed', `a origem trouxe ${amostra}: a janela tem o que resumir`)
+}
 
 async function testarFonte(ctx: AcceptanceContext, t: BlueprintAcceptanceTestV2): Promise<AcceptanceResult> {
   const id = idDe(ctx, 'source', t.targetKey)
@@ -295,6 +358,7 @@ const TITULO: Record<AcceptanceTestKind, string> = {
   flow: 'O Flow percorre a rota inteira',
   app_dry_run: 'A ação do App foi provada',
   database_permission: 'O Database responde a quem tem acesso',
+  window_field: 'A série resumida tem o que somar',
   monitor_simulation: 'A regra dispara na transição certa',
   delivery: 'A entrega chega ao destino',
 }
