@@ -132,6 +132,17 @@ export async function applyV2Resources(ctx: ApplyV2Context): Promise<ApplyV2Step
     const acao = String(alvo.item.action ?? 'create')
     if (acao === 'reuse') {
       const id = String(alvo.item.resourceId ?? '')
+      /**
+       * REAPROVEITAR SEM DIZER QUAL é uma pendência, e não um "reused" com id vazio.
+       *
+       * O mapa recebia a string vazia, e quem dependia dela estourava lá na frente com "a
+       * fonte não foi criada" — matando a aplicação inteira depois de já ter criado agente,
+       * rotina e Database. O defeito é do plano, e o lugar de dizer isso é aqui.
+       */
+      if (!id) {
+        passos.push({ kind: alvo.kind, key, status: 'skipped', message: 'o plano diz para reaproveitar, mas não diz qual: escolha o recurso e aplique de novo' })
+        continue
+      }
       ctx.resourceMap.set(chave(alvo.kind, key), id)
       passos.push({ kind: alvo.kind, key, status: 'reused', resourceId: id })
       continue
@@ -434,7 +445,8 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
      */
     const w = item.window as { everyMs: number; rules: { from: string; op: string; to: string }[] }
     const fonteId = idDe('source', item.sourceKey)
-    if (!fonteId || !ObjectId.isValid(fonteId)) throw new Error(`a fonte "${String(item.sourceKey)}" não foi criada`)
+    // Pendência, e não exceção: derrubar a aplicação aqui desfaz o que já deu certo antes.
+    if (!fonteId || !ObjectId.isValid(fonteId)) return { pendency: `a fonte "${String(item.sourceKey)}" ainda não existe: resolva a fonte e aplique de novo` }
     const { getSource } = await import('../monitoring/service.js')
     const fonte = await getSource(ownerId, new ObjectId(fonteId))
     if (!fonte?.destination.recorderId) {
