@@ -42,6 +42,23 @@ export interface DatasetSummary {
   mutability: Mutability
   fields: string[]
   schema: Record<string, unknown>
+  /**
+   * DE ONDE VEM e COM QUE REGRA, quando o conjunto é alimentado por uma série.
+   *
+   * Sem isto, o conjunto é uma tabela sem procedência: dá para ver o que foi gravado e não
+   * dá para saber quem gravou, de onde, nem de quanto em quanto tempo — que é a pergunta
+   * seguinte de quem olha um número. Ausente significa conjunto criado à mão.
+   */
+  serie?: {
+    id: string
+    nome: string
+    modo: string
+    intervalMs: number | null
+    contas: string[]
+    ativa: boolean
+    registros: number
+    fonte: string | null
+  }
 }
 
 export interface DatabaseDetail extends Omit<DatabaseSummary, 'datasets'> {

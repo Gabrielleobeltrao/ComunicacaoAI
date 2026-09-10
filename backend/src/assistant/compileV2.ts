@@ -582,12 +582,6 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
      * compilador direto passa por aqui. Uma janela sem tamanho, sem campo ou com uma conta
      * que o motor não tem gravaria uma coluna que ninguém lê — e gravaria calada.
      */
-    const janelaValida = (w: { field?: string; everyMs?: number; ops?: string[] }) =>
-      Number.isFinite(Number(w.everyMs)) &&
-      Number(w.everyMs) > 0 &&
-      String(w.field ?? '').trim() !== '' &&
-      (w.ops ?? []).some((op) => op in NOME_DA_CONTA)
-
     const declarada = (input.windows ?? []).find(
       (w) =>
         !usadas.has(w) &&
@@ -607,25 +601,9 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
      * O modelo escreveu "preco" querendo dizer o preço. Corrigir para o nome real é melhor
      * que recusar: ele acertou a intenção e errou o nome, e a fonte sabe o nome certo.
      */
-    const camposReais = (fonteDaJanela?.campos ?? '')
-      .split(/[,;\s]+/)
-      .map((c) => c.trim())
-      .filter(Boolean)
-    if (declarada && camposReais.length) {
-      const exato = camposReais.find((c) => c === declarada.field)
-      const parecido = camposReais.find(
-        (c) => normalizarCampo(c) === normalizarCampo(declarada.field) || normalizarCampo(c).includes(normalizarCampo(declarada.field)) || normalizarCampo(declarada.field).includes(normalizarCampo(c)),
-      )
-      if (!exato && parecido) declarada.field = parecido
-      else if (!exato && !parecido) {
-        pending.push({
-          kind: 'window_field',
-          ref: job?.name ?? decision.jobId,
-          because: `"${declarada.field}" não existe em "${fonteDaJanela?.label}" — os campos dela são: ${camposReais.join(', ')}`,
-        })
-        usadas.add(declarada)
-        continue
-      }
+    if (declarada && !campoDaJanelaExiste(declarada, fonteDaJanela, pending, job?.name ?? decision.jobId)) {
+      usadas.add(declarada)
+      continue
     }
     const janela = declarada
       ? {
@@ -657,7 +635,7 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
       // A janela é COMO o dado é guardado — vale inclusive quando o trabalho também tem um
       // agente. Pular a janela porque existe alguém para conversar sobre ela deixaria a
       // pessoa com o agente e sem o dado, que foi exatamente o que aconteceu.
-      compilarJanela(bp, pending, { job, decision, janela, achado: fonteDaJanela })
+      compilarJanela(bp, pending, { job, jobId: decision.jobId, janela, achado: fonteDaJanela })
       if (decision.kind !== 'agent') continue
     }
 
@@ -820,6 +798,31 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
       })
     }
   }
+
+  /**
+   * A JANELA QUE NENHUM TRABALHO RECLAMOU ainda é uma janela.
+   *
+   * O casamento acima é por PROXIMIDADE DE TEXTO: a janela declarada só entra se o nome do
+   * campo ou da fonte aparecer no texto do trabalho. Quando não aparece — o trabalho diz
+   * "guardar a cotação" e a janela diz `preco_bitcoin` —, a declaração era descartada em
+   * silêncio. O modelo tinha chamado a ferramenta, o executor tinha aceitado, e o plano saía
+   * sem série nenhuma: exatamente o "ele não usou a ferramenta" visto na conta do dono.
+   *
+   * Aqui ela é compilada pela ORIGEM que ela mesma declarou. `compilarJanela` já ignora
+   * assinatura repetida, então uma janela que o laço tratou não vira uma segunda série.
+   */
+  for (const w of input.windows ?? []) {
+    if (usadas.has(w) || !janelaValida(w)) continue
+    const origem = conjuntoQueServe(inventory, w.source)
+    if (!campoDaJanelaExiste(w, origem, pending, w.source || w.field)) continue
+    compilarJanela(bp, pending, {
+      job: undefined,
+      jobId: w.source || w.field,
+      janela: { everyMs: w.everyMs, rules: w.ops.filter((op) => op in NOME_DA_CONTA).map((op) => ({ from: w.field, op: op as never, to: NOME_DA_CONTA[op] })) },
+      achado: origem,
+    })
+  }
+
 
   /**
    * --- 3b. o que precisa ficar GUARDADO vira Database + conjunto ----------------------------
@@ -1852,17 +1855,69 @@ export function candidatosParaResumir(campoDaFonte: string, declarados: string[]
  * Reaproveitar a fonte é o ponto: criar outra coletaria o mesmo endereço duas vezes e
  * produziria dois históricos que divergem no primeiro erro de rede.
  */
+/**
+ * O compilador NÃO confia no que recebe, nem vindo do próprio turno.
+ *
+ * `normalizeTurn` já valida, mas ele é uma porta; esta é outra, e quem chama o compilador
+ * direto passa por aqui. Uma janela sem tamanho, sem campo ou com uma conta que o motor não
+ * tem gravaria uma coluna que ninguém lê — e gravaria calada.
+ */
+const janelaValida = (w: { field?: string; everyMs?: number; ops?: string[] }): boolean =>
+  Number.isFinite(Number(w.everyMs)) && Number(w.everyMs) > 0 && String(w.field ?? '').trim() !== '' && (w.ops ?? []).some((op) => op in NOME_DA_CONTA)
+
+/**
+ * O CAMPO TEM DE EXISTIR NA ORIGEM — senão a janela roda e não acumula nada.
+ *
+ * Do banco do dono: a origem gravava `{"preco_bitcoin": "77131.82"}` e a janela procurava
+ * `preco`. Ela recebeu oito leituras (`count: 8`) e fechou sem `acc` nenhum: o motor rodou,
+ * o recorder existia, e o conjunto ficava vazio para sempre. É o defeito mais caro possível
+ * — nada quebra, nada avisa, e a pessoa espera.
+ *
+ * O modelo escreveu "preco" querendo dizer o preço. CORRIGIR para o nome real é melhor que
+ * recusar: ele acertou a intenção e errou o nome, e a fonte sabe o nome certo. Corrige no
+ * lugar; devolve `false` só quando não há nome parecido nenhum, e aí a pendência já foi
+ * registrada.
+ */
+function campoDaJanelaExiste(
+  declarada: { field: string },
+  origem: { label: string; campos: string } | null,
+  pending: { kind: string; ref: string; because: string }[],
+  ref: string,
+): boolean {
+  const camposReais = (origem?.campos ?? '')
+    .split(/[,;\s]+/)
+    .map((c) => c.trim())
+    .filter(Boolean)
+  // Origem sem campos declarados não tem como desmentir ninguém: a janela segue.
+  if (!camposReais.length) return true
+  if (camposReais.some((c) => c === declarada.field)) return true
+  const parecido = camposReais.find(
+    (c) => normalizarCampo(c) === normalizarCampo(declarada.field) || normalizarCampo(c).includes(normalizarCampo(declarada.field)) || normalizarCampo(declarada.field).includes(normalizarCampo(c)),
+  )
+  if (parecido) {
+    declarada.field = parecido
+    return true
+  }
+  pending.push({
+    kind: 'window_field',
+    ref,
+    because: `"${declarada.field}" não existe em "${origem?.label}" — os campos dela são: ${camposReais.join(', ')}`,
+  })
+  return false
+}
+
 function compilarJanela(
   bp: OfficeBlueprintV2,
   pending: { kind: string; ref: string; because: string }[],
   ctx: {
     job: OperationBrief['jobs'][number] | undefined
-    decision: ResourceDecision
+    /** Só para nomear a série quando não há origem nem entrada — nunca para decidir nada. */
+    jobId: string
     janela: ParsedWindow
     achado: { id: string; kind: 'dataset' | 'source'; label: string; campos: string } | null
   },
 ): void {
-  const { job, decision, janela, achado } = ctx
+  const { job, jobId, janela, achado } = ctx
 
   /**
    * UMA SÉRIE POR FONTE E POR JANELA — e não uma por trabalho.
@@ -1872,7 +1927,7 @@ function compilarJanela(
    * DUAS fontes iguais e DUAS janelas iguais: duas coletas do mesmo endereço e duas séries
    * gravando a mesma linha. Quem identifica a série é de onde ela lê e como ela fecha.
    */
-  const assinatura = slug(`${achado?.label ?? job?.input ?? decision.jobId}-${janela.everyMs}-${janela.rules.map((r) => `${r.from}${r.op}`).join('')}`)
+  const assinatura = slug(`${achado?.label ?? job?.input ?? jobId}-${janela.everyMs}-${janela.rules.map((r) => `${r.from}${r.op}`).join('')}`)
   const fonteKey = `fonte-${assinatura}`
   const janelaKey = `janela-${assinatura}`
   if (bp.operations.histories.some((h) => h.key === janelaKey)) return

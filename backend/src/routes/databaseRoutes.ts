@@ -97,6 +97,46 @@ databaseRouter.get('/', async (_req, res) => {
   res.json({ items: comContagem })
 })
 
+/**
+ * A PROCEDÊNCIA de um conjunto que é alimentado por uma série.
+ *
+ * A chave de um conjunto de série É o id do recorder que a alimenta (ver
+ * `ensureDatasetForRecorder`). Quando ela não é um id, o conjunto foi criado à mão e não tem
+ * série por trás — e dizer isso com silêncio é melhor que inventar uma origem.
+ */
+async function origemDoConjunto(
+  ownerId: string,
+  chave: string,
+): Promise<{ serie?: { id: string; nome: string; modo: string; intervalMs: number | null; contas: string[]; ativa: boolean; registros: number; fonte: string | null } }> {
+  if (!ObjectId.isValid(chave)) return {}
+  const { obterRecorder } = await import('../dataHistory/recorders.js')
+  const r = await obterRecorder(ownerId, new ObjectId(chave)).catch(() => null)
+  if (!r) return {}
+  // O nome da fonte, quando ela existe: `monitoring:<id>` é o endereço, e ninguém deveria
+  // precisar ler um id para saber de onde o dado vem.
+  let fonte: string | null = null
+  const ref = String(r.source?.ref ?? '')
+  if (ref.startsWith('monitoring:')) {
+    const idDaFonte = ref.slice('monitoring:'.length)
+    if (ObjectId.isValid(idDaFonte)) {
+      const { getSource } = await import('../monitoring/service.js')
+      fonte = (await getSource(ownerId, new ObjectId(idDaFonte)).catch(() => null))?.name ?? null
+    }
+  }
+  return {
+    serie: {
+      id: r._id.toString(),
+      nome: r.name,
+      modo: r.mode,
+      intervalMs: r.intervalMs ?? null,
+      contas: (r.aggregations ?? []).map((a) => `${a.from || 'ocorrências'} → ${a.op} → ${a.to}`),
+      ativa: r.enabled !== false,
+      registros: r.recordCount ?? 0,
+      fonte,
+    },
+  }
+}
+
 databaseRouter.post('/', async (req, res, next) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>
@@ -130,7 +170,19 @@ databaseRouter.get('/:id', async (req, res) => {
     status: store.status,
     retention: store.retention,
     owner: store.owner,
-    datasets: datasets.map((d) => ({ key: d.key, name: d.name, mutability: d.mutability, fields: Object.keys((d.schema.properties ?? {}) as object), schema: d.schema })),
+    datasets: await Promise.all(
+      datasets.map(async (d) => ({
+        key: d.key,
+        name: d.name,
+        mutability: d.mutability,
+        fields: Object.keys((d.schema.properties ?? {}) as object),
+        schema: d.schema,
+        // DE ONDE VEM e COM QUE REGRA. Sem isto, o conjunto é uma tabela sem procedência: dá
+        // para ver o que foi gravado e não dá para saber quem gravou, de onde, nem de quanto
+        // em quanto tempo — que é a pergunta seguinte de quem olha um número.
+        ...(await origemDoConjunto(res.locals.userId, d.key)),
+      })),
+    ),
     updatedAt: store.updatedAt,
   })
 })

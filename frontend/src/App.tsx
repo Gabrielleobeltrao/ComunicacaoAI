@@ -38,9 +38,7 @@ const Apps = sobDemanda(() => import('./pages/Apps'), 'Apps')
 const Building = sobDemanda(() => import('./pages/Building'), 'Building')
 const AssistantProjects = sobDemanda(() => import('./pages/assistant/Projects'), 'AssistantProjects')
 const AssistantProject = sobDemanda(() => import('./pages/assistant/Project'), 'AssistantProject')
-const DataRecorders = sobDemanda(() => import('./pages/dataHistory/Recorders'), 'DataRecorders')
 const RecorderForm = sobDemanda(() => import('./pages/dataHistory/RecorderForm'), 'RecorderForm')
-const RecorderDetail = sobDemanda(() => import('./pages/dataHistory/RecorderDetail'), 'RecorderDetail')
 const FloorView = sobDemanda(() => import('./pages/FloorView'), 'FloorView')
 const Databases = sobDemanda(() => import('./pages/Databases'), 'Databases')
 const Monitors = sobDemanda(() => import('./pages/Monitors'), 'Monitors')
@@ -173,12 +171,21 @@ function App() {
       {/* Históricos: a camada genérica de registro e agregação. É do PRÉDIO, como o
           Assistente — o que ela guarda vem de qualquer fonte da conta, e não de um
           andar. Existe nos dois modos de navegação. */}
-      <Route path="/historicos" element={<P><DataRecorders /></P>} />
+      {/*
+        HISTÓRICOS SAIU do menu e da navegação.
+        A lista respondia "o que existe" e o detalhe respondia "o que foi gravado" — e as duas
+        perguntas já tinham casa: a fonte, no Monitoramento, mostra o que vive dela; o conjunto,
+        em Databases, mostra as linhas e agora a procedência. Ninguém abria "Históricos" para
+        descobrir alguma coisa: era um depósito do que outras telas criaram.
+        O FORMULÁRIO fica: ele não é uma tela que se navega, é o editor da regra, e é alcançado
+        de onde a série aparece.
+      */}
+      <Route path="/historicos" element={<Navigate to="/databases" replace />} />
+      <Route path="/historicos/:recorderId" element={<Navigate to="/databases" replace />} />
       <Route path="/historicos/novo" element={<P><RecorderForm /></P>} />
       {/* Editar vem ANTES do detalhe: `/historicos/novo` e `/historicos/:id/editar` são
           caminhos, e o detalhe casaria com o primeiro segmento dos dois. */}
       <Route path="/historicos/:recorderId/editar" element={<P><RecorderForm /></P>} />
-      <Route path="/historicos/:recorderId" element={<P><RecorderDetail /></P>} />
 
       {/* Montar operação é do PRÉDIO, não de um andar: ela pode criar ou reutilizar
           vários. Por isso mora aqui, ao lado das outras áreas globais, e existe nos
