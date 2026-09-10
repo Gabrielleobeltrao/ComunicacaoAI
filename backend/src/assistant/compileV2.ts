@@ -94,14 +94,20 @@ const COMPARADORES: { padrao: RegExp; op: string }[] = [
  * reconhecida, "guardar o preço" é `every_event`, que é outra coisa. Inventar um padrão aqui
  * gravaria uma série que ninguém pediu, e a pessoa descobriria pelo conteúdo.
  */
+/**
+ * As sete contas, reconhecidas como as pessoas escrevem: substantivo E verbo.
+ *
+ * "Somar o valor por hora" e "a soma do valor por hora" são o mesmo pedido; casar só o
+ * substantivo fazia a janela sumir do plano quando alguém escrevia no infinitivo.
+ */
 const CONTAS: { padrao: RegExp; op: 'first' | 'last' | 'min' | 'max' | 'avg' | 'sum' | 'count'; nome: string }[] = [
-  { padrao: /\b(m[íi]nimo|menor|m[íi]nima)\b/i, op: 'min', nome: 'minimo' },
-  { padrao: /\b(m[áa]ximo|maior|m[áa]xima)\b/i, op: 'max', nome: 'maximo' },
-  { padrao: /\b(m[ée]dia|m[ée]dio)\b/i, op: 'avg', nome: 'media' },
-  { padrao: /\b(soma|somat[óo]rio|total)\b/i, op: 'sum', nome: 'soma' },
-  { padrao: /\b(contagem|quantidade|quantos)\b/i, op: 'count', nome: 'contagem' },
-  { padrao: /\b(abertura|primeiro|inicial)\b/i, op: 'first', nome: 'abertura' },
-  { padrao: /\b(fechamento|[úu]ltimo|final)\b/i, op: 'last', nome: 'fechamento' },
+  { padrao: /\b(m[íi]nimos?|menor(es)?|m[íi]nimas?)\b/i, op: 'min', nome: 'minimo' },
+  { padrao: /\b(m[áa]ximos?|maior(es)?|m[áa]ximas?|pico)\b/i, op: 'max', nome: 'maximo' },
+  { padrao: /\b(m[ée]dias?|m[ée]dios?)\b/i, op: 'avg', nome: 'media' },
+  { padrao: /\b(soma|somar|somando|somat[óo]rio|total(izar)?)\b/i, op: 'sum', nome: 'soma' },
+  { padrao: /\b(contagem|contar|quantos|quantas|n[úu]mero de)\b/i, op: 'count', nome: 'contagem' },
+  { padrao: /\b(abertura|primeiros?|inicial)\b/i, op: 'first', nome: 'abertura' },
+  { padrao: /\b(fechamento|[úu]ltimos?|final)\b/i, op: 'last', nome: 'fechamento' },
 ]
 
 const UNIDADES: { padrao: RegExp; ms: number }[] = [
@@ -518,7 +524,26 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
      * série que a janela grava.
      */
     const fonteDaJanela = conjuntoQueServe(inventory, String((brief.liveDataNeeds ?? [])[0]?.source ?? job?.input ?? ''))
-    const janela = parseJanela(`${job?.name ?? ''} ${job?.action ?? ''} ${job?.output ?? ''}`, campoAResumir(brief, fonteDaJanela?.campos ?? ''))
+    const textoDoPedido = `${job?.name ?? ''} ${job?.action ?? ''} ${job?.output ?? ''} ${job?.input ?? ''}`
+    const declarados = (brief.recordsToKeep ?? []).flatMap((r) => r.fields ?? [])
+    const campo = campoAResumir(textoDoPedido, fonteDaJanela?.campos ?? '', declarados)
+    const janela = parseJanela(textoDoPedido, campo)
+    /**
+     * A JANELA FOI PEDIDA e ninguém sabe sobre QUAL campo: isso é pergunta, não silêncio.
+     *
+     * Antes, campo ambíguo devolvia `null` e a janela sumia do plano sem uma palavra — a
+     * pessoa pedia "a soma por hora" e recebia uma proposta que não somava nada.
+     */
+    if (!janela && !campo && parseJanela(textoDoPedido, '__x__')) {
+      const opcoes = candidatosParaResumir(fonteDaJanela?.campos ?? '', declarados)
+      pending.push({
+        kind: 'window_field',
+        ref: job?.name ?? decision.jobId,
+        because: opcoes.length
+          ? `falta dizer qual campo resumir por janela: ${opcoes.slice(0, 6).join(', ')}`
+          : 'falta dizer qual campo resumir por janela — resumir o campo errado grava uma série que parece certa',
+      })
+    }
     if (janela) {
       // A janela é COMO o dado é guardado — vale inclusive quando o trabalho também tem um
       // agente. Pular a janela porque existe alguém para conversar sobre ela deixaria a
@@ -1510,31 +1535,79 @@ function freshnessEmSegundos(texto: string | undefined): number {
  * texto: resumir o campo errado grava uma série que parece certa e mente em todo gráfico.
  * Sem nenhum campo declarado, não há janela — é pendência.
  */
-const CARIMBO_DE_TEMPO = /(timestamp|data|hora|horario|instante|momento|inicio|fim|janela|periodo|_at$|^at$|date|time)/i
+/**
+ * O que é CARIMBO DE TEMPO — e por isso nunca é o número que a janela resume.
+ *
+ * Duas famílias, porque as contas nomeiam campo de jeitos diferentes: a palavra dentro do
+ * nome (`timestamp`, `data_da_venda`, `hora`) e o sufixo de particípio que o português usa
+ * para "quando" (`criado_em`, `atualizado_em`, `lido_em`) e o inglês com `_at`.
+ */
+const CARIMBO_DE_TEMPO = /(timestamp|data|hora|horario|instante|momento|inicio|fim|janela|periodo|date|time|_(em|at|date|time)$|^(em|at)$)/i
 
-function campoAResumir(brief: OperationBrief, campoDaFonte: string): string | null {
-  /**
-   * O CAMPO É O DA FONTE, e o relógio nunca serve.
-   *
-   * A primeira versão pegava `recordsToKeep[0].fields[0]` — o que o modelo escreveu primeiro.
-   * No teste do dono isso deu `timestamp_da_janela`: a proposta ia gravar o MENOR e o MAIOR
-   * instante de cada janela, e não o menor e o maior preço. Um gráfico desses parece certo e
-   * mente, que é exatamente o que este código existe para não fazer.
-   *
-   * Quem sabe quais campos existem é a fonte da conta. Só quando ela não diz nada é que o
-   * que a pessoa declarou entra — e ainda assim sem nenhum campo de tempo.
-   */
-  const daFonte = campoDaFonte
+/**
+ * QUAL CAMPO A JANELA RESUME — e quando não dá para saber.
+ *
+ * A primeira versão pegava "o primeiro campo que não é data". Isso passou no caso que estava
+ * na mesa (`price, timestamp`) e escolheria `sku` numa fonte `sku, quantidade` — o assunto
+ * nunca se repete entre contas, e uma regra que só acerta no exemplo está errada.
+ *
+ * A ordem agora é a de quem sabe mais, para quem sabe menos:
+ *   1. o campo NOMEADO no pedido, casado com um campo real da fonte
+ *      ("a soma da quantidade por hora" → `quantidade`);
+ *   2. quando a fonte tem um candidato só, ele — não há o que escolher;
+ *   3. o que a pessoa declarou guardar, se lá houver um candidato só;
+ *   4. nada. Com dois candidatos e nenhum nomeado, resumir é chutar, e o chute grava uma
+ *      série que parece certa. Vira pendência, e a pessoa escolhe.
+ *
+ * ponytail: uma janela resume UM campo. "Média do preço e soma da quantidade" na mesma
+ * frase vira uma janela sobre o campo nomeado; se aparecerem dois pedidos assim, o caminho
+ * é uma regra por campo, não um segundo palpite aqui.
+ */
+function normalizarCampo(c: string): string {
+  return String(c ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+}
+
+function candidatosDaFonte(campoDaFonte: string): string[] {
+  return campoDaFonte
     .split(/[,;\s]+/)
     .map((c) => c.trim())
     .filter((c) => c && !CARIMBO_DE_TEMPO.test(c))
-  if (daFonte.length) return daFonte[0]
+}
 
-  for (const r of brief.recordsToKeep ?? []) {
-    const campo = (r.fields ?? []).map((c) => String(c ?? '').trim()).find((c) => c && !CARIMBO_DE_TEMPO.test(c))
-    if (campo) return campo
-  }
+export function campoAResumir(texto: string, campoDaFonte: string, declarados: string[] = []): string | null {
+  const daFonte = candidatosDaFonte(campoDaFonte)
+  const alvo = normalizarCampo(texto)
+
+  // 1. O campo que o pedido NOMEIA. O mais longo primeiro: "valor_total" antes de "valor".
+  const nomeado = [...daFonte]
+    .sort((a, b) => b.length - a.length)
+    .find((c) => normalizarCampo(c).length >= 3 && alvo.includes(normalizarCampo(c)))
+  if (nomeado) return nomeado
+
+  // 2. Um candidato só na fonte: não há o que escolher.
+  if (daFonte.length === 1) return daFonte[0]
+
+  // 3. O que a pessoa declarou guardar — mesma régua.
+  const declaradosLimpos = declarados.map((c) => String(c ?? '').trim()).filter((c) => c && !CARIMBO_DE_TEMPO.test(c))
+  const declaradoNomeado = [...declaradosLimpos]
+    .sort((a, b) => b.length - a.length)
+    .find((c) => normalizarCampo(c).length >= 3 && alvo.includes(normalizarCampo(c)))
+  if (declaradoNomeado) return declaradoNomeado
+  if (daFonte.length === 0 && declaradosLimpos.length === 1) return declaradosLimpos[0]
+
+  // 4. Ambíguo. Escolher aqui é chutar.
   return null
+}
+
+/** Os candidatos que a pessoa teria de escolher entre, quando a regra não decide. */
+export function candidatosParaResumir(campoDaFonte: string, declarados: string[] = []): string[] {
+  const daFonte = candidatosDaFonte(campoDaFonte)
+  if (daFonte.length) return daFonte
+  return declarados.map((c) => String(c ?? '').trim()).filter((c) => c && !CARIMBO_DE_TEMPO.test(c))
 }
 
 /**
