@@ -623,13 +623,25 @@ const marcadosDe = (projeto: AssistantProject): Set<string> =>
   new Set((projeto.checklist ?? []).filter((i) => i.completionMode === 'manual' && i.status === 'done').map((i) => i.id))
 
 /** Valida sem escrever recurso nenhum. Válido promove o projeto para `ready`. */
+/** Quantos itens o V2 realmente faz. `reuse` aponta para o que já existe: não é trabalho. */
+function itensQueOV2Cria(projeto: AssistantProject): number {
+  const bp = projeto.blueprintV2
+  if (!bp || projeto.blueprintVersion !== 2) return 0
+  return V2_ITEM_PATHS.reduce(
+    (total, caminho) => total + (itemsAt(bp, caminho) as unknown as { action?: string }[]).filter((i) => i.action !== 'reuse').length,
+    0,
+  )
+}
+
 export async function validateProject(ownerId: string, projectId: ObjectId) {
   const projeto = await requireProject(ownerId, projectId)
   if (!projeto.blueprint) throw new AssistantRefusal('no_blueprint', 'ainda não existe proposta para validar')
   const ctx = await loadOwnershipContext(ownerId)
   // Vale o RECORTE: é ele que vai ser escrito. Validar o plano inteiro reprovaria por
   // causa de um item que a camada escolhida nem inclui.
-  const r = validateOfficeBlueprint(recorteDe(projeto)!, ctx)
+  // O plano é os DOIS: o que o V1 desenha e o que o V2 acrescenta. Contar só um reprovava
+  // um plano completo por olhar a metade vazia dele.
+  const r = validateOfficeBlueprint(recorteDe(projeto)!, ctx, { itensDoV2: itensQueOV2Cria(projeto) })
   if (isEditable(projeto.status)) {
     await repo.patchProject(ownerId, projectId, { status: r.valid ? 'ready' : 'draft' })
   }

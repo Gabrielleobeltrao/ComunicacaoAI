@@ -344,3 +344,70 @@ test('um requisito de conhecimento leva à tela onde se anexa', () => {
   assert.ok(item, 'o requisito não virou item de checklist')
   assert.ok(item.actionPath, `sem caminho, a pendência é um beco: ${JSON.stringify(item)}`)
 })
+
+// --- O PLANO É OS DOIS: O QUE O V1 DESENHA E O QUE O V2 ACRESCENTA ---------------------------
+//
+// Do teste real do dono: "criar uma função/rotina que leia os valores salvos do bitcoin e grave
+// em um novo database o valor máximo e mínimo a cada 5 minutos". O plano saiu completo —
+//
+//   databases: create   datasets: create   histories: create [JANELA 5min min,max]
+//
+// — mas TUDO isso vive no V2. O V1 tinha só `floors: 1 reuse`, e a recusa de proposta vazia,
+// lendo só o V1, reprovava justamente o plano que mais entrega: o projeto ficava em `draft`
+// para sempre e o botão de aplicar nunca liberava.
+
+const SO_ANDAR = (andarId) => ({
+  version: 1,
+  title: 'Consolidar por janela',
+  objective: 'Guardar o mínimo e o máximo a cada 5 minutos',
+  floors: [{ key: 'operacao', action: 'reuse', name: 'Operações', mission: 'x', workMode: 'organization', layer: 'essential', layerReason: 'y', rationale: 'z', resourceId: andarId }],
+  agents: [],
+  sectors: [],
+  routines: [],
+  appRequirements: [],
+  knowledgeRequirements: [],
+  assumptions: [],
+  warnings: [],
+  checklist: [],
+})
+
+const V2_QUE_CRIA = (andarId) => ({
+  version: 2,
+  title: 'Consolidar por janela',
+  objective: 'Guardar o mínimo e o máximo a cada 5 minutos',
+  changeKind: 'expand',
+  organization: { floors: [{ key: 'operacao', action: 'reuse', layer: 'essential', rationale: 'já existe', dependsOn: [], name: 'Operações', workMode: 'organization', resourceId: andarId }], sectors: [], agents: [] },
+  resources: { knowledge: [], memoryPolicies: [], appRequirements: [], databases: [{ key: 'base', action: 'create', layer: 'essential', rationale: 'onde a série mora', dependsOn: [], name: 'Série consolidada', owner: { ownerType: 'account' }, adapterKind: 'data_history' }], datasets: [], tools: [] },
+  operations: { channels: [], sources: [], liveDestinations: [], histories: [], monitors: [], flows: [], routines: [], deliveries: [] },
+  access: [],
+  acceptanceTests: [],
+  assumptions: [],
+  warnings: [],
+})
+
+const andarReal = async () => {
+  const predio = await db.collection('buildings').findOne({ ownerId: DONO })
+  const r = await db.collection('offices').insertOne({ ownerId: DONO, buildingId: predio?._id ?? new ObjectId(), name: 'Operações', status: 'active', workMode: 'organization', createdAt: new Date(), updatedAt: new Date() })
+  return r.insertedId.toString()
+}
+
+test('ACEITAÇÃO: um plano cujo trabalho está todo no V2 VALIDA e libera o aplicar', async () => {
+  const andar = await andarReal()
+  const p = await projetoCom(SO_ANDAR(andar), { blueprintVersion: 2, blueprintV2: V2_QUE_CRIA(andar), status: 'draft' })
+  const r = await service.validateProject(DONO, p._id)
+  assert.equal(r.valid, true, `reprovou um plano que cria um Database: ${JSON.stringify(r.issues.map((i) => i.code))}`)
+  assert.equal(r.issues.some((i) => i.code === 'nothing_to_apply'), false)
+  assert.equal((await repo.getProject(DONO, p._id)).status, 'ready', 'sem `ready` o botão de aplicar nunca aparece')
+})
+
+test('AMEAÇA: com o V2 só reaproveitando, continua sendo proposta vazia', async () => {
+  const andar = await andarReal()
+  const v2 = V2_QUE_CRIA(andar)
+  v2.resources.databases[0].action = 'reuse'
+  v2.resources.databases[0].resourceId = '000000000000000000000d01'
+  const p = await projetoCom(SO_ANDAR(andar), { blueprintVersion: 2, blueprintV2: v2, status: 'draft' })
+  const r = await service.validateProject(DONO, p._id)
+  assert.equal(r.valid, false, 'aplicar isto termina em "completed" tendo criado nada')
+  assert.ok(r.issues.some((i) => i.code === 'nothing_to_apply'))
+  assert.equal((await repo.getProject(DONO, p._id)).status, 'draft')
+})
