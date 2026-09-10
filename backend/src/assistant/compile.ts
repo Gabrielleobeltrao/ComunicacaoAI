@@ -236,6 +236,17 @@ export function compileBrief(
    * ferramenta e rotina — e ela vence a recomendação da regra.
    */
   answers: Record<string, unknown> = {},
+  /**
+   * O QUE AS FERRAMENTAS ANOTARAM — e por que isto entra no V1, e não só no V2.
+   *
+   * Quem cria agente, setor e andar é a saga do V1, a partir do blueprint V1. Um agente
+   * declarado só no V2 valida, aparece na prévia e NUNCA é criado — silenciosamente, e só
+   * descoberto depois de aplicar. Aqui é onde a declaração alcança quem cria.
+   */
+  declarados: {
+    agentes: { chave: string; nome: string; andar: string; papel: string; quandoEntra: string; recebe: string; entrega: string; instrucoes: string; limites: string[] }[]
+    setores: { chave: string; nome: string; andar: string; modo: string; membros: string[]; coordenador: string; instrucao: string }[]
+  } = { agentes: [], setores: [] },
 ): CompileResult {
   const classification = classifyBrief(brief, manifest, answers)
   const bp: OfficeBlueprintV1 = emptyBlueprint(base.title, brief.businessGoal || base.objective)
@@ -343,6 +354,9 @@ export function compileBrief(
         ...(instrucaoDe(job, brief) ? { instructions: instrucaoDe(job, brief) } : {}),
         ...(job?.input ? { inputContract: job.input } : {}),
         ...(job?.output ? { outputContract: job.output } : {}),
+        // QUANDO ele entra — é o que o planejador lê para escolher a quem mandar trabalho.
+        // Sem isto, o agente nascia sem essa frase e o roteamento ficava no escuro.
+        ...(job?.trigger ? { trigger: job.trigger } : {}),
         executorKind: 'llm',
         handoffEnabled: true,
         layer,
@@ -547,6 +561,58 @@ export function compileBrief(
 
   // O que não existe no catálogo é dito em voz alta, junto da proposta.
   bp.warnings = pending.map((p) => ({ path: p.kind, message: `${p.ref}: ${p.because} — fica como pendência` }))
+
+
+  /**
+   * OS ITENS DECLARADOS pelas ferramentas, no plano que a saga aplica.
+   *
+   * Eles entram depois do que o Brief derivou e não duplicam: quando os dois falam do mesmo
+   * agente, vale o declarado — ele foi escrito depois de o modelo ler o inventário e levar
+   * as recusas, enquanto a derivação é um palpite bom.
+   */
+  for (const a of declarados.agentes) {
+    if (bp.agents.some((x) => x.key === a.chave || x.name === a.nome)) continue
+    const andarDele = bp.floors.find((f) => f.name.toLowerCase() === a.andar.toLowerCase()) ?? bp.floors[0]
+    if (!andarDele) continue
+    bp.agents.push({
+      key: a.chave,
+      action: 'create',
+      floorKey: andarDele.key,
+      name: a.nome,
+      role: a.papel,
+      trigger: a.quandoEntra,
+      inputContract: a.recebe,
+      outputContract: a.entrega,
+      ...(a.instrucoes ? { instructions: a.instrucoes } : {}),
+      ...(a.limites.length ? { boundaries: a.limites } : {}),
+      objective: a.papel,
+      preset: 'custom',
+      executorKind: 'llm',
+      handoffEnabled: true,
+      layer: 'essential',
+      layerReason: 'foi pedido explicitamente na conversa',
+      rationale: a.papel,
+    })
+  }
+  for (const st of declarados.setores) {
+    if (bp.sectors.some((x) => x.key === st.chave)) continue
+    const andarDele = bp.floors.find((f) => f.name.toLowerCase() === st.andar.toLowerCase()) ?? bp.floors[0]
+    const membros = st.membros.filter((m: string) => bp.agents.some((a) => a.key === m))
+    if (!andarDele || !membros.length) continue
+    bp.sectors.push({
+      key: st.chave,
+      action: 'create',
+      floorKey: andarDele.key,
+      name: st.nome,
+      mode: st.modo as never,
+      memberAgentKeys: membros,
+      ...(st.coordenador ? { coordinatorAgentKey: st.coordenador } : {}),
+      ...(st.instrucao ? { instruction: st.instrucao } : {}),
+      layer: 'essential',
+      layerReason: 'foi pedido explicitamente na conversa',
+      rationale: st.instrucao || `${st.nome} trabalha junto`,
+    })
+  }
 
   return { blueprint: bp, classification, jobs, pending }
 }
