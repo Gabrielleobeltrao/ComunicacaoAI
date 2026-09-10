@@ -1130,3 +1130,22 @@ test('AMEAÇA: nenhum campo de tempo é resumido, em português ou inglês', () 
     assert.equal(r.blueprint.operations.histories.some((h) => h.window), false, `resumiu um carimbo de tempo: ${campos}`)
   }
 })
+
+test('ACEITAÇÃO: "grave em um novo database" liga a janela ao conjunto que o plano cria', () => {
+  /**
+   * É uma frase só — "grave em um novo database o máximo e o mínimo a cada 5 minutos" — e
+   * eram duas partes do compilador decidindo onde o dado mora, sem se falarem.
+   */
+  const brief = {
+    ...emptyBrief('Consolidar por janela'),
+    jobs: [{ id: 'j', name: 'Gravar o máximo e o mínimo do preco a cada 5 minutos', trigger: 'janela fechada', input: 'Cotação', decision: '', action: 'consolidar por janela', output: 'uma linha' }],
+    liveDataNeeds: [{ source: 'Cotação', freshness: '15s', required: true }],
+    recordsToKeep: [{ subject: 'consolidado do preco', fields: ['minimo', 'maximo'], retentionDays: null }],
+  }
+  const { blueprint } = compilar(brief)
+  const janela = blueprint.operations.histories.find((h) => h.window)
+  assert.ok(janela, 'a janela tem de existir')
+  const conjunto = blueprint.resources.datasets.find((d) => d.key === janela.datasetKey)
+  assert.ok(conjunto, `a janela aponta para um conjunto que o plano não cria: ${janela.datasetKey}`)
+  assert.ok(janela.dependsOn.includes(conjunto.key), 'sem a dependência, a janela é aplicada antes do conjunto existir')
+})

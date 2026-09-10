@@ -779,3 +779,44 @@ test('AMEAÇA: um "reuse" sem id vira PENDÊNCIA — não derruba o que já foi 
   // E o que veio antes continua de pé: nada foi desfeito por causa disto.
   assert.equal(passos.some((p) => p.status === 'failed'), false, 'uma peça faltando não derruba o que já deu certo')
 })
+
+test('ACEITAÇÃO: a série resumida grava no Database que a proposta criou, e não no padrão', async () => {
+  /**
+   * Do dono, lendo a própria proposta: "onde está o motor para salvar o valor mínimo e
+   * máximo?". O motor é a janela — mas ela gravava sempre no Database padrão, enquanto o
+   * plano criava uma base nova ao lado. Duas partes decidindo onde o dado mora, sem se
+   * falarem, e o resultado era o que ele relatou: "apliquei e só foi criado o database".
+   */
+  const bp = planoDaJanela()
+  bp.resources.databases = [item({ key: 'base', name: 'Série consolidada', owner: { ownerType: 'account' }, adapterKind: 'data_history' })]
+  bp.resources.datasets = [
+    item({ key: 'conjunto', dependsOn: ['base'], databaseKey: 'base', datasetKey: 'consolidado', name: 'Série consolidada', schema: { type: 'object', properties: { minimo: {}, maximo: {} } }, mutability: 'append_only' }),
+  ]
+  bp.operations.histories[0].datasetKey = 'conjunto'
+  bp.operations.histories[0].dependsOn = ['fonte', 'conjunto']
+
+  const { mapa } = await comFonteAtiva(bp)
+  const passos = await aplicarCom(bp, mapa)
+  const passo = passos.find((p) => p.kind === 'history')
+  assert.equal(passo.status, 'created', `a janela não nasceu: ${passo.message}`)
+
+  const baseCriada = passos.find((p) => p.kind === 'database').resourceId
+  assert.equal(passo.resourceId.split(':')[0], baseCriada, 'a série foi para o Database padrão; a base pedida nasceu vazia')
+
+  // E o conjunto da série está mesmo LÁ DENTRO, com o id do recorder por chave.
+  const { listDatasets } = await import('../dist/databases/store.js')
+  const conjuntos = await listDatasets(DONO, new ObjectId(baseCriada))
+  assert.ok(conjuntos.some((c) => c.key === passo.resourceId.split(':')[1]), 'o conjunto da série não está no Database da proposta')
+})
+
+test('sem destino declarado, a série continua indo para o Database padrão', async () => {
+  // O padrão não muda: quem não escolheu continua achando a série onde sempre esteve.
+  const bp = planoDaJanela()
+  const { mapa } = await comFonteAtiva(bp)
+  const passos = await aplicarCom(bp, mapa)
+  const passo = passos.find((p) => p.kind === 'history')
+  assert.equal(passo.status, 'created')
+  const { ensureDefaultStore } = await import('../dist/databases/migration.js')
+  const padrao = await ensureDefaultStore(DONO)
+  assert.equal(passo.resourceId.split(':')[0], padrao._id.toString())
+})

@@ -98,8 +98,17 @@ export async function ensureDefaultStore(ownerId: string): Promise<DataStore> {
 export async function ensureDatasetForRecorder(
   ownerId: string,
   recorder: { _id: ObjectId; name: string; selectedFields?: string[] | null; occurredAtPath?: string | null },
+  /**
+   * ONDE a série mora, quando quem chama já sabe.
+   *
+   * O padrão continua sendo o Database "Históricos": é onde toda série nasce quando ninguém
+   * escolheu. Mas uma proposta pode dizer "grave em um novo database" — e antes disto ela
+   * criava a base, o motor gravava no padrão, e a base pedida ficava vazia para sempre.
+   */
+  destino?: ObjectId | null,
 ): Promise<{ dataStoreId: ObjectId; datasetKey: string }> {
-  const store = await ensureDefaultStore(ownerId)
+  const store = destino ? await stores.findOne({ _id: destino, ownerId }) : await ensureDefaultStore(ownerId)
+  if (!store) throw new Error('o Database escolhido para a série não existe nesta conta')
   const key = recorder._id.toString()
   const jaExiste = await datasets.findOne({ ownerId, dataStoreId: store._id, key })
   if (jaExiste) return { dataStoreId: store._id, datasetKey: key }
