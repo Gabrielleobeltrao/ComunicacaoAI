@@ -1901,6 +1901,13 @@ function compilarJanela(
       name: `${janela.rules.map((r) => r.to).join(' e ')} de "${janela.rules[0].from}" a cada ${cada}`,
       window: janela,
     })
+    bp.acceptanceTests.push({
+      key: `prova-${janelaKey}`,
+      kind: 'window_field',
+      targetKey: janelaKey,
+      expectation: `"${achado.label}" traz "${janela.rules[0].from}" e ele é um número`,
+      required: true,
+    })
     return
   }
 
@@ -1934,5 +1941,21 @@ function compilarJanela(
     sourceKey: fonteKey,
     name: `${janela.rules.map((r) => r.to).join(' e ')} de "${janela.rules[0].from}" a cada ${cada}`,
     window: janela,
+  })
+
+  /**
+   * A PROVA — leve, e antes de a série entrar no ar.
+   *
+   * Uma leitura da origem responde se a janela tem o que somar. Sem ela, um campo com o nome
+   * errado produz um recorder que roda para sempre sem acumular nada: aplicado, "tudo certo",
+   * e o conjunto vazio. A prova custa milissegundos e é a diferença entre sinal verde e
+   * esperar sem saber.
+   */
+  bp.acceptanceTests.push({
+    key: `prova-${janelaKey}`,
+    kind: 'window_field',
+    targetKey: janelaKey,
+    expectation: `a origem traz "${janela.rules[0].from}" e ele é um número`,
+    required: true,
   })
 }

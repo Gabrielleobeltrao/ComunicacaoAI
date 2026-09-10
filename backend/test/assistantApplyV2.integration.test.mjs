@@ -883,3 +883,105 @@ test('AMEAÇA: origem que não existe mais vira pendência, e não derruba a apl
   assert.match(passo.message, /não existe mais/)
   assert.equal(passos.some((p) => p.status === 'failed'), false)
 })
+
+// --- A PROVA DA JANELA: sinal verde ou vermelho, antes de esperar ----------------------------
+//
+// Do dono: "na hora que eu clicar em aplicar, a gente podia rodar alguma coisa leve pra
+// confirmar que vai funcionar". É exatamente o que faltava — o defeito que ele viveu foi uma
+// janela procurando `preco` numa origem que grava `preco_bitcoin`: recorder criado, motor
+// rodando, conjunto vazio para sempre. Uma leitura da origem responde isso.
+
+const { runAcceptanceTests } = await import('../dist/assistant/acceptance.js')
+
+const comOrigemGravando = async (valor) => {
+  const { criarRecorder } = await import('../dist/dataHistory/recorders.js')
+  const origem = await criarRecorder(DONO, {
+    name: 'Bitcoin',
+    source: { kind: 'manual', ref: 'monitoring:origem-de-teste' },
+    mode: 'every_event',
+    retention: { mode: 'forever' },
+  })
+  await db.collection('data_history_records').insertOne({
+    _id: new ObjectId(),
+    ownerId: DONO,
+    recorderId: origem._id,
+    value: valor,
+    occurredAt: new Date(),
+    recordedAt: new Date(),
+  })
+  const { ensureDatasetForRecorder } = await import('../dist/databases/migration.js')
+  const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(DONO, origem)
+  return { origem, originRef: `${dataStoreId.toString()}:${datasetKey}` }
+}
+
+const planoComProva = (originRef, campo) => {
+  const bp = base()
+  bp.operations.histories = [
+    item({
+      key: 'janela',
+      dependsOn: [],
+      sourceKey: '',
+      originRef,
+      name: 'minimo a cada 5 min',
+      window: { everyMs: 300_000, rules: [{ from: campo, op: 'min', to: 'minimo' }] },
+    }),
+  ]
+  bp.acceptanceTests = [{ key: 'prova', kind: 'window_field', targetKey: 'janela', expectation: 'a origem traz o campo', required: true }]
+  return bp
+}
+
+test('ACEITAÇÃO: com o campo certo, a prova dá SINAL VERDE e mostra o valor lido', async () => {
+  const { originRef } = await comOrigemGravando({ preco_bitcoin: '77131.82' })
+  const bp = planoComProva(originRef, 'preco_bitcoin')
+  const passos = await aplicar(bp)
+  const mapa = new Map(passos.filter((p) => p.resourceId).map((p) => [`${p.kind}:${p.key}`, p.resourceId]))
+
+  const r = await runAcceptanceTests({ ownerId: DONO, blueprint: bp, resourceMap: mapa, operationId: new ObjectId() })
+  const prova = r.find((x) => x.kind === 'window_field')
+  assert.equal(prova.status, 'passed', prova.observed)
+  assert.match(prova.observed, /77131/, 'o sinal verde mostra o valor que ele leu de verdade')
+})
+
+test('AMEAÇA: campo errado dá SINAL VERMELHO, e diz quais campos a origem tem', async () => {
+  /**
+   * O caso exato do dono. Sem esta prova: recorder criado, motor rodando, count subindo,
+   * `acc` vazio, conjunto sem uma linha — e ninguém avisado.
+   */
+  const { originRef } = await comOrigemGravando({ preco_bitcoin: '77131.82' })
+  const bp = planoComProva(originRef, 'preco')
+  const passos = await aplicar(bp)
+  const mapa = new Map(passos.filter((p) => p.resourceId).map((p) => [`${p.kind}:${p.key}`, p.resourceId]))
+
+  const r = await runAcceptanceTests({ ownerId: DONO, blueprint: bp, resourceMap: mapa, operationId: new ObjectId() })
+  const prova = r.find((x) => x.kind === 'window_field')
+  assert.equal(prova.status, 'failed', `a prova passou sobre um campo que não existe: ${prova.observed}`)
+  assert.match(prova.observed, /não traz preco/)
+  assert.match(prova.observed, /preco_bitcoin/, 'sem dizer quais campos existem, ninguém sabe o que corrigir')
+})
+
+test('AMEAÇA: campo que existe mas NÃO é número também reprova', async () => {
+  const { originRef } = await comOrigemGravando({ status: 'ativo' })
+  const bp = planoComProva(originRef, 'status')
+  const passos = await aplicar(bp)
+  const mapa = new Map(passos.filter((p) => p.resourceId).map((p) => [`${p.kind}:${p.key}`, p.resourceId]))
+
+  const r = await runAcceptanceTests({ ownerId: DONO, blueprint: bp, resourceMap: mapa, operationId: new ObjectId() })
+  const prova = r.find((x) => x.kind === 'window_field')
+  assert.equal(prova.status, 'failed')
+  assert.match(prova.observed, /não é número/)
+})
+
+test('sem leitura na origem, a prova fica PENDENTE — ausência de dado não é reprovação', async () => {
+  const { criarRecorder } = await import('../dist/dataHistory/recorders.js')
+  const vazia = await criarRecorder(DONO, { name: 'Nova', source: { kind: 'manual', ref: 'monitoring:sem-dado' }, mode: 'every_event', retention: { mode: 'forever' } })
+  const { ensureDatasetForRecorder } = await import('../dist/databases/migration.js')
+  const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(DONO, vazia)
+
+  const bp = planoComProva(`${dataStoreId.toString()}:${datasetKey}`, 'preco')
+  const passos = await aplicar(bp)
+  const mapa = new Map(passos.filter((p) => p.resourceId).map((p) => [`${p.kind}:${p.key}`, p.resourceId]))
+  const r = await runAcceptanceTests({ ownerId: DONO, blueprint: bp, resourceMap: mapa, operationId: new ObjectId() })
+  const prova = r.find((x) => x.kind === 'window_field')
+  assert.equal(prova.status, 'skipped', 'reprovar por falta de dado seria culpar a fonte de ser nova')
+  assert.match(prova.observed, /ainda não gravou/)
+})

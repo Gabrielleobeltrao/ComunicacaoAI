@@ -384,6 +384,15 @@ export type AcceptanceTestKind =
   | 'database_permission'
   | 'monitor_simulation'
   | 'delivery'
+  /**
+   * A SÉRIE RESUMIDA tem o que somar?
+   *
+   * Uma janela que procura um campo que a origem não grava roda para sempre sem acumular
+   * nada: o recorder existe, o motor passa, e o conjunto fica vazio. Nada quebra e nada
+   * avisa — a pessoa aplica, vê "aplicado", e espera. Uma leitura da origem responde isso
+   * em milissegundos, e responde ANTES de a série entrar no ar.
+   */
+  | 'window_field'
 
 export const ACCEPTANCE_TEST_KINDS: readonly AcceptanceTestKind[] = [
   'source',
@@ -394,6 +403,7 @@ export const ACCEPTANCE_TEST_KINDS: readonly AcceptanceTestKind[] = [
   'database_permission',
   'monitor_simulation',
   'delivery',
+  'window_field',
 ]
 
 /**
