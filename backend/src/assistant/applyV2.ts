@@ -488,6 +488,17 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
         intervalMs: Math.round(w.everyMs),
         persistPolicy: 'aggregate_only',
         aggregations: w.rules.map((r) => ({ from: r.from, op: r.op as never, to: r.to })),
+        /**
+         * OS CAMPOS QUE ESTA SÉRIE GRAVA — declarados, senão ela não pode ser consultada.
+         *
+         * O conjunto de um recorder nasce com o schema que vem daqui. Sem estes nomes ele
+         * nasce sem `properties`, e a tela diz "este dataset não declara campos": as linhas
+         * são gravadas, existem no banco, e não aparecem para ninguém. A DSL de consulta só
+         * permite o que o schema declara — e a condição de um monitor também.
+         *
+         * Quem sabe os nomes é a REGRA da janela: eles são o `to` de cada conta.
+         */
+        selectedFields: w.rules.map((r) => r.to),
         retention: item.retentionDays ? { mode: 'ttl', days: Number(item.retentionDays) } : { mode: 'forever' },
         ...(marcaDe(ctx, key) ? { assistant: marcaDe(ctx, key)! } : {}),
       }))
