@@ -60,10 +60,19 @@ async function serieDeEntrada(
   entityKey: string | null,
   campo: string,
   quantos: number,
+  ate: Date,
 ): Promise<number[]> {
   const registros = await listarRegistros(ownerId, {
     recorderId: origem,
     ...(entityKey !== null ? { entityKey } : {}),
+    // A série PARA no instante do fato que originou a conta.
+    //
+    // Sem o corte, "os últimos N do banco" é o que está lá AGORA — e agora não é o momento do
+    // fato em dois casos. Recalcular o histórico stampava a resposta de hoje em cada linha
+    // antiga: cinco leituras viravam cinco vezes a mesma variação, todas plausíveis e todas
+    // erradas. E um registro que chega atrasado — fila que atrasou, reprocessamento — era
+    // calculado com pontos do FUTURO dele.
+    to: ate,
     limit: quantos,
     order: 'desc',
   })
@@ -92,7 +101,7 @@ export async function calcularDerivados(record: DataHistoryRecord, profundidade 
     // Uma série que deriva de si mesma se realimenta a cada gravação.
     if (!d || alvo._id.equals(record.recorderId)) continue
 
-    const serie = await serieDeEntrada(record.ownerId, d.recorderId, record.entityKey, d.inputField, d.lookback)
+    const serie = await serieDeEntrada(record.ownerId, d.recorderId, record.entityKey, d.inputField, d.lookback, record.occurredAt)
 
     /**
      * DADO INSUFICIENTE é estado degradado, nunca estimativa.

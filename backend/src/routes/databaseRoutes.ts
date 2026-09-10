@@ -18,6 +18,8 @@ import {
 import { resolveDatabaseAccess, assertMutationAllowed } from '../databases/access.js'
 import { AdapterError, runInsert, runQuery } from '../databases/adapters.js'
 import { QueryDslError } from '../databases/queryDsl.js'
+import { criarColunaCalculada, removerColunaCalculada } from '../databases/computedColumns.js'
+import { ValidationError } from '../building.js'
 import { DATABASE_CAPABILITIES } from '../databases/types.js'
 import type { DatabaseCapability } from '../databases/types.js'
 import { migrateHistoriesToDataStores, rollbackHistoryMigration } from '../databases/migration.js'
@@ -51,6 +53,18 @@ const recusa = (res: Parameters<typeof notFound>[0], erro: unknown): boolean => 
   }
   if (erro instanceof AdapterError) {
     res.status(erro.code === 'not_found' ? 404 : 400).json({ code: erro.code, message: erro.message, error: erro.message })
+    return true
+  }
+  /**
+   * A recusa do motor de históricos chega aqui inteira.
+   *
+   * `criarColunaCalculada` valida contra o schema da função e do conjunto, e depois passa por
+   * `criarRecorder`, que valida o resto. As duas usam `ValidationError`, e sem esta linha elas
+   * viravam 500 com HTML: a tela mostrava "erro no servidor" no lugar de "esta função não
+   * devolve esse campo" — a única frase que diz o que corrigir.
+   */
+  if (erro instanceof ValidationError) {
+    res.status(400).json({ code: 'invalid', message: erro.message, error: erro.message })
     return true
   }
   return false
@@ -177,6 +191,8 @@ databaseRouter.get('/:id', async (req, res) => {
         mutability: d.mutability,
         fields: Object.keys((d.schema.properties ?? {}) as object),
         schema: d.schema,
+        // Quais colunas da tabela são CONTA, e não dado gravado pela fonte.
+        computedColumns: (d.computedColumns ?? []).map((c) => ({ name: c.name, functionName: c.functionName, version: c.version, outputField: c.outputField })),
         // DE ONDE VEM e COM QUE REGRA. Sem isto, o conjunto é uma tabela sem procedência: dá
         // para ver o que foi gravado e não dá para saber quem gravou, de onde, nem de quanto
         // em quanto tempo — que é a pergunta seguinte de quem olha um número.
@@ -219,7 +235,18 @@ databaseRouter.get('/:id/datasets', async (req, res) => {
   const id = oid(String(req.params.id))
   if (!id || !(await getDataStore(res.locals.userId, id))) return notFound(res)
   const datasets = await listDatasets(res.locals.userId, id)
-  res.json({ items: datasets.map((d) => ({ key: d.key, name: d.name, mutability: d.mutability, schema: d.schema, timeField: d.timeField ?? null })) })
+  res.json({
+    items: datasets.map((d) => ({
+      key: d.key,
+      name: d.name,
+      mutability: d.mutability,
+      schema: d.schema,
+      timeField: d.timeField ?? null,
+      // A tela precisa saber quais colunas da tabela são CONTA e não dado gravado pela fonte:
+      // sem isso, a variação apareceria ao lado do preço como se tivesse vindo da mesma origem.
+      computedColumns: (d.computedColumns ?? []).map((c) => ({ name: c.name, functionName: c.functionName, version: c.version, outputField: c.outputField })),
+    })),
+  })
 })
 
 databaseRouter.post('/:id/datasets', async (req, res, next) => {
@@ -265,6 +292,45 @@ databaseRouter.delete('/:id/datasets/:key', async (req, res) => {
   if (!id || !(await getDataStore(res.locals.userId, id))) return notFound(res)
   if (!(await deleteDataset(res.locals.userId, id, String(req.params.key)))) return notFound(res)
   res.status(204).end()
+})
+
+// --- colunas calculadas ----------------------------------------------------------------------
+//
+// A conta que o conjunto passa a guardar. O motor é o de `derivedFrom`, que já existia; o que
+// estas duas rotas dão é o caminho para criar uma sem passar pelo Assistente.
+
+databaseRouter.post('/:id/datasets/:key/columns', async (req, res, next) => {
+  const id = oid(String(req.params.id))
+  if (!id) return notFound(res)
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const coluna = await criarColunaCalculada(res.locals.userId, id, String(req.params.key), {
+      name: String(body.name ?? ''),
+      functionName: String(body.functionName ?? ''),
+      version: typeof body.version === 'string' ? body.version : undefined,
+      inputField: String(body.inputField ?? ''),
+      inputArg: String(body.inputArg ?? ''),
+      lookback: Number(body.lookback ?? 0),
+      outputField: String(body.outputField ?? ''),
+      params: body.params && typeof body.params === 'object' && !Array.isArray(body.params) ? (body.params as Record<string, unknown>) : {},
+    })
+    res.status(201).json({ name: coluna.name, functionName: coluna.functionName, version: coluna.version, outputField: coluna.outputField })
+  } catch (erro) {
+    if (recusa(res, erro)) return
+    next(erro as Error)
+  }
+})
+
+databaseRouter.delete('/:id/datasets/:key/columns/:name', async (req, res, next) => {
+  const id = oid(String(req.params.id))
+  if (!id) return notFound(res)
+  try {
+    if (!(await removerColunaCalculada(res.locals.userId, id, String(req.params.key), String(req.params.name)))) return notFound(res)
+    res.status(204).end()
+  } catch (erro) {
+    if (recusa(res, erro)) return
+    next(erro as Error)
+  }
 })
 
 // --- consulta e escrita ----------------------------------------------------------------------

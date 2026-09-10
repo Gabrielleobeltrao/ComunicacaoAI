@@ -80,7 +80,7 @@ after(async () => {
 
 let cena
 beforeEach(async () => {
-  for (const c of ['data_stores', 'dataset_definitions', 'data_store_grants', 'data_store_query_log', 'data_history_records', 'market_candles', 'agents', 'sectors', 'offices', 'buildings']) {
+  for (const c of ['data_stores', 'dataset_definitions', 'data_store_grants', 'data_store_query_log', 'data_history_records', 'market_candles', 'agents', 'sectors', 'offices', 'buildings', 'data_recorders', 'execution_roots']) {
     await db.collection(c).deleteMany({})
   }
   sessao = DONO
@@ -631,4 +631,119 @@ test('AMEAÇA: um schema que ALGUÉM declarou não é sobrescrito', async () => 
   await completarConjuntosSemCampos()
   const d = (await listDatasets(DONO, store._id)).find((x) => x.key === 'meu_conjunto')
   assert.deepEqual(Object.keys(d.schema.properties), ['escolhido'], 'a varredura só preenche o vazio')
+})
+
+// --- a coluna calculada ---------------------------------------------------------------------
+//
+// "Não são essas funções? quero o mesmo no database." As trinta e poucas funções do registro
+// só alcançavam o agente e o Flow: um conjunto com preço mínimo e máximo a cada dez minutos
+// não tinha como ganhar uma terceira coluna com a variação — a conta estava pronta e não
+// chegava no dado.
+//
+// O motor é o de `derivedFrom`, que já existia. O que estes casos prendem é o que faltava:
+// criar sem passar pelo Assistente, aparecer como COLUNA da tabela de origem, e preencher o
+// histórico que já estava lá.
+
+const PRECOS = [100, 102, 101, 104, 110]
+
+/** Cinco leituras, uma por minuto, da mais antiga para a mais nova. */
+const cincoLeituras = async () => {
+  const base = Date.UTC(2026, 0, 1, 12, 0, 0)
+  for (const [i, preco] of PRECOS.entries()) await inserirRegistro({ ticker: 'PETR4', preco }, new Date(base + i * 60_000))
+}
+
+const colunaDeVariacao = (extra = {}) => ({
+  name: 'variacao',
+  functionName: 'math.serie',
+  inputField: 'preco',
+  inputArg: 'values',
+  lookback: 3,
+  outputField: 'variacaoPercentual',
+  ...extra,
+})
+
+test('ACEITAÇÃO: a coluna calculada nasce, PREENCHE o histórico e aparece na consulta', async () => {
+  await cincoLeituras()
+  const r = await pedir('POST', `/api/databases/${cena.store._id}/datasets/ordens/columns`, colunaDeVariacao())
+  assert.equal(r.status, 201, JSON.stringify(r.body))
+  assert.equal(r.body.name, 'variacao')
+
+  const q = await pedir('POST', `/api/databases/${cena.store._id}/datasets/ordens/query`, { limit: 10 })
+  assert.equal(q.status, 200, JSON.stringify(q.body))
+  const linhas = [...q.body.rows].reverse() // a consulta vem do mais novo para o mais antigo
+
+  // As duas primeiras leituras não têm três pontos para trás: a célula fica AUSENTE, que é a
+  // verdade. Um zero ali seria uma queda de 100% que nunca aconteceu.
+  assert.equal(linhas[0].variacao, undefined, 'a primeira linha não tem passado suficiente')
+  assert.equal(linhas[1].variacao, undefined)
+
+  // 100 → 101 nos três últimos pontos da terceira linha: +1%.
+  assert.equal(typeof linhas[2].variacao, 'number', `a terceira linha já tem três pontos: ${JSON.stringify(linhas[2])}`)
+  assert.ok(Math.abs(linhas[2].variacao - 1) < 0.001, `esperava +1%, veio ${linhas[2].variacao}`)
+  // 101 → 110: +8,91%.
+  assert.ok(Math.abs(linhas[4].variacao - 8.91) < 0.01, `esperava +8,91%, veio ${linhas[4].variacao}`)
+
+  // E o dado da fonte continua inteiro ao lado da conta.
+  assert.equal(linhas[4].preco, 110)
+  assert.equal(linhas[4].ticker, 'PETR4')
+})
+
+test('a listagem DIZ quais colunas são conta — a tela não pode confundir com dado da fonte', async () => {
+  await cincoLeituras()
+  await pedir('POST', `/api/databases/${cena.store._id}/datasets/ordens/columns`, colunaDeVariacao())
+  const r = await pedir('GET', `/api/databases/${cena.store._id}/datasets`)
+  const ds = r.body.items.find((d) => d.key === 'ordens')
+  assert.deepEqual(ds.computedColumns, [{ name: 'variacao', functionName: 'math.serie', version: '1.0.0', outputField: 'variacaoPercentual' }])
+})
+
+test('AMEAÇA: uma coluna com o nome de um campo do conjunto é RECUSADA', async () => {
+  // Aceitar sobrescreveria o preço gravado pela fonte na hora de montar a linha: o valor real
+  // sumiria da tela e ninguém procuraria a causa numa coluna que "só acrescenta".
+  const r = await pedir('POST', `/api/databases/${cena.store._id}/datasets/ordens/columns`, colunaDeVariacao({ name: 'preco' }))
+  assert.equal(r.status, 400)
+  assert.match(r.body.message ?? r.body.error ?? '', /já é um campo/i)
+})
+
+test('AMEAÇA: função, campo, argumento e saída inventados são recusados — cada um com a lista', async () => {
+  const casos = [
+    [colunaDeVariacao({ functionName: 'math.inventada' }), /não está registrada/i],
+    [colunaDeVariacao({ inputField: 'volume' }), /não é um campo deste conjunto/i],
+    [colunaDeVariacao({ inputArg: 'numeros' }), /não é um argumento/i],
+    [colunaDeVariacao({ outputField: 'desvio' }), /não devolve/i],
+    [colunaDeVariacao({ name: 'Variação!' }), /comece com letra/i],
+  ]
+  for (const [corpo, esperado] of casos) {
+    const r = await pedir('POST', `/api/databases/${cena.store._id}/datasets/ordens/columns`, corpo)
+    assert.equal(r.status, 400, `${JSON.stringify(corpo)} devia ser recusado: ${JSON.stringify(r.body)}`)
+    assert.match(r.body.message ?? r.body.error ?? '', esperado)
+  }
+  const q = await pedir('GET', `/api/databases/${cena.store._id}/datasets`)
+  assert.deepEqual(q.body.items.find((d) => d.key === 'ordens').computedColumns, [], 'nenhuma recusa pode ter deixado coluna pela metade')
+})
+
+test('AMEAÇA: a mesma coluna duas vezes é recusada — duas séries gravariam a mesma conta', async () => {
+  await cincoLeituras()
+  assert.equal((await pedir('POST', `/api/databases/${cena.store._id}/datasets/ordens/columns`, colunaDeVariacao())).status, 201)
+  const r = await pedir('POST', `/api/databases/${cena.store._id}/datasets/ordens/columns`, colunaDeVariacao())
+  assert.equal(r.status, 400)
+  assert.match(r.body.message ?? r.body.error ?? '', /já existe uma coluna/i)
+})
+
+test('remover a coluna tira ela da tabela — e NÃO apaga o que a conta já apurou', async () => {
+  await cincoLeituras()
+  await pedir('POST', `/api/databases/${cena.store._id}/datasets/ordens/columns`, colunaDeVariacao())
+  const antes = await db.collection('data_history_records').countDocuments({ ownerId: DONO })
+  assert.ok(antes > PRECOS.length, 'a conta gravou linhas próprias')
+
+  assert.equal((await pedir('DELETE', `/api/databases/${cena.store._id}/datasets/ordens/columns/variacao`)).status, 204)
+  const q = await pedir('POST', `/api/databases/${cena.store._id}/datasets/ordens/query`, { limit: 10 })
+  assert.ok(q.body.rows.every((l) => l.variacao === undefined), 'a coluna saiu da tabela')
+  assert.equal(await db.collection('data_history_records').countDocuments({ ownerId: DONO }), antes, 'tirar a coluna não é apagar histórico')
+})
+
+test('AMEAÇA: o conjunto do vizinho não ganha coluna nenhuma', async () => {
+  sessao = VIZINHO
+  const r = await pedir('POST', `/api/databases/${cena.store._id}/datasets/ordens/columns`, colunaDeVariacao())
+  assert.ok(r.status === 404 || r.status === 403, `esperava recusa, veio ${r.status}`)
+  sessao = DONO
 })
