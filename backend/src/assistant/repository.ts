@@ -101,6 +101,15 @@ export interface AssistantProject {
    */
   previousBlueprint?: OfficeBlueprintV1 | null
   /**
+   * O mesmo, do lado V2 — e sem ele metade da comparação é cega.
+   *
+   * Base, conjunto, fonte e janela vivem só aqui. Enquanto só o V1 era guardado, uma
+   * revisão que trocava o tamanho da janela ou acrescentava um campo ao conjunto não tinha
+   * com o que ser comparada, e a tela de mudanças ficava vazia. Ausente nos projetos que
+   * já existiam, com o mesmo sentido de sempre: não há o que comparar.
+   */
+  previousBlueprintV2?: OfficeBlueprintV2 | null
+  /**
    * O último ensaio da operação — cenários e resultados, versionados.
    *
    * Guardado no projeto para poder ser COMPARADO entre revisões: "o que quebrou desde a

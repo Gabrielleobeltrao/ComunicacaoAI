@@ -171,3 +171,66 @@ test('AMEAÇA: o tamanho da janela nunca é arredondado para outro número', () 
   ]
   for (const [ms, esperado] of casos) assert.equal(tamanhoDaJanela(ms), esperado, `${ms}ms`)
 })
+
+// --- O PLANO QUE SÓ EXISTE NO V2 -------------------------------------------------------------
+//
+// Da conta do dono, quatro rodadas seguidas: o texto do modelo descrevendo a base nascendo
+// ("Uma nova base de dados de histórico", "Um conjunto dentro dessa base", "Uma janela de
+// consolidação"), e logo abaixo, escrito pelo servidor, **Nada mudou na proposta nesta
+// rodada.** Base, conjunto, fonte e janela vivem só no V2, e o diff só conhecia o V1.
+//
+// É o defeito que esta suíte inteira existe para impedir, com os papéis invertidos: aqui o
+// modelo estava certo e o servidor é que contava outra história.
+
+const { diffBlueprints } = await import('../dist/assistant/diff.js')
+
+const v1Vazio = { version: 1, title: 'X', objective: 'Y', floors: [], agents: [], sectors: [], routines: [], appRequirements: [], knowledgeRequirements: [] }
+
+const v2Com = (over) => ({
+  version: 2,
+  organization: { floors: [], sectors: [], agents: [] },
+  resources: { knowledge: [], memoryPolicies: [], appRequirements: [], databases: [], datasets: [], tools: [] },
+  operations: { channels: [], sources: [], liveDestinations: [], histories: [], monitors: [], flows: [], routines: [], deliveries: [] },
+  ...over,
+})
+
+test('a base, o conjunto e a janela que só existem no V2 ENTRAM no que mudou', () => {
+  const depois = v2Com({
+    resources: { knowledge: [], memoryPolicies: [], appRequirements: [], tools: [], databases: [{ key: 'base-x', action: 'create', name: 'Histórico consolidado' }], datasets: [{ key: 'conj-x', action: 'create', name: 'Consolidado 10min' }] },
+    operations: { channels: [], sources: [], liveDestinations: [], monitors: [], flows: [], routines: [], deliveries: [], histories: [{ key: 'jan-x', action: 'create', name: 'minimo e maximo a cada 10 min' }] },
+  })
+  const m = diffBlueprints(v1Vazio, v1Vazio, { antes: v2Com({}), depois })
+  assert.deepEqual(
+    m.map((x) => `${x.kind}:${x.change}:${x.label}`).sort(),
+    ['database:added:Histórico consolidado', 'dataset:added:Consolidado 10min', 'history:added:minimo e maximo a cada 10 min'],
+  )
+  assert.match(resumoDaMudanca(m, []), /Criei/)
+})
+
+test('AMEAÇA: reaproveitar NÃO é criar — a base que já existia fica de fora', () => {
+  const depois = v2Com({
+    resources: { knowledge: [], memoryPolicies: [], appRequirements: [], tools: [], datasets: [], databases: [{ key: 'base-historicos', action: 'reuse', name: 'Históricos' }] },
+  })
+  const m = diffBlueprints(v1Vazio, v1Vazio, { antes: v2Com({}), depois })
+  assert.deepEqual(m, [], '"Criei: Históricos" manda a pessoa procurar uma base duplicada que ela não tem')
+})
+
+test('`null` de qualquer lado é "não há o que comparar" — e o chat passa o escritório VAZIO', () => {
+  const depois = { ...v1Vazio, agents: [{ key: 'a1', name: 'Marina', action: 'create' }] }
+  // A TELA de mudanças compara duas revisões: na primeira proposta não existe a anterior.
+  assert.deepEqual(diffBlueprints(null, depois), [])
+  assert.deepEqual(diffBlueprints(v1Vazio, null), [])
+  assert.deepEqual(diffBlueprints(null, null, { antes: v2Com({}), depois: null }), [])
+  assert.deepEqual(diffBlueprints(v1Vazio, v1Vazio, { antes: null, depois: v2Com({}) }), [])
+  // O RESUMO DA CONVERSA passa o vazio, porque era isso que a conta tinha.
+  assert.deepEqual(diffBlueprints(v1Vazio, depois).map((x) => `${x.change}:${x.label}`), ['added:Marina'])
+})
+
+test('a janela que teve o tamanho trocado aparece como ALTERADA, e diz o campo', () => {
+  const janela = (everyMs) =>
+    v2Com({ operations: { channels: [], sources: [], liveDestinations: [], monitors: [], flows: [], routines: [], deliveries: [], histories: [{ key: 'jan-x', action: 'create', name: 'a série', window: { everyMs, rules: [] } }] } })
+  const m = diffBlueprints(v1Vazio, v1Vazio, { antes: janela(300_000), depois: janela(600_000) })
+  assert.equal(m.length, 1)
+  assert.equal(m[0].change, 'changed')
+  assert.ok(m[0].fields.length > 0, 'trocar 5 min por 10 min sem dizer o que mudou é a revisão invisível')
+})
