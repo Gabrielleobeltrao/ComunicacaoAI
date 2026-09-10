@@ -1220,6 +1220,50 @@ test('AMEAÇA: janela declarada sem tamanho, sem campo ou com conta inventada N�
   }
 })
 
+test('ACEITAÇÃO: a janela declarada entra mesmo quando NENHUM trabalho a menciona', () => {
+  // O caso do dono: a ferramenta foi chamada, o executor aceitou, e o plano saiu sem série.
+  // O casamento com o trabalho é por proximidade de texto — "resumo do mercado" não contém
+  // "Bitcoin" nem "preco_bitcoin" —, e o que não casava era descartado calado. A ferramenta
+  // já validou contra o inventário; quem declara a origem é ela.
+  const { blueprint } = c2.compileBriefV2({
+    brief: briefLivre('Guardar o resumo do mercado', 'Cotação'),
+    manifest: manifesto(),
+    inventory: fonteChamada('Bitcoin', 'preco_bitcoin, ts'),
+    base: { title: 'X', objective: 'Y' },
+    windows: [{ source: 'Bitcoin', field: 'preco_bitcoin', everyMs: 600_000, ops: ['min', 'max'] }],
+  })
+  const janelas = blueprint.operations.histories.filter((h) => h.window)
+  assert.equal(janelas.length, 1, 'a janela declarada tem de entrar no plano — e uma só vez')
+  assert.equal(janelas[0].window.everyMs, 600_000)
+  assert.deepEqual(janelas[0].window.rules.map((r) => `${r.from}:${r.to}`).sort(), ['preco_bitcoin:maximo', 'preco_bitcoin:minimo'])
+})
+
+test('a janela reclamada por um trabalho NÃO nasce duas vezes por causa da varredura', () => {
+  const { blueprint } = c2.compileBriefV2({
+    brief: briefLivre('Guardar o mínimo e o máximo de leitura a cada 5 minutos', 'Sensor'),
+    manifest: manifesto(),
+    inventory: fonteChamada('Sensor', 'leitura, lido_em'),
+    base: { title: 'X', objective: 'Y' },
+    windows: [{ source: 'Sensor', field: 'leitura', everyMs: 300_000, ops: ['min', 'max'] }],
+  })
+  assert.equal(blueprint.operations.histories.filter((h) => h.window).length, 1)
+})
+
+test('AMEAÇA: a varredura respeita a origem — campo que a fonte não tem vira pendência, não série', () => {
+  const { blueprint, pending } = c2.compileBriefV2({
+    brief: briefLivre('Guardar o resumo do mercado', 'Cotação'),
+    manifest: manifesto(),
+    inventory: fonteChamada('Bitcoin', 'preco_bitcoin, ts'),
+    base: { title: 'X', objective: 'Y' },
+    windows: [{ source: 'Bitcoin', field: 'volume_negociado', everyMs: 600_000, ops: ['min'] }],
+  })
+  assert.equal(blueprint.operations.histories.some((h) => h.window), false, 'uma janela sobre campo inexistente acumularia nada, para sempre')
+  assert.ok(
+    pending.some((p) => p.kind === 'window_field' && /volume_negociado/.test(p.because) && /preco_bitcoin/.test(p.because)),
+    `a recusa tem de dizer o que falta e o que existe: ${JSON.stringify(pending)}`,
+  )
+})
+
 test('sem nada declarado, a regex continua valendo — nada do que funcionava se perdeu', () => {
   const { blueprint } = c2.compileBriefV2({
     brief: briefLivre('Guardar o mínimo e o máximo de temperatura a cada 10 minutos', 'Sensor'),
