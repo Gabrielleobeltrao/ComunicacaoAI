@@ -499,7 +499,13 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
      * criar ficava vazia para sempre — "apliquei e só foi criado o database". Duas partes
      * decidindo onde o dado mora, sem se falarem.
      */
-    const destino = item.datasetKey ? (idDe('dataset', String(item.datasetKey)) ?? '').split(':')[0] : ''
+    // O destino é o DATABASE: quem define a forma das linhas é a regra da janela, e o
+    // conjunto dela nasce com os campos que o motor realmente grava.
+    const destino = item.databaseKey
+      ? (idDe('database', String(item.databaseKey)) ?? '')
+      : item.datasetKey
+        ? (idDe('dataset', String(item.datasetKey)) ?? '').split(':')[0]
+        : ''
     const { ensureDatasetForRecorder } = await import('../databases/migration.js')
     const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(
       ownerId,

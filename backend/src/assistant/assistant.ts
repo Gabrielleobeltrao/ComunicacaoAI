@@ -305,7 +305,18 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   try {
     const { advanceTurn } = await import('./service.js')
     const r = await advanceTurn(input.ownerId, projeto._id)
-    return { intent, phase: 'done', text: r.assistantText, question: (r.question as typeof question) ?? question, projectId: projeto._id.toString(), context }
+    /**
+     * A PERGUNTA DAQUI É TEXTO, e a da rodada do projeto é um OBJETO.
+     *
+     * Um `as` fez as duas caberem no mesmo campo, e o TypeScript calou. A tela recebeu
+     * `{key, text, why, choices, allowUnknown}` onde esperava uma frase, tentou renderizar o
+     * objeto, e quebrou inteira — em TODA primeira mensagem: "Algo quebrou ao renderizar a
+     * tela", React #31.
+     *
+     * A pergunta com botões já é gravada no projeto como `pendingQuestion`, e é de lá que a
+     * tela a lê. Aqui não há o que reencaminhar: o que sai é o texto, e só.
+     */
+    return { intent, phase: 'done', text: r.assistantText, question, projectId: projeto._id.toString(), context }
   } catch {
     /**
      * O "JÁ VOLTO" — só quando a primeira rodada FALHA.
