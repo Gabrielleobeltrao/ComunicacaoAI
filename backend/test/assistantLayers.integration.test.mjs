@@ -411,3 +411,57 @@ test('AMEAÇA: com o V2 só reaproveitando, continua sendo proposta vazia', asyn
   assert.ok(r.issues.some((i) => i.code === 'nothing_to_apply'))
   assert.equal((await repo.getProject(DONO, p._id)).status, 'draft')
 })
+
+// --- A PRÉVIA DIZ O QUE O ITEM FAZ ------------------------------------------------------------
+//
+// Do dono, lendo a própria proposta: "onde está a parte do motor que vai entender e separar os
+// valores para salvar de forma correta?". Ele estava no plano — a prévia é que o chamava de
+// outra coisa: todo histórico saía descrito como "a série que dá o antes, sem ela uma borda não
+// existe", que é a frase da série de VIGILÂNCIA.
+
+const V2_COM_JANELA = (andarId) => {
+  const bp = V2_QUE_CRIA(andarId)
+  bp.operations.sources = [
+    { key: 'fonte', action: 'reuse', resourceId: '000000000000000000000501', layer: 'essential', rationale: 'já existe', dependsOn: [], name: 'Sensor', kind: 'api_polling', config: {}, mapping: { version: 1, fields: [] }, cadence: { mode: 'interval', intervalMs: 60_000 } },
+  ]
+  bp.operations.histories = [
+    {
+      key: 'janela',
+      action: 'create',
+      layer: 'essential',
+      rationale: 'resume por janela',
+      dependsOn: ['fonte'],
+      sourceKey: 'fonte',
+      name: 'minimo e maximo a cada 5 min',
+      window: { everyMs: 300_000, rules: [{ from: 'temperatura', op: 'min', to: 'minimo' }, { from: 'temperatura', op: 'max', to: 'maximo' }] },
+    },
+  ]
+  return bp
+}
+
+test('ACEITAÇÃO: a prévia da série resumida DIZ quem faz a conta, e sobre qual campo', async () => {
+  const andar = await andarReal()
+  const p = await projetoCom(SO_ANDAR(andar), { blueprintVersion: 2, blueprintV2: V2_COM_JANELA(andar), status: 'draft' })
+  const previa = await service.previewProject(DONO, p._id)
+  const item = (previa.items ?? []).find((i) => i.kind === 'history')
+  assert.ok(item, `a janela não aparece na prévia: ${JSON.stringify((previa.items ?? []).map((i) => i.kind))}`)
+
+  // O que o dono procurava e não achava: o tamanho da janela, as contas e o campo.
+  assert.match(item.detail, /5 min/)
+  assert.match(item.detail, /minimo e maximo/)
+  assert.match(item.detail, /temperatura/)
+  assert.match(item.detail, /motor/, 'sem dizer quem faz a conta, o dono procura uma função que não existe')
+  assert.match(item.detail, /sem função a cadastrar/)
+  // E a frase da vigilância NÃO pode aparecer aqui: ela descreve outra coisa.
+  assert.doesNotMatch(item.detail, /uma borda não existe/)
+})
+
+test('a série de vigilância continua com a frase dela — o detalhe é do item, não da categoria', async () => {
+  const andar = await andarReal()
+  const bp = V2_COM_JANELA(andar)
+  delete bp.operations.histories[0].window
+  const p = await projetoCom(SO_ANDAR(andar), { blueprintVersion: 2, blueprintV2: bp, status: 'draft' })
+  const previa = await service.previewProject(DONO, p._id)
+  const item = (previa.items ?? []).find((i) => i.kind === 'history')
+  assert.match(item.detail, /uma borda não existe/)
+})

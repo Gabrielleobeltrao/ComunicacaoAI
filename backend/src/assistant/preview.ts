@@ -1,4 +1,5 @@
 import { computeBlueprintHash } from './blueprint.js'
+import { tamanhoDaJanela } from './diff.js'
 import { deriveChecklist, applyChecklistState, computeReadiness } from './checklist.js'
 import { validateOfficeBlueprint } from './validate.js'
 import type { BlueprintOwnershipContext, BlueprintIssue } from './validate.js'
@@ -88,12 +89,44 @@ export interface AssistantPreview {
 /** Um item de prévia para cada recurso e operação do plano V2, na ordem em que aparecem. */
 function itensDoV2(v2: OfficeBlueprintV2 | null | undefined): PreviewItem[] {
   if (!v2) return []
-  const blocos: [PreviewItem['kind'], { key: string; name?: string; alias?: string; action: string; rationale?: string; dependsOn?: string[] }[], string][] = [
+  /**
+   * O DETALHE descreve O QUE AQUELE ITEM FAZ — não a categoria dele.
+   *
+   * Todo histórico era descrito como "a série que dá o antes, sem ela uma borda não existe":
+   * a frase da série de VIGILÂNCIA. Para uma série resumida por janela ela não diz nada sobre
+   * mínimo, máximo, tamanho da janela, nem sobre quem faz a conta — e o dono, lendo a
+   * proposta, perguntou: "onde está a parte do motor que vai entender e separar os valores?".
+   *
+   * Ele estava no plano. A prévia é que o chamava de outra coisa.
+   */
+  type ItemDaPrevia = {
+    key: string
+    name?: string
+    alias?: string
+    action: string
+    rationale?: string
+    dependsOn?: string[]
+    window?: { everyMs: number; rules: { from: string; op: string; to: string }[] } | null
+    derive?: { functionName: string; outputField: string } | null
+  }
+  const blocos: [PreviewItem['kind'], ItemDaPrevia[], string | ((item: ItemDaPrevia) => string)][] = [
     ['database', v2.resources.databases, 'Onde este dado fica guardado.'],
     ['dataset', v2.resources.datasets, 'O conjunto com os campos declarados.'],
     ['tool', v2.resources.tools, 'Uma ferramenta própria. Endpoint e schema ficam pendentes.'],
     ['source', v2.operations.sources, 'De onde o dado chega. Nasce parada: ativa só depois de testar.'],
-    ['history', v2.operations.histories, 'A série que dá o "antes" — sem ela, uma borda não existe.'],
+    [
+      'history',
+      v2.operations.histories,
+      (h) => {
+        if (h.window?.rules?.length) {
+          const contas = h.window.rules.map((r) => r.to).join(' e ')
+          const campo = h.window.rules[0].from
+          return `O motor fecha cada janela de ${tamanhoDaJanela(h.window.everyMs)} e grava UMA linha com ${contas} de "${campo}". A conta é determinística e roda no motor de Históricos — sem função a cadastrar e sem modelo no caminho.`
+        }
+        if (h.derive) return `Uma série calculada de outra: ${h.derive.outputField} sai de ${h.derive.functionName}, com a versão fixada no plano.`
+        return 'A série que dá o "antes" — sem ela, uma borda não existe.'
+      },
+    ],
     ['live', v2.operations.liveDestinations, 'O valor de agora, consultável por quem receber acesso.'],
     ['monitor', v2.operations.monitors, 'A regra que reconhece a transição. Nasce rascunho.'],
     ['flow', v2.operations.flows, 'O que acontece quando a regra bate. Nasce rascunho.'],
@@ -103,12 +136,13 @@ function itensDoV2(v2: OfficeBlueprintV2 | null | undefined): PreviewItem[] {
   const saida: PreviewItem[] = []
   for (const [kind, lista, detalhe] of blocos) {
     for (const item of lista ?? []) {
+      const texto = typeof detalhe === 'function' ? detalhe(item) : detalhe
       saida.push({
         kind,
         key: item.key,
         label: item.name ?? item.alias ?? item.key,
         action: (item.action === 'reuse' || item.action === 'update' ? item.action : 'create') as PreviewItem['action'],
-        detail: detalhe,
+        detail: texto,
         ...(item.rationale?.trim() ? { rationale: item.rationale } : {}),
         dependsOn: item.dependsOn ?? [],
         usesLlm: false,
