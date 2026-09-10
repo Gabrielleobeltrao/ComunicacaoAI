@@ -772,6 +772,24 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
       // ontem e o gráfico mudar sem que nada registre a mudança.
       mutability: 'append_only',
     })
+
+    /**
+     * A SÉRIE RESUMIDA PASSA A MORAR AQUI.
+     *
+     * A janela nasce no mesmo Brief que este registro: "grave em um novo database o máximo e
+     * o mínimo a cada 5 minutos" é uma frase só. Sem esta linha, o plano criava a base, o
+     * motor gravava no Database padrão, e a base pedida ficava vazia para sempre — que é
+     * exatamente o "apliquei e só foi criado o database".
+     *
+     * Só a janela que ainda não tem destino: uma já ligada não é realocada por um registro
+     * que apareceu depois.
+     */
+    for (const h of bp.operations.histories) {
+      if (h.window && !h.datasetKey) {
+        h.datasetKey = `conjunto-${raiz}`
+        h.dependsOn = [...new Set([...(h.dependsOn ?? []), `conjunto-${raiz}`])]
+      }
+    }
     bp.acceptanceTests.push({
       key: `teste-${dbKey}`,
       kind: 'database_permission',

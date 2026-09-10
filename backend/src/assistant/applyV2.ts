@@ -474,8 +474,20 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
         ...(marcaDe(ctx, key) ? { assistant: marcaDe(ctx, key)! } : {}),
       }))
 
+    /**
+     * A SÉRIE MORA ONDE A PROPOSTA DISSE.
+     *
+     * Sem isto o motor gravava sempre no Database padrão, e a base que o plano acabara de
+     * criar ficava vazia para sempre — "apliquei e só foi criado o database". Duas partes
+     * decidindo onde o dado mora, sem se falarem.
+     */
+    const destino = item.datasetKey ? (idDe('dataset', String(item.datasetKey)) ?? '').split(':')[0] : ''
     const { ensureDatasetForRecorder } = await import('../databases/migration.js')
-    const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(ownerId, recorder)
+    const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(
+      ownerId,
+      recorder,
+      destino && ObjectId.isValid(destino) ? new ObjectId(destino) : null,
+    )
     const { tamanhoDaJanela } = await import('./diff.js')
     return {
       id: `${dataStoreId.toString()}:${datasetKey}`,
