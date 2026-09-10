@@ -213,3 +213,34 @@ export async function rollbackHistoryMigration(ownerId: string): Promise<{ remov
   if (sobrou === 0) await stores.deleteOne({ _id: store._id })
   return { removedDatasets: daMigracao.length, removedStore: sobrou === 0 }
 }
+
+
+/**
+ * OS CONJUNTOS MUDOS — completados no boot, uma vez.
+ *
+ * Uma série resumida criada antes de o motor declarar os campos ficou com schema sem
+ * `properties`: as linhas eram gravadas, existiam no banco, e a tela dizia "este dataset não
+ * declara campos". A consulta só permite o que o schema declara, então o dado ficava
+ * invisível para quem o pediu.
+ *
+ * `ensureDatasetForRecorder` só roda ao aplicar ou ao materializar a fonte — nada o chama ao
+ * abrir a tela. Sem esta varredura, a única saída seria reaplicar o plano, e ninguém deveria
+ * precisar reaplicar para ver o que já foi gravado.
+ *
+ * Só o VAZIO é preenchido, e só a partir do que o próprio recorder declara. Um schema que
+ * alguém escreveu manda; um recorder que não sabe os nomes não inventa nenhum.
+ */
+export async function completarConjuntosSemCampos(): Promise<number> {
+  const { obterRecorder } = await import('../dataHistory/recorders.js')
+  let corrigidos = 0
+  const mudos = await datasets.find({ $or: [{ 'schema.properties': { $exists: false } }, { 'schema.properties': {} }] }).limit(500).toArray()
+  for (const d of mudos) {
+    if (!ObjectId.isValid(d.key)) continue // a chave de uma série é o id do recorder que a alimenta
+    const r = await obterRecorder(d.ownerId, new ObjectId(d.key))
+    const campos = r?.selectedFields?.length ? r.selectedFields : (r?.aggregations ?? []).map((a) => a.to).filter(Boolean)
+    if (!campos?.length) continue
+    await datasets.updateOne({ _id: d._id }, { $set: { schema: schemaDoRecorder(campos), updatedAt: new Date() } })
+    corrigidos += 1
+  }
+  return corrigidos
+}
