@@ -584,3 +584,51 @@ test('AMEAÇA: nem um campo chamado "rowId" rouba a identidade da linha', async 
   assert.match(String(r.rows[0].rowId), /^[a-f0-9]{24}$/, 'o campo do schema virou a identidade da linha')
   assert.equal((await runDelete({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', rowId: String(r.rows[0].rowId) })).deleted, 1)
 })
+
+// --- CONJUNTOS MUDOS, COMPLETADOS NO BOOT ----------------------------------------------------
+//
+// Do dono: "parece que já atualizou a produção porém ainda não mudou nada na tela". A linha
+// estava gravada e o conjunto dizia "este dataset não declara campos" — e a correção anterior
+// só valia ao APLICAR, porque nada chama o materializador ao abrir a tela. Reaplicar um plano
+// para ver o que já está no banco não é conserto: é pedir desculpa com trabalho.
+
+test('ACEITAÇÃO: uma série que grava e não declara campos passa a declarar', async () => {
+  const { criarRecorder } = await import('../dist/dataHistory/recorders.js')
+  const { ensureDatasetForRecorder, completarConjuntosSemCampos } = await import('../dist/databases/migration.js')
+  const { listDatasets } = await import('../dist/databases/store.js')
+
+  const r = await criarRecorder(DONO, {
+    name: 'minimo e maximo a cada 5 min',
+    source: { kind: 'manual', ref: 'monitoring:boot' },
+    mode: 'window_aggregate',
+    intervalMs: 300_000,
+    persistPolicy: 'aggregate_only',
+    aggregations: [{ from: 'preco_bitcoin', op: 'min', to: 'minimo' }, { from: 'preco_bitcoin', op: 'max', to: 'maximo' }],
+    retention: { mode: 'forever' },
+  })
+  // Como a conta dele ficou: o conjunto existe, a série grava, e o schema é mudo.
+  const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(DONO, { ...r, selectedFields: null })
+  const antes = (await listDatasets(DONO, dataStoreId)).find((d) => d.key === datasetKey)
+  assert.deepEqual(Object.keys(antes.schema?.properties ?? {}), [], 'o caso só vale se ele nasceu mudo')
+
+  const n = await completarConjuntosSemCampos()
+  assert.ok(n >= 1, 'a varredura não completou nada')
+
+  const depois = (await listDatasets(DONO, dataStoreId)).find((d) => d.key === datasetKey)
+  assert.deepEqual(Object.keys(depois.schema?.properties ?? {}).sort(), ['maximo', 'minimo'])
+})
+
+test('AMEAÇA: um schema que ALGUÉM declarou não é sobrescrito', async () => {
+  const { createDataStore, createDataset, listDatasets } = await import('../dist/databases/store.js')
+  const { completarConjuntosSemCampos } = await import('../dist/databases/migration.js')
+  const store = await createDataStore(DONO, { name: `Base de quem declarou ${Date.now()}`, adapterKind: 'data_history' })
+  await createDataset(DONO, store._id, {
+    key: 'meu_conjunto',
+    name: 'Meu',
+    schema: { type: 'object', properties: { escolhido: { type: 'string' } } },
+    mutability: 'append_only',
+  })
+  await completarConjuntosSemCampos()
+  const d = (await listDatasets(DONO, store._id)).find((x) => x.key === 'meu_conjunto')
+  assert.deepEqual(Object.keys(d.schema.properties), ['escolhido'], 'a varredura só preenche o vazio')
+})

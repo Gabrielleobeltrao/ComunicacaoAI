@@ -185,6 +185,7 @@ import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
 import { ensureKnowledgeGraphIndexes } from './knowledgeGraph.js'
 import { ensureResourceAuditIndexes } from './resources/audit.js'
 import { ensureDatabaseIndexes } from './databases/store.js'
+import { completarConjuntosSemCampos } from './databases/migration.js'
 import { ToolVersionError, describeLegacyTool, ensureToolVersionCallIndexes, ensureToolVersionIndexes, latestVersion, listVersionCalls, listVersions, publishVersion } from './toolVersions.js'
 import { notFound as naoEncontrado, oid as paraObjectId } from './routes/http.js'
 import { ensureKnowledgeProposalIndexes } from './knowledgeProposals.js'
@@ -5540,6 +5541,21 @@ async function start() {
   ensureDatabaseIndexes().catch((error) => {
     console.error('ensureDatabaseIndexes failed:', error)
   })
+  /**
+   * Conjuntos de série resumida que nasceram sem declarar campos.
+   *
+   * `ensureDatasetForRecorder` só roda ao aplicar ou ao materializar a fonte — nada o chama
+   * ao abrir a tela. Sem esta varredura, quem já tinha a série gravando precisaria reaplicar
+   * o plano para ver o que já estava no banco, e ninguém deveria precisar reaplicar para ver
+   * o que já foi gravado.
+   */
+  completarConjuntosSemCampos()
+    .then((n) => {
+      if (n) console.log(`Databases: ${n} conjunto(s) passaram a declarar os campos que já gravavam`)
+    })
+    .catch((error) => {
+      console.error('completarConjuntosSemCampos failed:', error)
+    })
   ensureResourceAuditIndexes().catch((error) => {
     console.error('ensureResourceAuditIndexes failed:', error)
   })
