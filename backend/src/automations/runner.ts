@@ -360,6 +360,54 @@ async function executeStep(
         throw new StepError('event', (e as Error).message, false)
       })
     }
+    /**
+     * A FUNÇÃO REGISTRADA, encadeada com o que veio antes.
+     *
+     * "Fazer uma busca e, com o resultado, aplicar outro filtro" — duas contas em sequência,
+     * cada uma determinística. Sem esta etapa isso virava um agente fazendo as duas, e um
+     * modelo somando devolve um número plausível, não uma soma.
+     *
+     * A saída do passo anterior entra no argumento que `inputKey` nomear (`registros`, por
+     * padrão, que é o que as funções de lista esperam). O resto vem de `input`, fixo no
+     * plano. Nenhuma linguagem de template nova: `dependsOn` já é como as outras etapas
+     * dizem de onde vem o que elas leem.
+     */
+    case 'function.call': {
+      const { findFunction } = await import('../executors/functionRegistry.js')
+      const nome = String(cfg.functionName ?? '')
+      const fn = findFunction(nome)
+      // Uma função que não existe é erro de PLANO, e não do dado: repetir não resolve.
+      if (!fn) throw new StepError('validation', `a função "${nome}" não está registrada nesta instalação`, false)
+
+      const anterior = (step.dependsOn ?? []).length ? ctx[(step.dependsOn ?? [])[0]] : undefined
+      const chave = String(cfg.inputKey ?? 'registros')
+      const entrada: Record<string, unknown> = { ...((cfg.input as Record<string, unknown>) ?? {}) }
+      if (anterior !== undefined && entrada[chave] === undefined) {
+        /**
+         * O ENCADEAMENTO desembrulha o que a função anterior devolveu.
+         *
+         * `registros.filtrar` devolve `{ registros, quantos, ignorados }`. Passar o objeto
+         * inteiro para a próxima faria ela procurar a lista dentro de um envelope — e ela
+         * receberia `undefined` sem dizer por quê. Quando o campo de mesmo nome existe na
+         * saída anterior, é ele que atravessa.
+         */
+        const desembrulhado =
+          anterior && typeof anterior === 'object' && !Array.isArray(anterior) && chave in (anterior as Record<string, unknown>)
+            ? (anterior as Record<string, unknown>)[chave]
+            : anterior
+        entrada[chave] = desembrulhado
+      }
+
+      try {
+        return await fn.handler(entrada, (cfg.config as Record<string, unknown>) ?? {}, { ownerId: String(cfg.ownerId ?? ctx.ownerId ?? '') })
+      } catch (e) {
+        // Recusa deliberada da função é `validation`: dado insuficiente não melhora tentando
+        // de novo, e tratá-la como falha temporária faria o Flow insistir num "não dá".
+        const deliberado = (e as { deliberado?: boolean }).deliberado === true
+        throw new StepError(deliberado ? 'validation' : 'unknown', (e as Error).message, !deliberado)
+      }
+    }
+
     // As três etapas de memória. Determinísticas: banco, e nada além disso.
     case 'memory.write': {
       if (!deps.memory) throw new StepError('validation', 'memória não disponível nesta execução', false)

@@ -30,6 +30,18 @@ export type StepType =
   | 'app.execute'
   // Publicar um evento interno. Determinística: escreve no barramento, e nada além.
   | 'event.publish'
+  /**
+   * Chamar uma FUNÇÃO REGISTRADA — e encadeá-la com o que veio antes.
+   *
+   * As funções existiam e não eram alcançáveis de um Flow: dava para calcular RSI ou buscar
+   * por id, mas não para buscar e ENTÃO filtrar o resultado. Cada pedido que precisasse de
+   * duas contas em sequência virava um agente fazendo as duas — e um modelo somando é um
+   * número plausível, não uma soma.
+   *
+   * A entrada vem do passo anterior por `dependsOn`, como `memory.search` já faz. Sem
+   * linguagem de template nova: quem já escreve Flow escreve este passo.
+   */
+  | 'function.call'
 
 export const STEP_TYPES: readonly StepType[] = [
   'source.rss',
@@ -42,6 +54,7 @@ export const STEP_TYPES: readonly StepType[] = [
   'memory.delete',
   'app.execute',
   'event.publish',
+  'function.call',
 ]
 
 /**
