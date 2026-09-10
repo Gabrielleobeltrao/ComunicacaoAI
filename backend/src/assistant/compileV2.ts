@@ -517,12 +517,13 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
      * guardado, e não quem faz o trabalho. Os dois convivem — o agente conversa sobre a
      * série que a janela grava.
      */
-    const janela = parseJanela(`${job?.name ?? ''} ${job?.action ?? ''} ${job?.output ?? ''}`, campoAResumir(brief))
+    const fonteDaJanela = conjuntoQueServe(inventory, String((brief.liveDataNeeds ?? [])[0]?.source ?? job?.input ?? ''))
+    const janela = parseJanela(`${job?.name ?? ''} ${job?.action ?? ''} ${job?.output ?? ''}`, campoAResumir(brief, fonteDaJanela?.campos ?? ''))
     if (janela) {
       // A janela é COMO o dado é guardado — vale inclusive quando o trabalho também tem um
       // agente. Pular a janela porque existe alguém para conversar sobre ela deixaria a
       // pessoa com o agente e sem o dado, que foi exatamente o que aconteceu.
-      compilarJanela(bp, pending, { job, decision, janela, brief, inventory })
+      compilarJanela(bp, pending, { job, decision, janela, achado: fonteDaJanela })
       if (decision.kind !== 'agent') continue
     }
 
@@ -1509,10 +1510,29 @@ function freshnessEmSegundos(texto: string | undefined): number {
  * texto: resumir o campo errado grava uma série que parece certa e mente em todo gráfico.
  * Sem nenhum campo declarado, não há janela — é pendência.
  */
-function campoAResumir(brief: OperationBrief): string | null {
+const CARIMBO_DE_TEMPO = /(timestamp|data|hora|horario|instante|momento|inicio|fim|janela|periodo|_at$|^at$|date|time)/i
+
+function campoAResumir(brief: OperationBrief, campoDaFonte: string): string | null {
+  /**
+   * O CAMPO É O DA FONTE, e o relógio nunca serve.
+   *
+   * A primeira versão pegava `recordsToKeep[0].fields[0]` — o que o modelo escreveu primeiro.
+   * No teste do dono isso deu `timestamp_da_janela`: a proposta ia gravar o MENOR e o MAIOR
+   * instante de cada janela, e não o menor e o maior preço. Um gráfico desses parece certo e
+   * mente, que é exatamente o que este código existe para não fazer.
+   *
+   * Quem sabe quais campos existem é a fonte da conta. Só quando ela não diz nada é que o
+   * que a pessoa declarou entra — e ainda assim sem nenhum campo de tempo.
+   */
+  const daFonte = campoDaFonte
+    .split(/[,;\s]+/)
+    .map((c) => c.trim())
+    .filter((c) => c && !CARIMBO_DE_TEMPO.test(c))
+  if (daFonte.length) return daFonte[0]
+
   for (const r of brief.recordsToKeep ?? []) {
-    const campo = (r.fields ?? []).find((c) => String(c ?? '').trim())
-    if (campo) return String(campo).trim()
+    const campo = (r.fields ?? []).map((c) => String(c ?? '').trim()).find((c) => c && !CARIMBO_DE_TEMPO.test(c))
+    if (campo) return campo
   }
   return null
 }
@@ -1530,42 +1550,57 @@ function campoAResumir(brief: OperationBrief): string | null {
 function compilarJanela(
   bp: OfficeBlueprintV2,
   pending: { kind: string; ref: string; because: string }[],
-  ctx: { job: OperationBrief['jobs'][number] | undefined; decision: ResourceDecision; janela: ParsedWindow; brief: OperationBrief; inventory: OfficeInventory | null },
+  ctx: {
+    job: OperationBrief['jobs'][number] | undefined
+    decision: ResourceDecision
+    janela: ParsedWindow
+    achado: { id: string; kind: 'dataset' | 'source'; label: string; campos: string } | null
+  },
 ): void {
-  const { job, decision, janela, brief, inventory } = ctx
-  const raiz = slug(job?.name ?? decision.jobId) || 'serie'
-  const fonteTexto = (brief.liveDataNeeds ?? [])[0]?.source ?? job?.input ?? ''
-  const achado = fonteTexto ? conjuntoQueServe(inventory, String(fonteTexto)) : null
+  const { job, decision, janela, achado } = ctx
 
-  const fonteKey = `fonte-${raiz}`
-  const jaTem = bp.operations.sources.find((f) => f.key === fonteKey)
-  if (!jaTem) {
+  /**
+   * UMA SÉRIE POR FONTE E POR JANELA — e não uma por trabalho.
+   *
+   * A chave saía do nome do trabalho. No teste do dono, dois trabalhos falavam da mesma
+   * série ("consolidar min/máx" e "armazenar o histórico consolidado"), e o plano nasceu com
+   * DUAS fontes iguais e DUAS janelas iguais: duas coletas do mesmo endereço e duas séries
+   * gravando a mesma linha. Quem identifica a série é de onde ela lê e como ela fecha.
+   */
+  const assinatura = slug(`${achado?.label ?? job?.input ?? decision.jobId}-${janela.everyMs}-${janela.rules.map((r) => `${r.from}${r.op}`).join('')}`)
+  const fonteKey = `fonte-${assinatura}`
+  const janelaKey = `janela-${assinatura}`
+  if (bp.operations.histories.some((h) => h.key === janelaKey)) return
+
+  if (!bp.operations.sources.some((f) => f.key === fonteKey)) {
     bp.operations.sources.push({
       key: fonteKey,
       action: achado ? 'reuse' : 'create',
+      // Reaproveitar sem dizer QUAL é um plano que só falha na aplicação, tarde demais.
+      ...(achado ? { resourceId: achado.id } : {}),
       ...ESSENCIAL,
-      rationale: achado ? `"${achado.label}" já recebe este dado nesta conta` : `sem uma fonte, não há o que resumir em janelas`,
+      rationale: achado ? `"${achado.label}" já recebe este dado nesta conta` : 'sem uma fonte, não há o que resumir em janelas',
       dependsOn: [],
-      name: achado?.label ?? String(fonteTexto || raiz),
+      name: achado?.label ?? String(job?.input ?? assinatura),
       kind: 'api_polling',
       config: {},
       mapping: { version: 1, fields: [{ to: janela.rules[0].from, from: janela.rules[0].from, required: true }] },
       cadence: { mode: 'interval', intervalMs: 60_000 },
     } as never)
     if (!achado) {
-      pending.push({ kind: 'source_config', ref: String(fonteTexto || raiz), because: 'falta dizer de onde este dado vem: endereço, App ou fonte existente' })
+      pending.push({ kind: 'source_config', ref: String(job?.input ?? assinatura), because: 'falta dizer de onde este dado vem: endereço, App ou fonte existente' })
     }
   }
 
   const cada = tamanhoDaJanela(janela.everyMs)
   bp.operations.histories.push({
-    key: `janela-${raiz}`,
+    key: janelaKey,
     action: 'create',
     ...ESSENCIAL,
     rationale: `${janela.rules.map((r) => r.to).join(' e ')} de "${janela.rules[0].from}" a cada ${cada} — contas determinísticas do motor de Históricos`,
     dependsOn: [fonteKey],
     sourceKey: fonteKey,
-    name: `${janela.rules.map((r) => r.to).join(' e ')} a cada ${cada}`,
+    name: `${janela.rules.map((r) => r.to).join(' e ')} de "${janela.rules[0].from}" a cada ${cada}`,
     window: janela,
   })
 }

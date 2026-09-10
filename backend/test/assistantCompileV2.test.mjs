@@ -989,3 +989,69 @@ test('AMEAÇA: "guardar o preço do bitcoin" não vira janela — isso é toda o
   const { blueprint } = compilar(brief)
   assert.equal(blueprint.operations.histories.some((h) => h.window), false, 'sem tamanho de janela e sem conta, não é uma série resumida')
 })
+
+// --- O QUE O TESTE REAL DO DONO MOSTROU ------------------------------------------------------
+//
+// A janela passou a ser compilada — e o plano nasceu com três defeitos que só aparecem com
+// dado de verdade:
+//
+//   from: "timestamp_da_janela"          → mínimo e máximo do RELÓGIO, não do preço
+//   fontes: reuse:Bitcoin | reuse:Bitcoin → duas coletas do mesmo endereço
+//   resourceId: null                      → "reuse" sem dizer qual, e o apply estourou
+
+const inventarioComBitcoin = () => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: { id: '000000000000000000000b01', name: 'Prédio' },
+  sections: {
+    source: {
+      kind: 'source',
+      total: 1,
+      truncated: false,
+      items: [{ id: '000000000000000000000501', label: 'Bitcoin', ownerScope: 'account', meta: { fields: 'price, timestamp' } }],
+    },
+  },
+})
+
+const briefDeDoisTrabalhos = () => ({
+  ...emptyBrief('Guardar o mínimo e o máximo do bitcoin'),
+  jobs: [
+    { id: 'consolidar', name: 'Consolidar mínimo e máximo do bitcoin em janelas de 5 minutos', trigger: 'janela fechada', input: 'preço do bitcoin', decision: '', action: 'consolidar mínimo e máximo a cada 5 minutos', output: 'uma linha' },
+    { id: 'armazenar', name: 'Armazenar histórico consolidado do bitcoin a cada 5 minutos', trigger: 'janela fechada', input: 'preço do bitcoin', decision: '', action: 'gravar o mínimo e o máximo a cada 5 minutos', output: 'linha gravada' },
+  ],
+  liveDataNeeds: [{ source: 'preço do bitcoin', freshness: '15s', required: true }],
+  // O modelo listou o carimbo de tempo PRIMEIRO — foi assim no teste real.
+  recordsToKeep: [{ subject: 'bitcoin', fields: ['timestamp_da_janela', 'preco'], retentionDays: null }],
+})
+
+test('AMEAÇA: a janela resume o PREÇO, nunca o carimbo de tempo', () => {
+  const { blueprint } = c2.compileBriefV2({ brief: briefDeDoisTrabalhos(), manifest: manifesto(), inventory: inventarioComBitcoin(), base: { title: 'X', objective: 'Y' } })
+  const janela = blueprint.operations.histories.find((h) => h.window)
+  assert.ok(janela, 'a janela tem de existir')
+  assert.equal(janela.window.rules[0].from, 'price', 'mínimo e máximo do relógio é uma série que parece certa e mente')
+  assert.equal(janela.window.rules.every((r) => !/timestamp|data|hora/i.test(r.from)), true)
+})
+
+test('AMEAÇA: dois trabalhos sobre a MESMA série não viram duas séries', () => {
+  const { blueprint } = c2.compileBriefV2({ brief: briefDeDoisTrabalhos(), manifest: manifesto(), inventory: inventarioComBitcoin(), base: { title: 'X', objective: 'Y' } })
+  const janelas = blueprint.operations.histories.filter((h) => h.window)
+  assert.equal(janelas.length, 1, `duas séries iguais gravam a mesma linha duas vezes: ${JSON.stringify(janelas.map((j) => j.key))}`)
+  const fontes = blueprint.operations.sources.filter((f) => f.key.startsWith('fonte-'))
+  assert.equal(fontes.length, 1, 'duas coletas do mesmo endereço divergem no primeiro erro de rede')
+})
+
+test('AMEAÇA: reaproveitar diz QUAL — um "reuse" sem id só falha na aplicação', () => {
+  const { blueprint } = c2.compileBriefV2({ brief: briefDeDoisTrabalhos(), manifest: manifesto(), inventory: inventarioComBitcoin(), base: { title: 'X', objective: 'Y' } })
+  const fonte = blueprint.operations.sources.find((f) => f.key.startsWith('fonte-'))
+  assert.equal(fonte.action, 'reuse')
+  assert.equal(fonte.resourceId, '000000000000000000000501', 'sem o id, o apply estoura com "a fonte não foi criada"')
+})
+
+test('sem fonte conhecida, a janela ainda sai — e a origem vira pendência declarada', () => {
+  const { blueprint, pending } = compilar(briefDeDoisTrabalhos())
+  const fonte = blueprint.operations.sources.find((f) => f.key.startsWith('fonte-'))
+  assert.equal(fonte.action, 'create')
+  assert.ok(pending.some((p) => p.kind === 'source_config'), 'de onde vem o dado precisa ser perguntado, não inventado')
+  // E sem campos da fonte, vale o que a pessoa declarou — ainda sem carimbo de tempo.
+  assert.equal(blueprint.operations.histories.find((h) => h.window).window.rules[0].from, 'preco')
+})

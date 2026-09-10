@@ -60,14 +60,19 @@ const slugDeAssunto = (texto: string) =>
  * Casa por TERMO DISTINTIVO — o mesmo critério que o compilador usa para decidir reuso.
  * Aqui ele não decide nada: só encontra o candidato de que a pergunta precisa.
  */
-export function conjuntoQueServe(inventory: OfficeInventory | null, texto: string): { label: string; campos: string } | null {
+export function conjuntoQueServe(
+  inventory: OfficeInventory | null,
+  texto: string,
+): { id: string; kind: 'dataset' | 'source'; label: string; campos: string } | null {
   const termos = termosDoAssunto(texto)
   if (!termos.length) return null
-  const conjuntos = inventory?.sections.dataset?.items ?? []
-  const fontes = inventory?.sections.source?.items ?? []
-  for (const item of [...conjuntos, ...fontes]) {
+  const conjuntos = (inventory?.sections.dataset?.items ?? []).map((i) => ({ i, kind: 'dataset' as const }))
+  const fontes = (inventory?.sections.source?.items ?? []).map((i) => ({ i, kind: 'source' as const }))
+  for (const { i: item, kind } of [...conjuntos, ...fontes]) {
     if (termosDoAssunto(item.label).some((t) => termos.includes(t))) {
-      return { label: item.label, campos: String(item.meta?.fields ?? '') }
+      // O `id` vai junto: quem reaproveita precisa apontar para O RECURSO, e não para um
+      // nome. Um plano que diz "reuse" sem dizer qual falha na aplicação, tarde demais.
+      return { id: String(item.id), kind, label: item.label, campos: String(item.meta?.fields ?? '') }
     }
   }
   return null

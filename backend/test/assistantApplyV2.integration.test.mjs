@@ -750,3 +750,32 @@ test('a série de 15 segundos continua intacta — a janela é OUTRA série', as
   const antes = await obterRecorder(DONO, origem._id)
   assert.equal(antes.mode, 'every_event', 'a série original não pode virar janela: são duas perguntas diferentes')
 })
+
+test('AMEAÇA: um "reuse" sem id vira PENDÊNCIA — não derruba o que já foi criado', async () => {
+  /**
+   * No teste real do dono a aplicação morreu no meio: agente, rotina, Database e conjunto já
+   * estavam criados quando a janela estourou com "a fonte não foi criada". O mapa tinha
+   * recebido string vazia de um `reuse` sem `resourceId`, e o erro só apareceu lá na frente.
+   */
+  const bp = base()
+  bp.operations.sources = [item({ key: 'fonte', action: 'reuse', name: 'Bitcoin' })]
+  bp.operations.histories = [
+    item({
+      key: 'janela',
+      dependsOn: ['fonte'],
+      sourceKey: 'fonte',
+      name: 'minimo e maximo a cada 5 min',
+      window: { everyMs: 300_000, rules: [{ from: 'price', op: 'min', to: 'minimo' }] },
+    }),
+  ]
+  const passos = await aplicar(bp)
+  const fonte = passos.find((p) => p.kind === 'source')
+  assert.equal(fonte.status, 'skipped', 'reaproveitar sem dizer qual é defeito do plano, e se diz aqui')
+  assert.match(fonte.message, /não diz qual/)
+
+  const janela = passos.find((p) => p.kind === 'history')
+  assert.equal(janela.status, 'skipped', 'a janela espera a fonte; ela não pode explodir a aplicação')
+  assert.match(janela.message, /ainda não existe/)
+  // E o que veio antes continua de pé: nada foi desfeito por causa disto.
+  assert.equal(passos.some((p) => p.status === 'failed'), false, 'uma peça faltando não derruba o que já deu certo')
+})
