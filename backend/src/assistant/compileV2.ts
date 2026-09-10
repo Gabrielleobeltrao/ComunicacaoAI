@@ -1826,6 +1826,33 @@ function compilarJanela(
   const janelaKey = `janela-${assinatura}`
   if (bp.operations.histories.some((h) => h.key === janelaKey)) return
 
+  /**
+   * A ORIGEM É UM CONJUNTO QUE JÁ RECEBE DADO — o caso mais comum de todos.
+   *
+   * A conta já coleta há meses, e o pedido é resumir o que já está entrando. O que a busca
+   * acha então é um CONJUNTO, cujo id tem a forma `storeId:datasetKey` — e usá-lo como
+   * `resourceId` de uma fonte fazia o apply recusar com "a fonte ainda não existe". A janela
+   * era pulada, nenhum recorder nascia, e nada atualizava.
+   *
+   * Aqui a origem é declarada pelo que ela é, e nenhuma fonte é criada nem reaproveitada:
+   * não há coleta nova a montar quando o dado já está chegando.
+   */
+  if (achado?.kind === 'dataset') {
+    const cada = tamanhoDaJanela(janela.everyMs)
+    bp.operations.histories.push({
+      key: janelaKey,
+      action: 'create',
+      ...ESSENCIAL,
+      rationale: `${janela.rules.map((r) => r.to).join(' e ')} de "${janela.rules[0].from}" a cada ${cada}, lendo a série "${achado.label}" que já recebe este dado`,
+      dependsOn: [],
+      sourceKey: '',
+      originRef: achado.id,
+      name: `${janela.rules.map((r) => r.to).join(' e ')} de "${janela.rules[0].from}" a cada ${cada}`,
+      window: janela,
+    })
+    return
+  }
+
   if (!bp.operations.sources.some((f) => f.key === fonteKey)) {
     bp.operations.sources.push({
       key: fonteKey,

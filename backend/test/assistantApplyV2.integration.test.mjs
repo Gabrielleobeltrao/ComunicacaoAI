@@ -820,3 +820,66 @@ test('sem destino declarado, a série continua indo para o Database padrão', as
   const padrao = await ensureDefaultStore(DONO)
   assert.equal(passo.resourceId.split(':')[0], padrao._id.toString())
 })
+
+test('ACEITAÇÃO: a janela lê a SÉRIE QUE JÁ EXISTE, sem precisar de fonte nenhuma', async () => {
+  /**
+   * O caso real do dono, e o mais comum de todos: a conta coleta o preço há meses (19.818
+   * registros) e o pedido é resumir o que já entra. A busca acha um CONJUNTO, cujo id tem a
+   * forma `storeId:datasetKey` — e usá-lo como `resourceId` de fonte fazia o apply recusar
+   * com "a fonte ainda não existe". A janela era pulada, nenhum recorder nascia, e nada
+   * atualizava. Ele aplicou e ficou esperando.
+   */
+  const { criarRecorder, listarRecorders } = await import('../dist/dataHistory/recorders.js')
+  const jaColeta = await criarRecorder(DONO, {
+    name: 'Bitcoin',
+    source: { kind: 'manual', ref: 'monitoring:ja-existente' },
+    mode: 'every_event',
+    retention: { mode: 'forever' },
+  })
+  const { ensureDatasetForRecorder } = await import('../dist/databases/migration.js')
+  const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(DONO, jaColeta)
+
+  const bp = base()
+  bp.operations.histories = [
+    item({
+      key: 'janela',
+      dependsOn: [],
+      sourceKey: '',
+      originRef: `${dataStoreId.toString()}:${datasetKey}`,
+      name: 'minimo e maximo a cada 5 min',
+      window: { everyMs: 300_000, rules: [{ from: 'preco', op: 'min', to: 'minimo' }, { from: 'preco', op: 'max', to: 'maximo' }] },
+    }),
+  ]
+
+  const passos = await aplicar(bp)
+  const passo = passos.find((p) => p.kind === 'history')
+  assert.equal(passo.status, 'created', `a janela não nasceu: ${passo.message}`)
+
+  const janela = (await listarRecorders(DONO)).find((r) => r.mode === 'window_aggregate')
+  assert.ok(janela, 'nenhum recorder de janela foi criado — é exatamente o que fez nada atualizar')
+  assert.equal(janela.intervalMs, 300_000)
+  // E ela lê da MESMA origem que a série existente: é assim que o dado chega nela.
+  assert.deepEqual(janela.source, jaColeta.source)
+  // A série de origem continua intacta: são duas perguntas diferentes.
+  const { obterRecorder } = await import('../dist/dataHistory/recorders.js')
+  assert.equal((await obterRecorder(DONO, jaColeta._id)).mode, 'every_event')
+})
+
+test('AMEAÇA: origem que não existe mais vira pendência, e não derruba a aplicação', async () => {
+  const bp = base()
+  bp.operations.histories = [
+    item({
+      key: 'janela',
+      dependsOn: [],
+      sourceKey: '',
+      originRef: `${new ObjectId().toString()}:${new ObjectId().toString()}`,
+      name: 'x',
+      window: { everyMs: 300_000, rules: [{ from: 'v', op: 'min', to: 'minimo' }] },
+    }),
+  ]
+  const passos = await aplicar(bp)
+  const passo = passos.find((p) => p.kind === 'history')
+  assert.equal(passo.status, 'skipped')
+  assert.match(passo.message, /não existe mais/)
+  assert.equal(passos.some((p) => p.status === 'failed'), false)
+})
