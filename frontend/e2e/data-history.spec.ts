@@ -128,20 +128,10 @@ async function stub(page: Page, opts: { recorders?: unknown[] } = {}) {
   })
 }
 
-test('a lista mostra o que a conta guarda — e não só coisa de mercado', async ({ page }) => {
-  await stub(page)
-  await page.goto('/historicos')
-  await expect(page.getByTestId('recorder-list')).toContainText('Preço do BTC a cada 5 minutos')
-  await expect(page.getByTestId('recorder-list')).toContainText('Estoque por SKU, uma vez por dia')
-  // O modo aparece em português de gente, não em nome de mecanismo.
-  await expect(page.getByTestId('recorder-list')).toContainText('Resumo por período')
-  await expect(page.getByTestId('recorder-list')).toContainText('Uma vez por dia')
-})
-
 test('criar um histórico: escolher fonte, quando gravar e o que calcular', async ({ page }) => {
   await stub(page, { recorders: [] })
-  await page.goto('/historicos')
-  await page.getByTestId('new-recorder').click()
+  // O formulário é alcançado direto: a lista que tinha o botão "novo" não existe mais.
+  await page.goto('/historicos/novo')
 
   await page.getByTestId('recorder-name').fill('Pedidos por hora')
   await page.getByTestId('recorder-source-kind').selectOption('manual')
@@ -186,36 +176,6 @@ test('testar antes de ativar roda o motor de verdade e mostra o resultado', asyn
   // E nada foi criado: testar não é ativar.
   expect(criado).toBeNull()
 })
-
-test('consultar o histórico por chave e período', async ({ page }) => {
-  await stub(page)
-  await page.goto('/historicos/rec-1')
-  await expect(page.getByTestId('records-table')).toBeVisible()
-  await expect(page.getByTestId('record-row')).toHaveCount(2)
-  // O resumo do período vem do banco, e aparece junto.
-  await expect(page.getByTestId('period-summary')).toContainText('open')
-  await expect(page.getByTestId('period-summary')).toContainText('108')
-
-  await page.getByTestId('filter-key').selectOption('BTCUSDT')
-  await page.getByTestId('filter-apply').click()
-  await expect(page.getByTestId('record-row')).toHaveCount(2)
-
-  // A regra fica à vista em linguagem de configuração, não de código.
-  await expect(page.getByTestId('recorder-rules')).toContainText('price → primeiro → open')
-})
-
-test('em 320px a tela do histórico não estoura a largura', async ({ page }) => {
-  await stub(page)
-  await page.setViewportSize({ width: 320, height: 800 })
-  for (const rota of ['/historicos', '/historicos/novo', '/historicos/rec-1']) {
-    await page.goto(rota)
-    const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
-    expect(folga, `${rota} estourou ${folga}px`).toBeLessThanOrEqual(1)
-  }
-})
-
-
-// --- a rodada de acabamento -------------------------------------------------------
 
 test('a fonte é escolhida numa lista — ninguém copia id de banco', async ({ page }) => {
   await stub(page, { recorders: [] })
@@ -332,27 +292,6 @@ test('a prévia mostra chave, instante, valor e o motivo da recusa', async ({ pa
   expect(criado).toBeNull()
 })
 
-test('a consulta distingue bruto de resumo e mostra os dois instantes', async ({ page }) => {
-  await stub(page)
-  await page.goto('/historicos/rec-1')
-  const linhas = page.getByTestId('record-row')
-  await expect(linhas).toHaveCount(2)
-  await expect(linhas.first()).toContainText('Resumo')
-  await expect(linhas.nth(1)).toContainText('Bruto')
-
-  // O JSON completo abre por linha.
-  await linhas.first().getByTestId('record-toggle').click()
-  await expect(page.getByTestId('record-json')).toContainText('"open": 100')
-
-  // E dá para filtrar por tipo.
-  await page.getByTestId('filter-kind').selectOption('aggregate')
-  await page.getByTestId('filter-apply').click()
-  await expect(page.getByTestId('record-row')).toHaveCount(2)
-})
-
-
-// --- destino e retenção -----------------------------------------------------------
-
 test('“Onde salvar” aparece, com o banco interno vindo do servidor', async ({ page }) => {
   await stub(page, { recorders: [] })
   await page.goto('/historicos/novo')
@@ -416,35 +355,6 @@ test('destino e prazo são independentes: mudar um não mexe no outro', async ({
   expect(criado?.storage).toEqual({ kind: 'internal', connectionId: null })
 })
 
-test('a tela do histórico mostra onde ele guarda e por quanto tempo', async ({ page }) => {
-  await stub(page)
-  await page.goto('/historicos/rec-1')
-  await expect(page.getByTestId('recorder-storage-info')).toContainText('Banco interno')
-  await expect(page.getByTestId('recorder-storage-info')).toContainText('90 dias')
-})
-
-test('ACEITAÇÃO: o histórico se RENOMEIA e se abre da própria lista, sem trocar de tela', async ({ page }) => {
-  /**
-   * "Quero esse visual também nos Históricos." A mesma pasta dos Databases: o que a regra
-   * guarda fica dentro dela, e as ações ficam onde a coisa está.
-   */
-  const patches: Record<string, unknown>[] = []
-  await stub(page)
-  await page.route('**/api/data-history/recorders/rec-1', async (r) => {
-    if (r.request().method() === 'PATCH') {
-      patches.push(r.request().postDataJSON() as Record<string, unknown>)
-      return r.fulfill({ json: { ...RECORDER } })
-    }
-    return r.fulfill({ json: { ...RECORDER, storedRecords: 42 } })
-  })
-  await page.goto('/historicos')
-
-  await page.getByTestId('pasta-editar-rec-1').click()
-  await page.getByTestId('pasta-editar-nome').fill('BTC de 5 em 5')
-  await page.getByTestId('pasta-editar-salvar').click()
-  await expect.poll(() => patches).toContainEqual({ name: 'BTC de 5 em 5' })
-})
-
 test('ACEITAÇÃO: dá para trocar a regra de 5 para 10 minutos — sem apagar o histórico', async ({ page }) => {
   /**
    * Do dono, vendo a série já gravando: "se eu quisesse trocar de cinco em cinco minutos para
@@ -462,9 +372,10 @@ test('ACEITAÇÃO: dá para trocar a regra de 5 para 10 minutos — sem apagar o
     return r.fulfill({ json: { ...RECORDER, mode: 'window_aggregate', intervalMs: 300_000, aggregations: [{ from: 'preco', op: 'min', to: 'minimo' }] } })
   })
 
-  await page.goto('/historicos/rec-1')
-  await page.getByTestId('edit-recorder').click()
-  await expect(page).toHaveURL(/\/historicos\/rec-1\/editar/)
+  // O editor é alcançado de onde a série aparece — do conjunto, em Databases, ou da fonte,
+  // no Monitoramento. A tela de detalhe não existe mais: ela respondia "o que foi gravado",
+  // que é o que o conjunto já responde melhor.
+  await page.goto('/historicos/rec-1/editar')
 
   // O formulário abre com a regra que EXISTE, e não em branco: editar é continuar, não recomeçar.
   await expect(page.getByTestId('recorder-name')).toHaveValue(RECORDER.name)

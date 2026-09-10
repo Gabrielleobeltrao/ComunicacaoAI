@@ -67,7 +67,6 @@ export const NAV_V2: NavItemDef[] = [
   // Históricos continua no lugar de sempre: ele é a REGRA de gravação, e Databases é o
   // recurso que a expõe. Mover a rota agora quebraria bookmark por uma reorganização
   // que ainda não terminou.
-  { key: 'data-history', label: 'Históricos', icon: 'clock', scope: 'general', group: 'resources', path: () => '/historicos', activePrefixes: () => ['/historicos'] },
   // O plantão: o que o escritório vigia. Fica em OPERAÇÕES porque é observação — quem
   // entra aqui vem ver o que está armado, não construir um agente.
   // A ATIVIDADE: o que aconteceu, correlacionado do começo ao fim. Fica ao lado de

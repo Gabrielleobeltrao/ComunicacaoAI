@@ -27,7 +27,24 @@ const DETALHE = {
   adapterConfig: { recorderId: 'r1' },
   updatedAt: NOW,
   datasets: [
-    { key: 'ordens', name: 'ordens', mutability: 'mutable', fields: ['ticker', 'preco'], schema: { type: 'object', properties: { ticker: { type: 'string' }, preco: { type: 'number' } } } },
+    {
+      key: 'ordens',
+      name: 'ordens',
+      mutability: 'mutable',
+      fields: ['ticker', 'preco'],
+      schema: { type: 'object', properties: { ticker: { type: 'string' }, preco: { type: 'number' } } },
+      // De onde vem e com que regra — o que antes só existia na tela de Históricos.
+      serie: {
+        id: 'rec-1',
+        nome: 'minimo e maximo a cada 5 min',
+        modo: 'window_aggregate',
+        intervalMs: 300000,
+        contas: ['preco → min → minimo', 'preco → max → maximo'],
+        ativa: true,
+        registros: 288,
+        fonte: 'Bitcoin',
+      },
+    },
     // Um conjunto que SÓ ACRESCENTA, para a tela ter de dizer por que ali não se corrige.
     { key: 'fechamentos', name: 'fechamentos', mutability: 'append_only', fields: ['ticker'], schema: { type: 'object', properties: { ticker: { type: 'string' } } } },
   ],
@@ -449,4 +466,37 @@ test('ACEITAÇÃO: clicar num conjunto da pasta abre a consulta DELE, e não a d
   await page.getByTestId('item-abrir-fechamentos').click()
   await expect(page.getByTestId('database-detail-sub')).toContainText('fechamentos')
   await expect(page.getByTestId('dataset-query')).toContainText('VALE3')
+})
+
+test('ACEITAÇÃO: o conjunto diz DE ONDE o dado vem e com que regra', async ({ page }) => {
+  /**
+   * "Não entendi o que tem na página de Históricos que não tem no Database." Tinha uma coisa
+   * só: a procedência. Uma tabela sem ela responde "o que foi gravado" e deixa a pergunta
+   * seguinte no ar — quem gravou, de onde, e de quanto em quanto tempo.
+   */
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId('item-abrir-ordens').click()
+
+  const origem = page.getByTestId('dataset-origem')
+  await expect(origem).toBeVisible()
+  await expect(origem).toContainText('Bitcoin')
+  await expect(origem).toContainText('Resumo por período de 5 min em 5 min')
+  await expect(origem).toContainText('288')
+  await expect(origem).toContainText('coletando')
+  await expect(origem).toContainText('preco → min → minimo')
+
+  // E dá para mudar a regra de onde o dado aparece.
+  await page.getByTestId('dataset-editar-regra').click()
+  await expect(page).toHaveURL(/\/historicos\/rec-1\/editar/)
+})
+
+test('um conjunto criado à mão não inventa procedência', async ({ page }) => {
+  // Sem série por trás, o bloco não aparece: silêncio é melhor que uma origem inventada.
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId('item-abrir-fechamentos').click()
+  await expect(page.getByTestId('dataset-origem')).toHaveCount(0)
 })

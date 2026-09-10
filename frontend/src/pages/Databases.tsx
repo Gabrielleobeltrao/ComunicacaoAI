@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { ListaDePastas } from '../components/PastaDeDados'
-import { Button, Card, Dialog, IconButton, Input, Textarea } from '../ui'
+import { Badge, Button, Card, Dialog, IconButton, Input, Textarea } from '../ui'
 import * as api from '../lib/databases'
 import { DatabaseGrants } from '../components/DatabaseGrants'
 import type { DatabaseDetail, DatabaseSummary, DatasetSummary, QueryResult } from '../lib/databases'
@@ -317,7 +317,27 @@ function NovoDataset({ databaseId, onCriado }: { databaseId: string; onCriado: (
  */
 const TAMANHOS = [20, 50, 100, 200]
 
+/** A regra em português: "resumo de 5 min em 5 min", "toda ocorrência". */
+const regraDaSerie = (s: { modo: string; intervalMs: number | null }): string => {
+  const rotulo = MODO_DE_SERIE[s.modo] ?? s.modo
+  if (!s.intervalMs) return rotulo
+  const ms = s.intervalMs
+  const cada = ms >= 3_600_000 ? `${Math.round(ms / 3_600_000)} h` : ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)}s`
+  return `${rotulo} de ${cada} em ${cada}`
+}
+
+/** Os seis modos, em português. A mesma tabela que o resto do produto usa. */
+const MODO_DE_SERIE: Record<string, string> = {
+  every_event: 'Toda ocorrência',
+  on_change: 'Quando mudar',
+  snapshot_interval: 'De tempos em tempos',
+  schedule_snapshot: 'Uma vez por dia',
+  window_aggregate: 'Resumo por período',
+  condition: 'Só quando a condição bater',
+}
+
 function ConsultaDoDataset({ databaseId, dataset }: { databaseId: string; dataset: DatasetSummary }) {
+  const navigate = useNavigate()
   const [resultado, setResultado] = useState<QueryResult | null>(null)
   const [erro, setErro] = useState<string | null>(null)
   const [carregando, setCarregando] = useState(false)
@@ -409,6 +429,35 @@ function ConsultaDoDataset({ databaseId, dataset }: { databaseId: string; datase
   return (
     <Card>
       <div className="flex flex-col gap-2" data-testid="dataset-query">
+        {/*
+          A PROCEDÊNCIA, ao lado do dado.
+          Uma tabela sem procedência responde "o que foi gravado" e deixa a pergunta seguinte
+          no ar: quem gravou, de onde, e de quanto em quanto tempo. Antes isso morava numa
+          tela separada, que o dono nunca abria porque nunca criou nada lá.
+        */}
+        {dataset.serie && (
+          <div
+            style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '10px 12px', background: 'var(--surface-sunken)' }}
+            data-testid="dataset-origem"
+          >
+            <div className="flex flex-wrap items-center gap-2" style={{ fontSize: 12.5 }}>
+              <strong style={{ fontWeight: 600 }}>Como este dado chega</strong>
+              <Badge tone={dataset.serie.ativa ? 'success' : 'warning'}>{dataset.serie.ativa ? 'coletando' : 'parada'}</Badge>
+            </div>
+            <p style={{ margin: '6px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>
+              {dataset.serie.fonte ? `Vem de "${dataset.serie.fonte}"` : 'Alimentado por uma série desta conta'} ·{' '}
+              {regraDaSerie(dataset.serie)} · {dataset.serie.registros.toLocaleString('pt-BR')} registro(s)
+            </p>
+            {dataset.serie.contas.length > 0 && (
+              <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-faint)' }}>{dataset.serie.contas.join(' · ')}</p>
+            )}
+            <div className="flex flex-wrap gap-2" style={{ marginTop: 8 }}>
+              <Button variant="secondary" size="sm" icon="pencil" onClick={() => navigate(`/historicos/${dataset.serie!.id}/editar`)} data-testid="dataset-editar-regra">
+                Editar a regra
+              </Button>
+            </div>
+          </div>
+        )}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <strong style={{ fontSize: 13 }}>{dataset.name}</strong>
           <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>
