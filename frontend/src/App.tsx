@@ -175,6 +175,9 @@ function App() {
           andar. Existe nos dois modos de navegação. */}
       <Route path="/historicos" element={<P><DataRecorders /></P>} />
       <Route path="/historicos/novo" element={<P><RecorderForm /></P>} />
+      {/* Editar vem ANTES do detalhe: `/historicos/novo` e `/historicos/:id/editar` são
+          caminhos, e o detalhe casaria com o primeiro segmento dos dois. */}
+      <Route path="/historicos/:recorderId/editar" element={<P><RecorderForm /></P>} />
       <Route path="/historicos/:recorderId" element={<P><RecorderDetail /></P>} />
 
       {/* Montar operação é do PRÉDIO, não de um andar: ela pode criar ou reutilizar

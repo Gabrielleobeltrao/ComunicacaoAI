@@ -47,6 +47,11 @@ const FONTES = {
       destination: { live: false, history: true, retentionDays: null },
       nextReadAt: null,
       telemetry: { lastReadAt: null, lastOkAt: null, lastErrorAt: null, lastErrorCode: null, lastLatencyMs: null, consecutiveFailures: 0, readsOk: 0, readsFailed: 0, reconnects: 0 },
+      // O que vive desta fonte: a serie de cada ocorrencia e a resumida por janela.
+      series: [
+        { id: 'rec-bruta', name: 'Preco do fornecedor', mode: 'every_event', intervalMs: null, fields: ['preco'], recordCount: 20261, enabled: true },
+        { id: 'rec-janela', name: 'minimo e maximo a cada 5 min', mode: 'window_aggregate', intervalMs: 300000, fields: ['minimo', 'maximo'], recordCount: 12, enabled: true },
+      ],
     },
   ],
 }
@@ -979,4 +984,27 @@ test('contraste: o texto das telas novas é legível sobre o fundo em que ele es
     }, RAZAO)
     expect(razao, `${id} tem contraste ${razao.toFixed(2)}:1`).toBeGreaterThanOrEqual(minimo)
   }
+})
+
+test('ACEITAÇÃO: da fonte dá para ver e alcançar o que vive dela', async ({ page }) => {
+  /**
+   * Do dono, procurando a série de 5 minutos: "eu não sei de onde chega essa informação, não
+   * sei quem coleta e filtra". Ela é um Histórico, e ele a procurou aqui — porque aqui mora a
+   * fonte, que é a coisa que ele conhece. Da fonte não havia caminho nenhum para o que vive
+   * dela: era preciso saber que a tela de Históricos existe e adivinhar qual entrada veio daqui.
+   */
+  await stub(page)
+  await page.goto('/monitoring?tab=sources')
+  const bloco = page.getByTestId(`fonte-series-${ID}`)
+  await expect(bloco).toBeVisible()
+
+  // A regra aparece em português, e os campos junto: é assim que se reconhece a série certa.
+  await expect(bloco).toContainText('resumo de 5 min em 5 min')
+  await expect(bloco).toContainText('minimo, maximo')
+  await expect(bloco).toContainText('toda ocorrencia')
+  await expect(bloco).toContainText('20.261')
+
+  // E dá para chegar na regra sem saber que Históricos existe.
+  await page.getByTestId('serie-editar-rec-janela').click()
+  await expect(page).toHaveURL(/\/historicos\/rec-janela\/editar/)
 })
