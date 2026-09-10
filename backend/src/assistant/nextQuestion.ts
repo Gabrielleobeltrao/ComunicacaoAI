@@ -64,19 +64,45 @@ export function conjuntoQueServe(
   inventory: OfficeInventory | null,
   texto: string,
 ): { id: string; kind: 'dataset' | 'source'; label: string; campos: string } | null {
+  // Sem termo distintivo NÃO é o fim: o nome inteiro ainda pode casar, logo abaixo. Sair aqui
+  // deixava invisível toda fonte que se chama exatamente "Cotação", "Preço" ou "Estoque".
   const termos = termosDoAssunto(texto)
-  if (!termos.length) return null
   const conjuntos = (inventory?.sections.dataset?.items ?? []).map((i) => ({ i, kind: 'dataset' as const }))
   const fontes = (inventory?.sections.source?.items ?? []).map((i) => ({ i, kind: 'source' as const }))
-  for (const { i: item, kind } of [...conjuntos, ...fontes]) {
-    if (termosDoAssunto(item.label).some((t) => termos.includes(t))) {
-      // O `id` vai junto: quem reaproveita precisa apontar para O RECURSO, e não para um
-      // nome. Um plano que diz "reuse" sem dizer qual falha na aplicação, tarde demais.
-      return { id: String(item.id), kind, label: item.label, campos: String(item.meta?.fields ?? '') }
+  const achar = (item: { id: string; label: string; meta?: Record<string, unknown> }, kind: 'dataset' | 'source') =>
+    // O `id` vai junto: quem reaproveita precisa apontar para O RECURSO, e não para um
+    // nome. Um plano que diz "reuse" sem dizer qual falha na aplicação, tarde demais.
+    ({ id: String(item.id), kind, label: item.label, campos: String(item.meta?.fields ?? '') })
+
+  if (termos.length) {
+    for (const { i: item, kind } of [...conjuntos, ...fontes]) {
+      if (termosDoAssunto(item.label).some((t) => termos.includes(t))) return achar(item as never, kind)
     }
+  }
+
+  /**
+   * O NOME INTEIRO, quando ele não tem nenhuma palavra distintiva.
+   *
+   * Os termos distintivos existem para não casar por palavra vaga — "a base", "o dado". Mas
+   * uma fonte pode se CHAMAR exatamente assim: "Cotação", "Preço", "Estoque", "Histórico".
+   * Filtrada palavra por palavra, ela ficava invisível para sempre, e o plano propunha criar
+   * uma coleta nova ao lado da que já existe.
+   */
+  const alvo = normalizar(texto)
+  for (const { i: item, kind } of [...conjuntos, ...fontes]) {
+    const nome = normalizar(item.label)
+    if (nome.length >= 4 && alvo.includes(nome)) return achar(item as never, kind)
   }
   return null
 }
+
+/** Só letras e dígitos, sem acento: compara nome com texto sem tropeçar em pontuação. */
+const normalizar = (t: string): string =>
+  String(t ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
 
 /** Palavras que identificam UMA coisa — ver `termosDistintivos` no compilador. */
 const GENERICOS = new Set([

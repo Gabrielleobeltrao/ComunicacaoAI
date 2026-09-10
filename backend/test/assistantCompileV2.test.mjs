@@ -1055,3 +1055,78 @@ test('sem fonte conhecida, a janela ainda sai — e a origem vira pendência dec
   // E sem campos da fonte, vale o que a pessoa declarou — ainda sem carimbo de tempo.
   assert.equal(blueprint.operations.histories.find((h) => h.window).window.rules[0].from, 'preco')
 })
+
+// --- A REGRA VALE PARA QUALQUER CONTA --------------------------------------------------------
+//
+// "Todas as correções têm que ser gerais, nunca vai ser o mesmo assunto entre os usuários."
+//
+// A versão anterior pegava "o primeiro campo que não é data". Passou no caso que estava na
+// mesa (`price, timestamp`) e escolheria `sku` numa fonte `sku, quantidade`. Uma regra que só
+// acerta no exemplo da mesa está errada — por isso cada caso aqui é de um domínio diferente.
+
+const fonteChamada = (label, fields) => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: { id: '000000000000000000000b01', name: 'Prédio' },
+  sections: { source: { kind: 'source', total: 1, truncated: false, items: [{ id: '000000000000000000000777', label, ownerScope: 'account', meta: { fields } }] } },
+})
+
+const pedido = (nome, acao, origem) => ({
+  ...emptyBrief(nome),
+  jobs: [{ id: 'j', name: nome, trigger: 'janela fechada', input: origem, decision: '', action: acao, output: 'uma linha por janela' }],
+  liveDataNeeds: [{ source: origem, freshness: '1m', required: true }],
+  recordsToKeep: [],
+})
+
+test('ACEITAÇÃO: o campo é o que o PEDIDO nomeia — em qualquer assunto', () => {
+  const casos = [
+    // [fonte, campos da fonte, pedido, ação, campo esperado, conta esperada]
+    ['Bitcoin', 'price, timestamp', 'Guardar o mínimo e o máximo do price a cada 5 minutos', 'consolidar por janela', 'price', 'min'],
+    ['Estoque', 'sku, quantidade, atualizado_em', 'Guardar a média de quantidade a cada 1 hora', 'resumir por janela', 'quantidade', 'avg'],
+    ['Pedidos', 'pedido_id, valor_total, criado_em', 'Somar valor_total a cada 1 hora', 'resumir por janela', 'valor_total', 'sum'],
+    ['Sensor', 'sensor_id, temperatura, lido_em', 'Guardar a maior temperatura a cada 10 minutos', 'resumir por janela', 'temperatura', 'max'],
+  ]
+  for (const [label, campos, nome, acao, esperado, conta] of casos) {
+    const { blueprint } = c2.compileBriefV2({ brief: pedido(nome, acao, label), manifest: manifesto(), inventory: fonteChamada(label, campos), base: { title: 'X', objective: 'Y' } })
+    const janela = blueprint.operations.histories.find((h) => h.window)
+    assert.ok(janela, `${label}: a janela não saiu`)
+    assert.equal(janela.window.rules[0].from, esperado, `${label}: resumiu o campo errado`)
+    assert.ok(janela.window.rules.some((r) => r.op === conta), `${label}: a conta pedida não entrou`)
+  }
+})
+
+test('com um candidato só na fonte, não há o que escolher — nem precisa nomear', () => {
+  const { blueprint } = c2.compileBriefV2({
+    brief: pedido('Guardar o menor e o maior valor a cada 5 minutos', 'resumir', 'Cotação'),
+    manifest: manifesto(),
+    inventory: fonteChamada('Cotação', 'preco, capturado_em'),
+    base: { title: 'X', objective: 'Y' },
+  })
+  assert.equal(blueprint.operations.histories.find((h) => h.window).window.rules[0].from, 'preco')
+})
+
+test('AMEAÇA: com DOIS candidatos e nenhum nomeado, a janela vira PERGUNTA — não palpite', () => {
+  const r = c2.compileBriefV2({
+    brief: pedido('Guardar o mínimo e o máximo a cada 5 minutos', 'resumir por janela', 'Estoque'),
+    manifest: manifesto(),
+    inventory: fonteChamada('Estoque', 'sku, quantidade, atualizado_em'),
+    base: { title: 'X', objective: 'Y' },
+  })
+  assert.equal(r.blueprint.operations.histories.some((h) => h.window), false, 'escolher entre sku e quantidade é chutar')
+  const p = r.pending.find((x) => x.kind === 'window_field')
+  assert.ok(p, `a janela pedida não pode sumir calada: ${JSON.stringify(r.pending)}`)
+  assert.match(p.because, /sku/, 'a pergunta tem de dizer entre o que escolher')
+  assert.match(p.because, /quantidade/)
+})
+
+test('AMEAÇA: nenhum campo de tempo é resumido, em português ou inglês', () => {
+  for (const campos of ['created_at, updated_at', 'timestamp, date, time', 'inicio_da_janela, fim_da_janela']) {
+    const r = c2.compileBriefV2({
+      brief: pedido('Guardar o mínimo e o máximo a cada 5 minutos', 'resumir', 'Coisa'),
+      manifest: manifesto(),
+      inventory: fonteChamada('Coisa', campos),
+      base: { title: 'X', objective: 'Y' },
+    })
+    assert.equal(r.blueprint.operations.histories.some((h) => h.window), false, `resumiu um carimbo de tempo: ${campos}`)
+  }
+})
