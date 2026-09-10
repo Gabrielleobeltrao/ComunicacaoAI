@@ -43,7 +43,24 @@ export interface AssistantTurnResult {
   briefPatch: Record<string, unknown> | null
   assumptions: { key: string; text: string; questionKey?: string }[]
   warnings: { path: string; message: string }[]
+  /**
+   * AS SÉRIES RESUMIDAS que o modelo reconheceu no pedido.
+   *
+   * Antes, quem lia "o mínimo e o máximo a cada 5 minutos" era uma expressão regular minha.
+   * Ela só entendia o que alguém escreveu regra para entender: "somar" não casava com
+   * "soma", inglês não casava com nada, e cada forma nova de pedir exigia código novo. Esse
+   * era o teto — e ele batia toda semana.
+   *
+   * Aqui o modelo faz o que ele sabe: entender a frase. E devolve ESTRUTURA, não prosa: os
+   * campos são validados um a um, as contas vêm de uma lista fechada, e quem decide se a
+   * série entra no plano continua sendo o compilador. O modelo descreve; o código decide.
+   */
+  windows: { source: string; field: string; everyMs: number; ops: AggOp[] }[]
 }
+
+/** As sete contas do motor de Históricos. Fora desta lista, nada entra. */
+const AGG_OPS = ['first', 'last', 'min', 'max', 'avg', 'sum', 'count'] as const
+export type AggOp = (typeof AGG_OPS)[number]
 
 export type TurnFailure =
   | { code: 'no_provider_key'; message: string }
@@ -175,6 +192,22 @@ export function normalizeTurn(bruto: unknown): AssistantTurnResult | null {
     answerPatch,
     blueprintPatch,
     briefPatch,
+    windows: lista(
+      r.windows,
+      (o) => {
+        // Sem tamanho, sem campo ou sem conta reconhecida, a janela não existe. Completar
+        // aqui seria inventar uma série que ninguém pediu — e ela grava.
+        const everyMs = Math.round(Number(o.everyMs ?? 0))
+        const field = texto(o.field, L.MAX_KEY_CHARS).trim()
+        const source = texto(o.source, L.MAX_SHORT_TEXT_CHARS).trim()
+        const ops = (Array.isArray(o.ops) ? o.ops : [])
+          .map((x) => texto(x, 12).trim().toLowerCase())
+          .filter((x): x is AggOp => (AGG_OPS as readonly string[]).includes(x))
+        if (!Number.isFinite(everyMs) || everyMs <= 0 || !field || ops.length === 0) return null
+        return { source, field, everyMs, ops: [...new Set(ops)] }
+      },
+      6,
+    ),
     assumptions: lista(
       r.assumptions,
       (o) => {

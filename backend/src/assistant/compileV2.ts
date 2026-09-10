@@ -35,6 +35,13 @@ export interface CompileV2Input {
   /** O que a conta já tem. É daqui que sai a escolha entre expandir e criar. */
   inventory: OfficeInventory | null
   base: { title: string; objective: string }
+  /**
+   * AS SÉRIES RESUMIDAS que o modelo reconheceu. Quando vêm, elas VENCEM a leitura por
+   * expressão regular: o modelo entende a frase, e a regex só entende o que alguém
+   * escreveu regra para entender. A regex fica como rede — para o turno em que o modelo
+   * não declarar nada, e para não perder o que já funcionava.
+   */
+  windows?: { source: string; field: string; everyMs: number; ops: string[] }[]
   changeKind: BlueprintChangeKindV2
   /**
    * Os andares que a organização JÁ decidiu, quando ela é decidida em outro lugar.
@@ -100,6 +107,11 @@ const COMPARADORES: { padrao: RegExp; op: string }[] = [
  * "Somar o valor por hora" e "a soma do valor por hora" são o mesmo pedido; casar só o
  * substantivo fazia a janela sumir do plano quando alguém escrevia no infinitivo.
  */
+/** Como cada conta se chama na linha gravada. Um nome só, nos dois caminhos. */
+export const NOME_DA_CONTA: Record<string, string> = {
+  min: 'minimo', max: 'maximo', avg: 'media', sum: 'soma', count: 'contagem', first: 'abertura', last: 'fechamento',
+}
+
 const CONTAS: { padrao: RegExp; op: 'first' | 'last' | 'min' | 'max' | 'avg' | 'sum' | 'count'; nome: string }[] = [
   { padrao: /\b(m[íi]nimos?|menor(es)?|m[íi]nimas?)\b/i, op: 'min', nome: 'minimo' },
   { padrao: /\b(m[áa]ximos?|maior(es)?|m[áa]ximas?|pico)\b/i, op: 'max', nome: 'maximo' },
@@ -493,6 +505,9 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
 
   // --- 3. as peças, por classificação -------------------------------------------------------
   const usados = nomesEmUso(inventory)
+  // Uma janela declarada serve a UM trabalho: sem isto, dois trabalhos parecidos ficariam
+  // com a mesma série, e o plano gravaria a mesma linha duas vezes.
+  const usadas = new Set<{ source: string; field: string; everyMs: number; ops: string[] }>()
   let indiceDeAgente = 0
   const agentePorTrabalho = new Map<string, string>()
 
@@ -527,7 +542,39 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
     const textoDoPedido = `${job?.name ?? ''} ${job?.action ?? ''} ${job?.output ?? ''} ${job?.input ?? ''}`
     const declarados = (brief.recordsToKeep ?? []).flatMap((r) => r.fields ?? [])
     const campo = campoAResumir(textoDoPedido, fonteDaJanela?.campos ?? '', declarados)
-    const janela = parseJanela(textoDoPedido, campo)
+    /**
+     * O QUE O MODELO DECLAROU vence — e é casado com o trabalho pelo texto dele.
+     *
+     * Uma janela declarada sem dono viraria série solta; casá-la por proximidade de texto
+     * mantém o vínculo com o trabalho que a pediu.
+     */
+    /**
+     * O compilador NÃO confia no que recebe, nem vindo do próprio turno.
+     *
+     * `normalizeTurn` já valida, mas ele é uma porta; esta é outra, e quem chama o
+     * compilador direto passa por aqui. Uma janela sem tamanho, sem campo ou com uma conta
+     * que o motor não tem gravaria uma coluna que ninguém lê — e gravaria calada.
+     */
+    const janelaValida = (w: { field?: string; everyMs?: number; ops?: string[] }) =>
+      Number.isFinite(Number(w.everyMs)) &&
+      Number(w.everyMs) > 0 &&
+      String(w.field ?? '').trim() !== '' &&
+      (w.ops ?? []).some((op) => op in NOME_DA_CONTA)
+
+    const declarada = (input.windows ?? []).find(
+      (w) =>
+        !usadas.has(w) &&
+        janelaValida(w) &&
+        (normalizarCampo(textoDoPedido).includes(normalizarCampo(w.field)) || normalizarCampo(textoDoPedido).includes(normalizarCampo(w.source))),
+    )
+    if (declarada) usadas.add(declarada)
+    const janela = declarada
+      ? {
+          everyMs: declarada.everyMs,
+          // Só as contas que o motor conhece: uma inventada viraria coluna morta.
+          rules: declarada.ops.filter((op) => op in NOME_DA_CONTA).map((op) => ({ from: declarada.field, op: op as never, to: NOME_DA_CONTA[op] })),
+        }
+      : parseJanela(textoDoPedido, campo)
     /**
      * A JANELA FOI PEDIDA e ninguém sabe sobre QUAL campo: isso é pergunta, não silêncio.
      *

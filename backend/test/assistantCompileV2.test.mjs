@@ -1149,3 +1149,84 @@ test('ACEITAÇÃO: "grave em um novo database" liga a janela ao conjunto que o p
   assert.ok(conjunto, `a janela aponta para um conjunto que o plano não cria: ${janela.datasetKey}`)
   assert.ok(janela.dependsOn.includes(conjunto.key), 'sem a dependência, a janela é aplicada antes do conjunto existir')
 })
+
+// --- O MODELO DECLARA, O CÓDIGO DECIDE -------------------------------------------------------
+//
+// "Do jeito que está não está legal": cada forma nova de pedir exigia regex nova minha.
+// "somar" não casava com "soma"; inglês não casava com nada. Esse era o teto.
+//
+// Agora o modelo devolve ESTRUTURA — `windows[]`, validado campo a campo — e ela vence a
+// leitura por expressão regular. O compilador continua decidindo se a série entra no plano.
+
+const briefLivre = (nome, origem) => ({
+  ...emptyBrief(nome),
+  jobs: [{ id: 'j', name: nome, trigger: 'janela fechada', input: origem, decision: '', action: nome, output: 'uma linha' }],
+  liveDataNeeds: [{ source: origem, freshness: '1m', required: true }],
+  recordsToKeep: [],
+})
+
+test('ACEITAÇÃO: uma frase que a regex NÃO entende vira janela quando o modelo declara', () => {
+  // Inglês: `parseJanela` não casa com nada disto. O modelo entende, e é esse o ponto.
+  const brief = briefLivre('Keep the highest and lowest reading every 5 minutes', 'Sensor')
+  assert.equal(c2.parseJanela('Keep the highest and lowest reading every 5 minutes', 'leitura'), null, 'a regex não entende — é a premissa do caso')
+
+  const { blueprint } = c2.compileBriefV2({
+    brief,
+    manifest: manifesto(),
+    inventory: fonteChamada('Sensor', 'leitura, lido_em'),
+    base: { title: 'X', objective: 'Y' },
+    windows: [{ source: 'Sensor', field: 'leitura', everyMs: 300_000, ops: ['min', 'max'] }],
+  })
+  const janela = blueprint.operations.histories.find((h) => h.window)
+  assert.ok(janela, 'o que o modelo declarou tem de entrar no plano')
+  assert.equal(janela.window.everyMs, 300_000)
+  assert.deepEqual(janela.window.rules.map((r) => `${r.from}:${r.op}:${r.to}`).sort(), ['leitura:max:maximo', 'leitura:min:minimo'])
+})
+
+test('o declarado VENCE a regex quando os dois falam da mesma frase', () => {
+  // A regex leria "media" sobre `preco`; o modelo declarou `quantidade` com `sum`. Manda quem
+  // entendeu a frase, não quem casou um padrão.
+  const { blueprint } = c2.compileBriefV2({
+    brief: briefLivre('Guardar a média a cada 1 hora de quantidade', 'Estoque'),
+    manifest: manifesto(),
+    inventory: fonteChamada('Estoque', 'preco, quantidade, criado_em'),
+    base: { title: 'X', objective: 'Y' },
+    windows: [{ source: 'Estoque', field: 'quantidade', everyMs: 3_600_000, ops: ['sum'] }],
+  })
+  const j = blueprint.operations.histories.find((h) => h.window)
+  assert.equal(j.window.rules.length, 1)
+  assert.equal(j.window.rules[0].from, 'quantidade')
+  assert.equal(j.window.rules[0].op, 'sum')
+})
+
+test('AMEAÇA: janela declarada sem tamanho, sem campo ou com conta inventada NÃO entra', () => {
+  // A validação é do turno (`normalizeTurn`); aqui prendemos o outro lado: o compilador não
+  // aceita o que chegar. Uma conta que o motor não tem gravaria uma coluna que ninguém lê.
+  for (const w of [
+    { source: 'S', field: 'leitura', everyMs: 0, ops: ['min'] },
+    { source: 'S', field: '', everyMs: 300_000, ops: ['min'] },
+    { source: 'S', field: 'leitura', everyMs: 300_000, ops: [] },
+  ]) {
+    const { blueprint } = c2.compileBriefV2({
+      brief: briefLivre('Keep the lowest every 5 minutes', 'Sensor'),
+      manifest: manifesto(),
+      inventory: fonteChamada('Sensor', 'leitura, lido_em'),
+      base: { title: 'X', objective: 'Y' },
+      windows: [w],
+    })
+    assert.equal(blueprint.operations.histories.some((h) => h.window), false, `entrou uma janela quebrada: ${JSON.stringify(w)}`)
+  }
+})
+
+test('sem nada declarado, a regex continua valendo — nada do que funcionava se perdeu', () => {
+  const { blueprint } = c2.compileBriefV2({
+    brief: briefLivre('Guardar o mínimo e o máximo de temperatura a cada 10 minutos', 'Sensor'),
+    manifest: manifesto(),
+    inventory: fonteChamada('Sensor', 'temperatura, lido_em'),
+    base: { title: 'X', objective: 'Y' },
+  })
+  const j = blueprint.operations.histories.find((h) => h.window)
+  assert.ok(j, 'a rede de segurança sumiu')
+  assert.equal(j.window.everyMs, 600_000)
+  assert.equal(j.window.rules[0].from, 'temperatura')
+})
