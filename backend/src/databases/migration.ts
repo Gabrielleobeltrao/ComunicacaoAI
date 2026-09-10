@@ -111,7 +111,24 @@ export async function ensureDatasetForRecorder(
   if (!store) throw new Error('o Database escolhido para a série não existe nesta conta')
   const key = recorder._id.toString()
   const jaExiste = await datasets.findOne({ ownerId, dataStoreId: store._id, key })
-  if (jaExiste) return { dataStoreId: store._id, datasetKey: key }
+  if (jaExiste) {
+    /**
+     * UM CONJUNTO QUE NÃO DECLARA CAMPOS não pode ser consultado — e completá-lo é seguro.
+     *
+     * Uma série criada antes de o motor saber os nomes ficou com schema vazio: as linhas
+     * eram gravadas, existiam no banco, e a tela dizia "este dataset não declara campos".
+     * Quando os nomes chegam depois, preenchê-los destrava a consulta sem tocar em nada do
+     * que já foi gravado. Só o vazio é completado: um schema que alguém declarou manda.
+     */
+    const declarados = Object.keys((jaExiste.schema as { properties?: Record<string, unknown> })?.properties ?? {})
+    if (!declarados.length && recorder.selectedFields?.length) {
+      await datasets.updateOne(
+        { _id: jaExiste._id },
+        { $set: { schema: schemaDoRecorder(recorder.selectedFields), updatedAt: new Date() } },
+      )
+    }
+    return { dataStoreId: store._id, datasetKey: key }
+  }
   const agora = new Date()
   try {
     await datasets.insertOne({

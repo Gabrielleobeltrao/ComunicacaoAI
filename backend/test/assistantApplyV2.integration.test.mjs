@@ -985,3 +985,52 @@ test('sem leitura na origem, a prova fica PENDENTE — ausência de dado não é
   assert.equal(prova.status, 'skipped', 'reprovar por falta de dado seria culpar a fonte de ser nova')
   assert.match(prova.observed, /ainda não gravou/)
 })
+
+test('ACEITAÇÃO: o conjunto da janela DECLARA os campos que ela grava', async () => {
+  /**
+   * Do dono, olhando a tela: "por que não está me aparecendo?". A linha
+   * {"minimo": 77041.06, "maximo": 77087.41} estava gravada no banco — e o conjunto dizia
+   * "este dataset não declara campos". A consulta só permite o que o schema declara, e o
+   * recorder da janela nascia sem `selectedFields`: as linhas existiam e não apareciam.
+   */
+  const { originRef } = await comOrigemGravando({ preco_bitcoin: '77131.82' })
+  const bp = planoComProva(originRef, 'preco_bitcoin')
+  bp.operations.histories[0].window.rules = [
+    { from: 'preco_bitcoin', op: 'min', to: 'minimo' },
+    { from: 'preco_bitcoin', op: 'max', to: 'maximo' },
+  ]
+  const passos = await aplicar(bp)
+  const passo = passos.find((p) => p.kind === 'history')
+  assert.equal(passo.status, 'created', passo.message)
+
+  const [storeId, chave] = passo.resourceId.split(':')
+  const { listDatasets } = await import('../dist/databases/store.js')
+  const conjunto = (await listDatasets(DONO, new ObjectId(storeId))).find((d) => d.key === chave)
+  assert.ok(conjunto, 'o conjunto da série não existe')
+  const campos = Object.keys(conjunto.schema?.properties ?? {})
+  assert.deepEqual(campos.sort(), ['maximo', 'minimo'], `o conjunto não declara o que a janela grava: ${JSON.stringify(conjunto.schema)}`)
+})
+
+test('um conjunto que já existe SEM campos é completado quando os nomes chegam', async () => {
+  // Contas que já aplicaram antes desta correção têm a série gravando e o conjunto mudo.
+  // Preencher o vazio destrava a consulta sem tocar no que já foi gravado.
+  const { criarRecorder } = await import('../dist/dataHistory/recorders.js')
+  const r = await criarRecorder(DONO, {
+    name: 'Série muda',
+    source: { kind: 'manual', ref: 'monitoring:muda' },
+    mode: 'window_aggregate',
+    intervalMs: 300_000,
+    persistPolicy: 'aggregate_only',
+    aggregations: [{ from: 'v', op: 'min', to: 'minimo' }],
+    retention: { mode: 'forever' },
+  })
+  const { ensureDatasetForRecorder } = await import('../dist/databases/migration.js')
+  const primeira = await ensureDatasetForRecorder(DONO, r)
+  const { listDatasets } = await import('../dist/databases/store.js')
+  const antes = (await listDatasets(DONO, primeira.dataStoreId)).find((d) => d.key === primeira.datasetKey)
+  assert.deepEqual(Object.keys(antes.schema?.properties ?? {}), [], 'o caso só vale se ele nasceu mudo')
+
+  await ensureDatasetForRecorder(DONO, { ...r, selectedFields: ['minimo'] })
+  const depois = (await listDatasets(DONO, primeira.dataStoreId)).find((d) => d.key === primeira.datasetKey)
+  assert.deepEqual(Object.keys(depois.schema?.properties ?? {}), ['minimo'])
+})
