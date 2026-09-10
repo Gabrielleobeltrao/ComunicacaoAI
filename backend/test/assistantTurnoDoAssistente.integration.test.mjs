@@ -55,6 +55,18 @@ const projetos = () => db.collection('assistant_projects').countDocuments({ owne
  * consulta — em vez de mandar a decisão pronta pelo corpo da requisição.
  */
 const provedorQueResponde = (json) => async () => ({ text: JSON.stringify(json), usage: { inputTokens: 1, outputTokens: 1 } })
+
+/**
+ * O dublê que responde DIFERENTE a cada chamada.
+ *
+ * O roteador classifica a intenção com uma chamada, e o turno do projeto monta a resposta
+ * com outra. Um dublê fixo devolvia o JSON do turno para a classificação — que não o
+ * reconhece como intenção e cai em "answer", testando outro caminho.
+ */
+const provedorEmSequencia = (...jsons) => {
+  let i = 0
+  return async () => ({ text: JSON.stringify(jsons[Math.min(i++, jsons.length - 1)]), usage: { inputTokens: 1, outputTokens: 1 } })
+}
 const provedorQueCai = () => async () => {
   throw new Error('provedor fora')
 }
@@ -101,8 +113,14 @@ test('PROPOR é o único modo que cria projeto', async () => {
   // que nunca resolvia, e o campo bloqueado.
   assert.equal(r.phase, 'done')
   assert.equal(await projetos(), 1)
-  // A GARANTIA, e não a redação: nada acontece sem aprovação.
-  assert.match(r.text, /nada é (criado nem )?aplicado sem a sua aprovação/i)
+  /**
+   * O TEXTO É O DA RODADA — a que roda aqui mesmo, e não uma promessa enlatada.
+   *
+   * Sem provedor no teste ela falha e devolve o motivo. Antes, esta rodada devolvia sempre
+   * "vou montar isso, nada é aplicado sem aprovação" — uma frase verdadeira e inútil, que
+   * ocupava o turno onde deveria estar a primeira pergunta.
+   */
+  assert.doesNotMatch(r.text, /Estou montando a proposta agora/)
 
   /**
    * O PROJETO É A CASA DA CONVERSA, e não uma proposta pronta.
@@ -126,8 +144,10 @@ test('PROPOR é o único modo que cria projeto', async () => {
     .sort({ createdAt: 1 })
     .toArray()
   assert.equal(linhas.length, 2, 'a pergunta e a resposta ficam na linha do projeto')
+  // Quem responde é a RODADA do projeto, que roda aqui mesmo. Sem provedor no teste ela
+  // falha e grava o motivo — e é essa marca que prova que ela aconteceu.
   assert.equal(linhas[0].role, 'user')
-  assert.equal(linhas[1].role, 'assistant')
+  assert.notEqual(linhas[1].role, 'user', 'a conversa não pode ficar só com o pedido')
   assert.equal(linhas[1].content, r.text)
 })
 
@@ -468,6 +488,55 @@ test('AMEAÇA: o agente de OUTRA conta não é descrito', async () => {
 // caracteres, então ele lia a própria frase truncada no meio; e a proposta de verdade chegava
 // segundos depois, deixando esse aviso para sempre entre o pedido e a resposta.
 
+test('ACEITAÇÃO: quem abre o projeto JÁ dá o primeiro turno', async () => {
+  /**
+   * Do dono, olhando a própria conversa: "não tem que entender melhor para poder criar? por
+   * que não está fazendo pergunta?".
+   *
+   * A rodada terminava com um aviso, e a pergunta ficava para a rodada seguinte — disparada
+   * pela TELA, que só disparava quando havia exatamente UMA mensagem no projeto. Condição
+   * que o próprio aviso quebrava, por ser a segunda. O Assistente ficava calado, e ele teve
+   * de cutucar ("dá pra fazer?") seis minutos depois para a conversa começar.
+   *
+   * O provedor do turno não é injetável daqui — mas ele não precisa ser: antes desta
+   * mudança a rodada do projeto NUNCA acontecia, então nada além do pedido era gravado.
+   * Qualquer marca dela na conversa é a prova de que ela rodou.
+   */
+  const r = await assistente.runAssistantTurn({
+    ownerId: DONO,
+    message: 'então tem como criar um agente ou uma ferramenta para salvar o valor mínimo e máximo de bitcoin em um intervalo de 5 minutos?',
+    ask: provedorQueResponde({ mode: 'propose', objective: 'guardar o mínimo e o máximo do bitcoin a cada 5 minutos' }),
+  })
+  assert.equal(r.intent.mode, 'propose')
+  assert.ok(r.projectId, 'a proposta precisa de um projeto')
+
+  const msgs = await db.collection('assistant_messages').find({ projectId: new ObjectId(r.projectId) }).sort({ createdAt: 1 }).toArray()
+  assert.equal(msgs[0].role, 'user', 'o pedido original abre a conversa')
+  assert.ok(msgs.length > 1, 'a rodada do projeto não aconteceu: a conversa ficou só com o pedido')
+
+  // E o aviso de "já volto" NUNCA é a resposta quando a rodada aconteceu.
+  assert.doesNotMatch(r.text, /Estou montando a proposta agora/, 'isso não é entender nem perguntar')
+  assert.equal(
+    msgs.filter((m) => m.provisional).length,
+    0,
+    'a rodada já deixou a explicação dela; um segundo aviso dá duas mensagens sobre a mesma coisa',
+  )
+})
+
+test('AMEAÇA: se a primeira rodada FALHA, o pedido não fica sem resposta na tela', async () => {
+  const r = await assistente.runAssistantTurn({
+    ownerId: DONO,
+    message: 'Automatize atendimento e reservas pelo WhatsApp',
+    ask: provedorQueCai(),
+  })
+  assert.ok(r.projectId)
+  const msgs = await db.collection('assistant_messages').find({ projectId: new ObjectId(r.projectId) }).toArray()
+  assert.equal(msgs.some((m) => m.role === 'user'), true, 'o pedido original tem de ficar gravado')
+  const explicacao = msgs.find((m) => m.role !== 'user')
+  assert.ok(explicacao, 'sem resposta nenhuma, parece que o Assistente ignorou')
+  assert.equal(msgs.filter((m) => m.role !== 'user').length, 1, 'duas mensagens sobre a mesma falha, e a segunda dizendo menos')
+})
+
 test('a primeira resposta não devolve a frase da pessoa cortada no meio', async () => {
   const r = await assistente.runAssistantTurn({
     ownerId: DONO,
@@ -476,24 +545,18 @@ test('a primeira resposta não devolve a frase da pessoa cortada no meio', async
   assert.equal(r.intent.mode, 'propose')
   assert.doesNotMatch(r.text, /…/, 'reticências de corte no meio da frase parecem defeito, não resposta')
   assert.doesNotMatch(r.text, /Entendi:/, 'ecoar o pedido não é responder')
-  // Ela ainda diz o que está acontecendo e o que NÃO acontece sem aprovação.
-  assert.match(r.text, /aprova/i)
 })
 
-test('ACEITAÇÃO: o "já volto" é gravado, e sai quando a resposta de verdade chega', async () => {
+test('AMEAÇA: o "já volto" só existe quando NADA mais explicou', async () => {
+  /**
+   * Ele nasceu para um caso só: um pedido sem nenhuma resposta na tela parece que o
+   * Assistente ignorou. Quando a rodada acontece — dando certo ou errado — ela mesma deixa
+   * a explicação, e o aviso vira ruído entre o pedido e a resposta.
+   */
   const r = await assistente.runAssistantTurn({ ownerId: DONO, message: 'Automatize atendimento e reservas pelo WhatsApp' })
-  const projectId = new ObjectId(r.projectId)
-
-  // Fica gravado: se a montagem falhar, um pedido sem nenhuma resposta parece que o
-  // Assistente ignorou.
-  const antes = await db.collection('assistant_messages').find({ projectId }).sort({ createdAt: 1 }).toArray()
-  assert.equal(antes.at(-1).role, 'assistant')
-  assert.equal(antes.at(-1).provisional, true, 'ele nasce marcado — não é uma resposta, é um aviso')
-
-  const { clearProvisionalMessages } = await import('../dist/assistant/repository.js')
-  await clearProvisionalMessages(DONO, projectId)
-
-  const depois = await db.collection('assistant_messages').find({ projectId }).toArray()
-  assert.equal(depois.some((m) => m.provisional), false, 'ele tem de sair, e não acumular')
-  assert.equal(depois.some((m) => m.role === 'user'), true, 'o pedido original continua lá')
+  const msgs = await db.collection('assistant_messages').find({ projectId: new ObjectId(r.projectId) }).sort({ createdAt: 1 }).toArray()
+  assert.equal(msgs.filter((m) => m.provisional).length, 0, 'a rodada explicou; um segundo aviso é ruído')
+  // E o que a tela recebe é o MESMO texto que ficou gravado: a bolha do chat não pode
+  // discordar da linha logo acima dela.
+  assert.equal(r.text, msgs.filter((m) => m.role !== 'user').pop().content)
 })

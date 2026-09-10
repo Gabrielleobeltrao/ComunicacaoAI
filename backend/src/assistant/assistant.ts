@@ -291,42 +291,43 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
    */
   await appendMessage(input.ownerId, projeto._id, 'user', mensagem).catch(() => undefined)
   /**
-   * A rodada TERMINA aqui — o projeto foi aberto.
+   * A PRIMEIRA RESPOSTA É A DE VERDADE — ela entende e pergunta.
    *
-   * `preparing_proposal` como fase final deixava a tela num "preparando…" que nunca resolvia,
-   * e o campo bloqueado: a pessoa não conseguia nem continuar a conversa nem abrir o projeto.
-   * Montar a proposta é o próximo passo, dentro do projeto, e ele tem estado próprio.
+   * Antes, esta rodada terminava com um aviso ("abri a conversa, estou montando") e a
+   * pergunta ficava para a rodada seguinte, que quem disparava era a TELA. E a tela só
+   * disparava quando havia exatamente uma mensagem no projeto — condição que o próprio
+   * aviso quebrava, porque ele era a segunda. Resultado: o Assistente ficava calado, e o
+   * dono tinha que cutucar ("dá pra fazer?") para a conversa começar.
+   *
+   * Depender da tela para a conversa começar era o erro de fundo. Quem abre o projeto
+   * agora também dá o primeiro turno: o entendimento e a primeira pergunta saem aqui.
    */
-  /**
-   * O "JÁ VOLTO" — e por que ele é PROVISÓRIO.
-   *
-   * Ele ecoava o TÍTULO do projeto, que é cortado em 60 caracteres: a pessoa lia de volta a
-   * própria frase truncada no meio ("…que registre e salve o valo…"), o que parece defeito
-   * antes de parecer resposta. E a montagem de verdade chega segundos depois, então o aviso
-   * ficava para sempre entre o pedido e a resposta, ocupando um turno sem dizer nada.
-   *
-   * Ele continua sendo gravado porque a montagem pode falhar, e um pedido sem nenhuma
-   * resposta parece que o Assistente ignorou. Mas nasce marcado: quando a resposta real for
-   * gravada, ele sai.
-   */
-  const resposta = maskSecretsDeep(
-    'Abri a conversa desta operação. Estou montando a proposta agora — nada é criado nem aplicado sem a sua aprovação.',
-  ) as string
-  /**
-   * A RESPOSTA também é gravada.
-   *
-   * Antes só a frase da pessoa entrava no projeto: quem reabrisse a conversa via o próprio
-   * pedido e nenhuma resposta, como se o Assistente tivesse ignorado. Uma conversa pela
-   * metade é pior que nenhuma, porque parece um defeito.
-   */
-  await appendMessage(input.ownerId, projeto._id, 'assistant', resposta, { provisional: true }).catch(() => undefined)
-  return {
-    intent,
-    phase: 'done',
-    text: resposta,
-    question,
-    projectId: projeto._id.toString(),
-    context,
+  try {
+    const { advanceTurn } = await import('./service.js')
+    const r = await advanceTurn(input.ownerId, projeto._id)
+    return { intent, phase: 'done', text: r.assistantText, question: (r.question as typeof question) ?? question, projectId: projeto._id.toString(), context }
+  } catch {
+    /**
+     * O "JÁ VOLTO" — só quando a primeira rodada FALHA.
+     *
+     * Ele existe para um caso só: a montagem não saiu, e um pedido sem nenhuma resposta na
+     * tela parece que o Assistente ignorou. No caminho feliz ele não é escrito, então não
+     * ocupa mais um turno da conversa dizendo o que o turno seguinte diz.
+     */
+    const resposta = maskSecretsDeep(
+      'Abri a conversa desta operação, mas não consegui montar a proposta agora. Me mande a mensagem de novo — nada é criado nem aplicado sem a sua aprovação.',
+    ) as string
+    /**
+     * A rodada que falha já grava o MOTIVO na conversa. Escrever um segundo aviso daria à
+     * pessoa duas mensagens sobre a mesma falha, e a segunda dizendo menos — e devolver um
+     * texto diferente do que ficou gravado deixaria a bolha do chat discordando da linha
+     * logo acima dela.
+     */
+    const { recentMessages } = await import('./repository.js')
+    const jaGravado = (await recentMessages(input.ownerId, projeto._id, 5).catch(() => [])).filter((m) => m.role !== 'user').pop()
+    if (jaGravado) return { intent, phase: 'done', text: jaGravado.content, question, projectId: projeto._id.toString(), context }
+    await appendMessage(input.ownerId, projeto._id, 'assistant', resposta, { provisional: true }).catch(() => undefined)
+    return { intent, phase: 'done', text: resposta, question, projectId: projeto._id.toString(), context }
   }
 }
 
