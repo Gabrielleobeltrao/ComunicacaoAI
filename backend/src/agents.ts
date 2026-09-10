@@ -770,6 +770,15 @@ export async function createAgent(
     callableSectorIds?: string[]
     allowedCallerAgentIds?: string[]
     toolIds?: string[]
+    /**
+     * QUANDO mandar trabalho para este agente — na contratação, e não só no PATCH.
+     *
+     * É a informação mais útil que o planejador tem, e o create não a aceitava: quem
+     * contratava um agente já descrito precisava criar e depois editar, e o que fosse
+     * esquecido no segundo passo simplesmente não existia. É o mesmo motivo pelo qual os
+     * outros blocos da definição estão aqui.
+     */
+    routingDescription?: string
     watchedSources?: WatchedSource[]
     metricProfile?: MetricProfile
     /** A marca do Assistente, quando foi ele que criou. Ver `assistantStamp.ts`. */
@@ -786,6 +795,7 @@ export async function createAgent(
     ...(options.role?.trim() ? { role: options.role.trim() } : {}),
     ...(options.instructions?.trim() ? { instructions: options.instructions.trim() } : {}),
     ...(options.constraints?.trim() ? { constraints: options.constraints.trim() } : {}),
+    ...(options.routingDescription?.trim() ? { routingDescription: options.routingDescription.trim().slice(0, 400) } : {}),
     ...(options.runConfig && Object.keys(options.runConfig).length ? { runConfig: options.runConfig } : {}),
     // Quem já nasce com definição escrita nasce EDITADO: uma troca de preset depois não
     // pode passar por cima do que foi dito na contratação.

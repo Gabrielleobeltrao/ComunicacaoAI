@@ -540,3 +540,55 @@ test('com a lista inteira tomada, o nome ganha número — nunca fica vazio nem 
     assert.ok(!todos.includes(a.name), `"${a.name}" já estava em uso`)
   }
 })
+
+// --- O AGENTE DECLARADO CHEGA A QUEM CRIA ----------------------------------------------------
+//
+// Quem cria agente e setor é a saga do V1, a partir do blueprint V1. Um agente declarado só no
+// V2 valida, aparece na prévia e NUNCA é criado — silenciosamente, e só descoberto depois de
+// aplicar. Este caso é o que impede a armadilha de voltar.
+
+test('ACEITAÇÃO: um agente declarado por ferramenta entra no plano que a saga aplica', () => {
+  const base = { title: 'T', objective: 'O' }
+  const r = compileBrief(briefCompleto(), manifesto, base, null, {}, {
+    agentes: [
+      {
+        chave: 'agente-vigia',
+        nome: 'Vigia',
+        andar: '',
+        papel: 'Olha a temperatura da câmara fria',
+        quandoEntra: 'Quando a leitura passa do limite',
+        recebe: 'A leitura do sensor',
+        entrega: 'Um aviso para o responsável',
+        instrucoes: 'Avise uma vez por hora, no máximo.',
+        limites: ['Nunca desligar o alarme sozinho'],
+      },
+    ],
+    setores: [],
+  })
+  const vigia = r.blueprint.agents.find((a) => a.name === 'Vigia')
+  assert.ok(vigia, `o agente declarado não entrou no V1: ${JSON.stringify(r.blueprint.agents.map((a) => a.name))}`)
+  // Os campos que morriam no caminho: agora eles chegam.
+  assert.equal(vigia.trigger, 'Quando a leitura passa do limite')
+  assert.deepEqual(vigia.boundaries, ['Nunca desligar o alarme sozinho'])
+  assert.equal(vigia.inputContract, 'A leitura do sensor')
+  assert.equal(vigia.outputContract, 'Um aviso para o responsável')
+  // E ele tem andar: sem isso a saga recusa com "o andar do agente não foi criado".
+  assert.ok(r.blueprint.floors.some((f) => f.key === vigia.floorKey))
+})
+
+test('um setor declarado só entra com membros que o plano tem de verdade', () => {
+  const base = { title: 'T', objective: 'O' }
+  const r = compileBrief(briefCompleto(), manifesto, base, null, {}, {
+    agentes: [{ chave: 'agente-ana', nome: 'Ana', andar: '', papel: 'p', quandoEntra: 'q', recebe: 'r', entrega: 'e', instrucoes: '', limites: [] }],
+    setores: [
+      { chave: 'setor-time', nome: 'Time', andar: '', modo: 'organization', membros: ['agente-ana'], coordenador: '', instrucao: 'trabalham juntos' },
+      { chave: 'setor-fantasma', nome: 'Fantasma', andar: '', modo: 'organization', membros: ['agente-que-nao-existe'], coordenador: '', instrucao: '' },
+    ],
+  })
+  assert.ok(r.blueprint.sectors.some((s) => s.key === 'setor-time'), 'o setor com membro real tem de entrar')
+  assert.equal(
+    r.blueprint.sectors.some((s) => s.key === 'setor-fantasma'),
+    false,
+    'um setor cujos membros não existem seria recusado pela saga, no meio da aplicação',
+  )
+})

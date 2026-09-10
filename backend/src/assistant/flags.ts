@@ -19,3 +19,23 @@
 
 /** `0`, `false` ou `off` desligam. Qualquer outra coisa — inclusive ausência — deixa ligado. */
 export const assistantV2Enabled = (): boolean => !/^(0|false|off)$/i.test(String(process.env.ASSISTANT_BLUEPRINT_V2 ?? '').trim())
+
+
+// A FLAG DAS FERRAMENTAS do Assistente — nasce DESLIGADA, e por quê.
+//
+// Com ela ligada, o turno deixa de ser uma chamada só e passa pelo laço de ferramentas: o
+// modelo lê o inventário, propõe recursos tipados e recebe a recusa de volta quando erra o
+// preenchimento. É a virada que tira o teto do compilador — ele só entendia o que alguém
+// escreveu regex para entender.
+//
+// Desligada, o turno é exatamente o que era. Ligar é uma variável:
+//
+//     ASSISTANT_TOOLS=1
+//
+// Ela nasce desligada porque muda o custo (uma chamada vira até seis) e introduz
+// não-determinismo: dois pedidos iguais podem dar planos ligeiramente diferentes. Nenhuma
+// das duas coisas se descobre em teste — descobre-se em conta de verdade, e por isso o
+// caminho de volta tem de ser uma variável, não um deploy.
+
+/** `1`, `true` ou `on` ligam. Qualquer outra coisa — inclusive ausência — deixa desligado. */
+export const assistantToolsEnabled = (): boolean => /^(1|true|on)$/i.test(String(process.env.ASSISTANT_TOOLS ?? '').trim())

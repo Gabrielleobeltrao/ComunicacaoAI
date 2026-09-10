@@ -770,7 +770,22 @@ function camposDoAgente(agent: BlueprintAgent, extra: { name?: string } = {}): P
     objective: agent.objective ?? '',
     ...(agent.role ? { role: agent.role } : {}),
     ...(agent.instructions ? { instructions: agent.instructions } : {}),
-    ...(agent.constraints ? { constraints: agent.constraints } : {}),
+    /**
+     * OS CAMPOS QUE MORRIAM NO CAMINHO.
+     *
+     * `trigger` e `boundaries` eram obrigatórios na validação do plano e não chegavam ao
+     * banco: o modelo preenchia, a proposta mostrava, e o agente nascia sem. Cada um tem
+     * casa de verdade — `trigger` é literalmente o que `routingDescription` guarda ("quando
+     * mandar trabalho para este agente"), e `boundaries` é o que ele NÃO faz, que é a
+     * definição de `constraints`.
+     *
+     * `judgement` e `performs` ficam no plano de propósito: eles justificam POR QUE isto é
+     * um agente e não uma função. Isso é matéria da proposta, não configuração do agente.
+     */
+    ...(agent.constraints || agent.boundaries?.length
+      ? { constraints: [agent.constraints, ...(agent.boundaries ?? [])].filter((x) => String(x ?? '').trim()).join('\n') }
+      : {}),
+    ...(agent.routingDescription || agent.trigger ? { routingDescription: agent.routingDescription || agent.trigger } : {}),
     ...(agent.preset ? { preset: agent.preset as never } : {}),
     ...(agent.capabilities?.length ? { capabilities: agent.capabilities } : {}),
     ...(agent.provider ? { provider: agent.provider } : {}),

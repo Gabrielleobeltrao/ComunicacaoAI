@@ -1,4 +1,5 @@
 import { askAuxWithUsage } from '../llm.js'
+import type { ResolvedTool } from '../agentTools.js'
 import { classifyLlmFailure } from '../llmFailure.js'
 import type { LlmFailureCode } from '../llmFailure.js'
 import { defaultModelOf } from '../modelDefaults.js'
@@ -239,6 +240,14 @@ export interface RunTurnInput {
   /** Chave de cobrança estável: a mesma rodada, repetida, não cobra duas vezes. */
   chargeKey: string
   maxTokens?: number
+  /**
+   * AS FERRAMENTAS desta rodada. Vazio é o caminho de sempre: uma chamada, uma resposta.
+   *
+   * Com elas, o modelo lê o inventário, propõe recursos tipados e recebe a RECUSA de volta
+   * quando erra o preenchimento — é a recusa que volta que tira o teto do compilador. O
+   * texto final continua sendo o mesmo contrato JSON: o laço acontece antes dele.
+   */
+  tools?: ResolvedTool[]
 }
 
 /**
@@ -305,6 +314,23 @@ export async function runAssistantTurn(input: RunTurnInput): Promise<TurnOutcome
     return { ok: false, failure: { code: 'budget_exceeded', message: 'O limite mensal de tokens desta conta foi atingido.' }, usage: semUso() }
   }
 
+  /**
+   * O LAÇO — o mesmo do runtime, reaproveitado.
+   *
+   * `generateAgentReply` já sabe declarar ferramenta ao provedor, executar o que ele pediu,
+   * devolver o resultado e continuar. Escrever um segundo laço aqui seria um segundo lugar
+   * para o mesmo tipo de erro acontecer.
+   *
+   * O prompt inteiro entra como objetivo e o histórico vai vazio de propósito: a conversa já
+   * está DENTRO do prompt, montada por `buildAssistantPrompt`, e mandá-la duas vezes faria o
+   * modelo ver cada mensagem em dose dupla.
+   */
+  const comFerramentas = async (prompt: string) => {
+    const { generateAgentReply } = await import('../llm.js')
+    const r = await generateAgentReply(prompt, [], '', [], provider, model, apiKey, '', '', '', true, input.tools ?? [], {})
+    return { text: r.text, usage: r.usage }
+  }
+
   const chamar = async (prompt: string, sufixoDaChave: string): Promise<{ text: string } | { erro: TurnFailure }> => {
     // A primeira chamada já pode ter estourado o teto. Conferir só na entrada
     // deixava o reparo passar por cima do limite que a conta acabou de atingir.
@@ -312,7 +338,9 @@ export async function runAssistantTurn(input: RunTurnInput): Promise<TurnOutcome
       return { erro: { code: 'budget_exceeded', message: 'O limite mensal de tokens desta conta foi atingido.' } }
     }
     try {
-      const { text, usage } = await askAuxWithUsage(provider, prompt, model, apiKey, maxTokens)
+      const { text, usage } = (input.tools ?? []).length
+        ? await comFerramentas(prompt)
+        : await askAuxWithUsage(provider, prompt, model, apiKey, maxTokens)
       usoTotal = somar(usoTotal, usage)
       // Cobrado mesmo quando a resposta é ilegível: o provedor já cobrou.
       await recordReplyUsageOnce(input.ownerId, usage, `${input.chargeKey}${sufixoDaChave}`)

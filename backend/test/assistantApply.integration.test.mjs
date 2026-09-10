@@ -1089,3 +1089,54 @@ test('depois de aplicado, os recursos do V2 voltam como ALTERAR — nunca como c
   }
   assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), antes, 'conversar não cria recurso')
 })
+
+// --- FASE 0: O QUE O PLANO DECLARA CHEGA AO RECURSO ------------------------------------------
+//
+// `trigger` e `boundaries` eram obrigatórios na validação do plano e não chegavam ao banco:
+// o modelo preenchia, a proposta mostrava, e o agente nascia sem. Um campo obrigatório que
+// morre no caminho é pior que campo nenhum — ele promete e não cumpre.
+
+test('ACEITAÇÃO: "quando ele entra" chega ao agente como routingDescription', async () => {
+  const { id } = await projetoPronto()
+  const projeto = await db.collection('assistant_projects').findOne({ _id: new ObjectId(id) })
+  const agentes = projeto.blueprint.agents ?? []
+  assert.ok(agentes.length > 0, 'o plano precisa ter agente para o caso valer')
+  assert.ok(
+    agentes.some((a) => String(a.trigger ?? '').trim()),
+    `nenhum agente do plano diz quando entra: ${JSON.stringify(agentes.map((a) => ({ k: a.key, t: a.trigger })))}`,
+  )
+
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  const r = await aplicar(id, previa.body.blueprintHash, 'op-trigger')
+  assert.equal(r.body.status, 'applied', JSON.stringify(r.body))
+
+  const criados = await db.collection('agents').find({ ownerId: DONO }).toArray()
+  assert.ok(criados.length > 0, 'nenhum agente foi criado')
+  const comFrase = criados.filter((a) => String(a.routingDescription ?? '').trim())
+  assert.ok(
+    comFrase.length > 0,
+    `o plano dizia quando o agente entra e o banco não guardou: ${JSON.stringify(criados.map((a) => ({ n: a.name, r: a.routingDescription ?? null })))}`,
+  )
+  // E é a frase do plano, não um texto inventado no caminho.
+  const doPlano = agentes.map((a) => a.trigger).filter(Boolean)
+  assert.ok(doPlano.some((t) => comFrase.some((a) => a.routingDescription === t)))
+})
+
+test('AMEAÇA: o que o agente NÃO faz entra em constraints, e não some', async () => {
+  const { criarAgente } = await import('../dist/assistant/apply.js').catch(() => ({}))
+  // Sem export do helper, o caso vale pelo caminho real: um plano com boundaries aplicado.
+  const { id } = await projetoPronto()
+  await db.collection('assistant_projects').updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { 'blueprint.agents.0.boundaries': ['Nunca prometer prazo', 'Nunca dar desconto'] } },
+  )
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  const r = await aplicar(id, previa.body.blueprintHash, 'op-bounds')
+  assert.equal(r.body.status, 'applied', JSON.stringify(r.body))
+
+  const criados = await db.collection('agents').find({ ownerId: DONO }).toArray()
+  const comLimite = criados.find((a) => String(a.constraints ?? '').includes('Nunca prometer prazo'))
+  assert.ok(comLimite, `os limites do plano sumiram: ${JSON.stringify(criados.map((a) => a.constraints ?? null))}`)
+  assert.match(comLimite.constraints, /Nunca dar desconto/, 'o segundo limite também tem de estar lá')
+  assert.equal(criarAgente, undefined) // o helper não é público, e não precisa ser
+})

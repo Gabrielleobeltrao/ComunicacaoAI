@@ -142,6 +142,16 @@ export interface BlueprintAgent extends BlueprintItemBase {
   constraints?: string
   capabilities?: string[]
   routingDescription?: string
+  /**
+   * QUANDO ele entra, e o que ele NÃO faz.
+   *
+   * Existiam só no plano V2 — e como quem cria agente é a saga do V1, eles eram validados
+   * como obrigatórios, apareciam na prévia e nunca chegavam ao banco. Aqui é onde a saga
+   * os alcança: `trigger` vira `routingDescription` do agente, `boundaries` entra em
+   * `constraints`.
+   */
+  trigger?: string
+  boundaries?: string[]
   /** O mesmo vocabulário de `executors/types.ts`: um segundo aqui viraria tradução. */
   executorKind?: 'llm' | 'function' | 'tool'
   /** Também o vocabulário do domínio. `structured` é o que promete JSON. */

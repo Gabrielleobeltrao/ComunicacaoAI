@@ -7,7 +7,8 @@ import { compileBriefV2 } from './compileV2.js'
 import { V2_ITEM_PATHS, itemsAt } from './typesV2.js'
 import type { OfficeBlueprintV2 } from './typesV2.js'
 import { loadOfficeInventory } from './inventory.js'
-import { assistantV2Enabled } from './flags.js'
+import { assistantToolsEnabled, assistantV2Enabled } from './flags.js'
+import { ferramentasDoAssistente, rascunhoVazio } from './assistantTools.js'
 import { runLlmCritique } from './criticLlm.js'
 import { diffBlueprints, ehRepeticaoSemEfeito, resumoDaMudanca } from './diff.js'
 import { repairBlueprintPatch, repairReuseWithoutTarget } from './repair.js'
@@ -214,6 +215,16 @@ async function runTurn(
    */
   const classificacao = classifyBrief(briefAtual, manifesto, respondidas)
 
+  /**
+   * O RASCUNHO desta rodada — o que as ferramentas anotam.
+   *
+   * Ele nasce vazio a cada turno de propósito: o que sobrevive entre rodadas é o BRIEF e o
+   * plano compilado, não uma pilha de declarações. Uma janela proposta e depois recusada
+   * pelo dono não pode voltar sozinha na rodada seguinte.
+   */
+  const rascunho = rascunhoVazio()
+  const ferramentas = assistantToolsEnabled() ? ferramentasDoAssistente({ inventory: inventario, rascunho }) : []
+
   const resultado = await runAssistantTurn({
     ownerId,
     provider: projeto.provider,
@@ -232,6 +243,7 @@ async function runTurn(
       forceProposal: opts.forceProposal,
     }),
     chargeKey,
+    tools: ferramentas,
   })
 
   if (!resultado.ok) {
@@ -301,7 +313,7 @@ async function runTurn(
    * título — e o V2 recebia esse andar pronto e o repetia. A escolha entre expandir e criar
    * precisa do que a conta tem, e é aqui que ela passa a ter.
    */
-  const compilado = compilar ? compileBrief(briefNovo, manifesto, { title: projeto.title, objective: projeto.objective }, inventario, answers) : null
+  const compilado = compilar ? compileBrief(briefNovo, manifesto, { title: projeto.title, objective: projeto.objective }, inventario, answers, { agentes: rascunho.agentes, setores: rascunho.setores }) : null
 
   /**
    * O plano V2 é compilado do MESMO Brief, e só quando a flag está ligada.
@@ -322,7 +334,10 @@ async function runTurn(
           base: { title: projeto.title, objective: projeto.objective },
           // O que o modelo reconheceu como série resumida. Vazio é o normal: a maioria dos
           // pedidos não tem janela nenhuma.
-          windows: turno.windows,
+          // O que a FERRAMENTA anotou vem primeiro: ela passou pelo executor, que recusa. O
+          // campo do JSON continua valendo para quem não está no laço.
+          windows: [...rascunho.janelas, ...turno.windows],
+          declarados: { databases: rascunho.databases, conjuntos: rascunho.conjuntos, fontes: rascunho.fontes, monitores: rascunho.monitores },
           changeKind: projeto.status === 'applied' ? 'expand' : 'create',
           // Os andares vêm do plano V1: é ele que a saga aplica, e é dele que sai a `key`
           // que o `resourceMap` vai conhecer.
@@ -449,9 +464,20 @@ async function runTurn(
   const aindaAbertas = nextQuestions(briefNovo, manifesto, 2, inventario, respondidas)
   // A pergunta dos botões é a que o TEXTO fez — se ela continuar aberta depois do patch.
   const daForma = aindaAbertas.find((g) => g.id === aPerguntar?.id && temBotao(g)) ?? aindaAbertas.find(temBotao)
-  const pergunta = daForma
-    ? { key: daForma.id, text: daForma.question, why: daForma.why, choices: daForma.choices ?? [], allowUnknown: false }
-    : turno.question
+  /**
+   * A PERGUNTA DA FERRAMENTA vence as duas.
+   *
+   * Quando o modelo chamou `perguntar`, ele já decidiu o que falta — e decidiu DEPOIS de ter
+   * lido o inventário e levado as recusas. Carimbar por cima disso a lacuna que o servidor
+   * escolheu antes da rodada devolveria o descompasso que a gente acabou de acabar: texto
+   * perguntando uma coisa, botão oferecendo outra.
+   */
+  const daFerramenta = rascunho.pergunta
+    ? { key: rascunho.pergunta.chave, text: rascunho.pergunta.texto, why: '', choices: rascunho.pergunta.opcoes, allowUnknown: false }
+    : null
+  const pergunta =
+    daFerramenta ??
+    (daForma ? { key: daForma.id, text: daForma.question, why: daForma.why, choices: daForma.choices ?? [], allowUnknown: false } : turno.question)
 
   const patch: Partial<AssistantProject> = {
     // Qual constituição valia quando esta proposta foi feita. Sem isso, mudar o texto

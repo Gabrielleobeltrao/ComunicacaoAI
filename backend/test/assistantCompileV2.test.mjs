@@ -1230,3 +1230,48 @@ test('sem nada declarado, a regex continua valendo — nada do que funcionava se
   assert.equal(j.window.everyMs, 600_000)
   assert.equal(j.window.rules[0].from, 'temperatura')
 })
+
+test('ACEITAÇÃO: o Database e o conjunto que a FERRAMENTA anotou viram itens do plano', () => {
+  const { blueprint } = c2.compileBriefV2({
+    brief: { ...emptyBrief('Guardar as leituras'), jobs: [{ id: 'j', name: 'Guardar leituras', trigger: 'chega leitura', input: 'sensor', decision: '', action: 'gravar', output: 'linha' }] },
+    manifest: manifesto(),
+    inventory: null,
+    base: { title: 'X', objective: 'Y' },
+    declarados: {
+      databases: [{ chave: 'base-camara-fria', nome: 'Câmara fria', descricao: 'leituras', tipo: 'data_history', agentes: ['vigia'], acesso: 'write' }],
+      conjuntos: [{ databaseChave: 'base-camara-fria', chave: 'leituras', nome: 'Leituras', campos: [{ nome: 'temperatura', tipo: 'number' }], podeEditar: false }],
+    },
+  })
+  const base = blueprint.resources.databases.find((d) => d.key === 'base-camara-fria')
+  assert.ok(base, `o Database declarado não entrou: ${JSON.stringify(blueprint.resources.databases.map((d) => d.key))}`)
+  assert.equal(base.action, 'create')
+  assert.deepEqual(base.agentKeys, ['vigia'], 'sem a concessão declarada, a base nasce inalcançável')
+  assert.equal(base.agentAccess, 'write')
+
+  const conjunto = blueprint.resources.datasets.find((d) => d.datasetKey === 'leituras')
+  assert.ok(conjunto, 'o conjunto declarado não entrou')
+  assert.equal(conjunto.databaseKey, 'base-camara-fria')
+  assert.ok(conjunto.dependsOn.includes('base-camara-fria'), 'sem a dependência, o conjunto é aplicado antes do Database existir')
+  // O schema é o que a consulta e a condição do monitor leem.
+  assert.deepEqual(conjunto.schema.properties, { temperatura: { type: 'number' } })
+  assert.equal(conjunto.mutability, 'append_only')
+})
+
+test('o Database declarado que a conta JÁ TEM vira reuse, apontando para o recurso', () => {
+  const inv = {
+    ownerId: 'dono',
+    at: new Date(),
+    building: { id: '000000000000000000000b01', name: 'Prédio' },
+    sections: { database: { kind: 'database', total: 1, truncated: false, items: [{ id: '000000000000000000000d09', label: 'Históricos', ownerScope: 'account' }] } },
+  }
+  const { blueprint } = c2.compileBriefV2({
+    brief: { ...emptyBrief('x'), jobs: [{ id: 'j', name: 'Guardar', trigger: 't', input: 'i', decision: '', action: 'a', output: 'o' }] },
+    manifest: manifesto(),
+    inventory: inv,
+    base: { title: 'X', objective: 'Y' },
+    declarados: { databases: [{ chave: 'base-historicos', nome: 'Históricos', descricao: '', tipo: 'data_history', agentes: [], acesso: 'read' }], conjuntos: [] },
+  })
+  const base = blueprint.resources.databases.find((d) => d.key === 'base-historicos')
+  assert.equal(base.action, 'reuse', 'criar outra base com o mesmo nome é recusado pelo domínio, tarde demais')
+  assert.equal(base.resourceId, '000000000000000000000d09')
+})
