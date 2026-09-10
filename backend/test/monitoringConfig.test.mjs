@@ -88,3 +88,38 @@ test('a estratégia padrão vai do mais barato ao mais caro, e a VISÃO fica de 
 test('tipo desconhecido é recusado', () => {
   assert.throws(() => validateConfig('telepatia', {}), ConfigError)
 })
+
+// --- A REFERÊNCIA PELA QUAL O MOTOR ENTREGA O FATO -------------------------------------------
+//
+// Quem LISTA o que vive de uma fonte precisa da mesma conta que o materializador faz. Repetir
+// só o caso comum (`monitoring:<id>`) deixava as séries de `internal_event` e `websocket`
+// invisíveis: a lista sairia vazia como se não houvesse nenhuma — e o dono acabou de dizer
+// que o assunto nunca se repete entre contas.
+const { fonteDoRecorder } = await import('../dist/monitoring/types.js')
+
+test('cada tipo de fonte tem a SUA referência, e não a do exemplo', () => {
+  const id = { toString: () => '000000000000000000000f01' }
+
+  // O caso comum: qualquer fonte lida por consulta.
+  for (const kind of ['api_polling', 'rss', 'http_page', 'browser', 'dataset', 'webhook']) {
+    assert.deepEqual(fonteDoRecorder({ _id: id, kind, config: {} }), { kind: 'manual', ref: 'monitoring:000000000000000000000f01' }, kind)
+  }
+
+  // Evento interno: a referência é o TIPO do evento, e não a fonte.
+  assert.deepEqual(fonteDoRecorder({ _id: id, kind: 'internal_event', config: { eventType: 'pedido.criado' } }), {
+    kind: 'event',
+    ref: 'pedido.criado',
+  })
+
+  // WebSocket de App: a referência é a INSTALAÇÃO que entrega o fato.
+  assert.deepEqual(fonteDoRecorder({ _id: id, kind: 'websocket', config: { installationId: 'inst-9' } }), {
+    kind: 'live_data',
+    ref: 'inst-9',
+  })
+
+  // SSE não tem instalação: ele é entregue por este processo, como um evento próprio.
+  assert.deepEqual(fonteDoRecorder({ _id: id, kind: 'websocket', config: { protocol: 'sse', url: 'https://x/y' } }), {
+    kind: 'manual',
+    ref: 'monitoring:000000000000000000000f01',
+  })
+})

@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { Badge, Button, Card, Field, Input, Select, Tabs } from '../ui'
 import * as api from '../lib/monitoring'
+import { MODE_LABEL } from '../lib/dataHistory'
 import { HEALTH_LABEL, KIND_LABEL, STATUS_LABEL, desde, frase } from '../lib/monitoring'
 import type { OverviewItem, SourceKind, SourceSummary, TestOutcome } from '../lib/monitoring'
 import * as mon from '../lib/monitors'
@@ -212,12 +213,20 @@ function VisaoGeral({ visao }: { visao: { items: OverviewItem[]; summary: Record
 /** A ação da lista: a mensagem pode ser fixa ou vir do resultado da chamada. */
 type Acao = <T>(fn: () => Promise<T>, m?: string | ((r: T) => string)) => Promise<void>
 
-/** Como a regra da serie se le numa etiqueta: "resumo de 5 em 5 min", "toda ocorrencia". */
+/**
+ * Como a regra da série se lê numa etiqueta.
+ *
+ * O rótulo do modo vem de `MODE_LABEL`, que já cobre os SEIS modos em português. A primeira
+ * versão traduzia só três e devolvia a chave crua nos outros — "on_change" na tela de quem
+ * nunca vai ler isso como "quando mudar". Só os dois modos com intervalo ganham o tamanho
+ * junto, porque só neles ele existe.
+ */
 const MODO_DA_SERIE = (s: { mode: string; intervalMs: number | null }): string => {
-  if (s.mode !== 'window_aggregate' && s.mode !== 'snapshot_interval') return s.mode === 'every_event' ? 'toda ocorrencia' : s.mode
-  const ms = s.intervalMs ?? 0
+  const rotulo = MODE_LABEL[s.mode as keyof typeof MODE_LABEL] ?? s.mode
+  if ((s.mode !== 'window_aggregate' && s.mode !== 'snapshot_interval') || !s.intervalMs) return rotulo
+  const ms = s.intervalMs
   const cada = ms >= 3_600_000 ? `${Math.round(ms / 3_600_000)} h` : ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)}s`
-  return s.mode === 'window_aggregate' ? `resumo de ${cada} em ${cada}` : `foto a cada ${cada}`
+  return `${rotulo} de ${cada} em ${cada}`
 }
 
 function ListaDeFontes({ fontes, acao, onEditar }: { fontes: SourceSummary[] | null; acao: Acao; onEditar?: (f: SourceSummary) => void }) {

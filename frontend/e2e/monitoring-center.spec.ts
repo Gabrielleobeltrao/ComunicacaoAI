@@ -95,7 +95,7 @@ const LIVE = [
 
 async function stub(
   page: Page,
-  opts: { ativarErro?: string; live?: unknown[]; monitorErro?: string; monitores?: unknown[]; eventos?: unknown[]; grants?: unknown[] } = {},
+  opts: { ativarErro?: string; live?: unknown[]; monitorErro?: string; monitores?: unknown[]; eventos?: unknown[]; grants?: unknown[]; fontes?: { items: unknown[] } } = {},
 ) {
   criado = null
   monitorCriado = null
@@ -166,7 +166,7 @@ async function stub(
       criado = r.request().postDataJSON()
       return r.fulfill({ status: 201, json: { id: 'novo', status: 'draft' } })
     }
-    return r.fulfill({ json: FONTES })
+    return r.fulfill({ json: opts.fontes ?? FONTES })
   })
 }
 
@@ -999,12 +999,44 @@ test('ACEITAÇÃO: da fonte dá para ver e alcançar o que vive dela', async ({ 
   await expect(bloco).toBeVisible()
 
   // A regra aparece em português, e os campos junto: é assim que se reconhece a série certa.
-  await expect(bloco).toContainText('resumo de 5 min em 5 min')
+  await expect(bloco).toContainText('Resumo por período de 5 min em 5 min')
   await expect(bloco).toContainText('minimo, maximo')
-  await expect(bloco).toContainText('toda ocorrencia')
+  await expect(bloco).toContainText('Toda ocorrência')
   await expect(bloco).toContainText('20.261')
 
   // E dá para chegar na regra sem saber que Históricos existe.
   await page.getByTestId('serie-editar-rec-janela').click()
   await expect(page).toHaveURL(/\/historicos\/rec-janela\/editar/)
+})
+
+test('AMEAÇA: os SEIS modos aparecem em português — não só os que o exemplo usava', async ({ page }) => {
+  /**
+   * A primeira versão traduzia três modos e devolvia a chave crua nos outros: "on_change" na
+   * tela de quem nunca vai ler isso como "quando mudar". O rótulo agora vem da mesma tabela
+   * que o resto do produto usa.
+   */
+  await stub(page, {
+    fontes: {
+      items: [
+        {
+          ...FONTES.items[0],
+          series: [
+            { id: 'a', name: 'A', mode: 'on_change', intervalMs: null, fields: ['x'], recordCount: 1, enabled: true },
+            { id: 'b', name: 'B', mode: 'schedule_snapshot', intervalMs: null, fields: ['x'], recordCount: 1, enabled: true },
+            { id: 'c', name: 'C', mode: 'condition', intervalMs: null, fields: ['x'], recordCount: 1, enabled: true },
+            { id: 'd', name: 'D', mode: 'snapshot_interval', intervalMs: 3_600_000, fields: ['x'], recordCount: 1, enabled: true },
+          ],
+        },
+      ],
+    },
+  })
+  await page.goto('/monitoring?tab=sources')
+  const bloco = page.getByTestId(`fonte-series-${ID}`)
+  await expect(bloco).toContainText('Quando mudar')
+  await expect(bloco).toContainText('Uma vez por dia')
+  await expect(bloco).toContainText('Só quando a condição bater')
+  // Só quem TEM intervalo ganha o tamanho junto — nos outros ele não existe.
+  await expect(bloco).toContainText('De tempos em tempos de 1 h em 1 h')
+  await expect(bloco).not.toContainText('on_change')
+  await expect(bloco).not.toContainText('undefined')
 })
