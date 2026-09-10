@@ -51,7 +51,11 @@ test('campo fora do contrato não entra', () => {
   // 'briefPatch' entrou no contrato: o entendimento do negócio é um artefato próprio,
   // separado do desenho. A lista fechada continua sendo a garantia — o que não está
   // escrito aqui não atravessa para o banco.
-  assert.deepEqual(Object.keys(fora).sort(), ['answerPatch', 'assistantText', 'assumptions', 'blueprintPatch', 'briefPatch', 'phase', 'question', 'warnings'])
+  // 'windows' entrou no contrato: a série resumida passou a ser DECLARADA pelo modelo em
+  // vez de lida por expressão regular. A lista fechada continua sendo a garantia — o que
+  // não está escrito aqui não atravessa para o banco.
+  assert.deepEqual(Object.keys(fora).sort(), ['answerPatch', 'assistantText', 'assumptions', 'blueprintPatch', 'briefPatch', 'phase', 'question', 'warnings', 'windows'])
+  assert.deepEqual(fora.windows, [], 'sem janela declarada, o campo nasce vazio — nunca undefined')
 })
 
 test('sem texto para a pessoa ler, não há rodada', () => {
@@ -168,4 +172,21 @@ test('o dublê não responde a prompt que não é do Assistente', async () => {
 test('askAux continua com a assinatura de sempre', async () => {
   const { askAux } = await import('../dist/llm.js')
   assert.equal(typeof (await askAux('anthropic', 'qualquer coisa')), 'string')
+})
+
+test('AMEAÇA: a janela declarada é validada campo a campo, e conta inventada é descartada', () => {
+  const r = normalizeTurn({
+    assistantText: 'ok',
+    phase: 'discovery',
+    windows: [
+      { source: 'Sensor', field: 'leitura', everyMs: 300000, ops: ['min', 'max', 'mediana'] },
+      { source: 'X', field: 'y', everyMs: 0, ops: ['min'] },
+      { source: 'X', field: '', everyMs: 300000, ops: ['min'] },
+      { source: 'X', field: 'y', everyMs: 300000, ops: [] },
+    ],
+  })
+  assert.equal(r.windows.length, 1, 'só a janela inteira sobrevive')
+  // "mediana" não é uma das sete contas do motor: gravaria uma coluna que ninguém lê.
+  assert.deepEqual(r.windows[0].ops, ['min', 'max'])
+  assert.equal(r.windows[0].everyMs, 300000)
 })

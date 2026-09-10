@@ -320,6 +320,9 @@ async function runTurn(
           manifest: manifesto,
           inventory: inventario,
           base: { title: projeto.title, objective: projeto.objective },
+          // O que o modelo reconheceu como série resumida. Vazio é o normal: a maioria dos
+          // pedidos não tem janela nenhuma.
+          windows: turno.windows,
           changeKind: projeto.status === 'applied' ? 'expand' : 'create',
           // Os andares vêm do plano V1: é ele que a saga aplica, e é dele que sai a `key`
           // que o `resourceMap` vai conhecer.

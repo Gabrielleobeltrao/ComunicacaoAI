@@ -37,15 +37,32 @@ Responda SOMENTE com um objeto JSON, sem cerca de código e sem texto antes ou d
   "briefPatch": null | { "businessGoal": "...", "channels": [...], "jobs": [{ "id": "chave-curta", "name": "...", "trigger": "o que faz começar", "input": "o que chega", "decision": "o julgamento exigido — vazio quando é só execução", "action": "o que é feito", "output": "o que sai", "risk": "low"|"medium"|"high", "requiresHumanApproval": true|false }], "integrations": [{ "key": "chave-do-app", "need": "para quê" }], "knowledgeNeeds": [{ "subject": "...", "required": true }], "liveDataNeeds": [{ "source": "de onde o dado VEM, pelo nome que a pessoa usa", "freshness": "de quanto em quanto tempo", "required": true }], "recordsToKeep": [{ "subject": "o que precisa ficar GUARDADO", "fields": ["campo"], "retentionDays": null }], "humanApprovals": [{ "action": "...", "rule": "..." }], "knownFacts": [{ "key": "...", "value": "...", "source": "user" }], "successCriteria": [...], "constraints": [...] },
   "blueprintPatch": null | { "title": "...", "objective": "...", "floors": [...], "agents": [...], "sectors": [...], "routines": [...], "appRequirements": [...], "knowledgeRequirements": [...], "assumptions": [...], "warnings": [...] },
   "assumptions": [{ "key": "k", "text": "o que você assumiu por falta de resposta", "questionKey": "pergunta-que-resolveria" }],
-  "warnings": [{ "path": "onde", "message": "o que preocupa" }]
+  "warnings": [{ "path": "onde", "message": "o que preocupa" }],
+  "windows": [{ "source": "de onde o dado vem, pelo nome que a pessoa usou", "field": "o campo NUMÉRICO a resumir", "everyMs": 300000, "ops": ["min","max"] }]
 }
+
+SÉRIE RESUMIDA POR JANELA — o campo "windows".
+Preencha quando o pedido for "guarde o X a cada N minutos/horas": mínimo, máximo, média,
+soma, contagem, primeiro ou último de um número, por janela de tempo. Exemplos do mesmo
+formato em assuntos diferentes:
+- "o menor e o maior preço a cada 5 minutos"  → { field: "preco", everyMs: 300000, ops: ["min","max"] }
+- "a média da temperatura por hora"           → { field: "temperatura", everyMs: 3600000, ops: ["avg"] }
+- "quantos pedidos entraram por dia"          → { field: "pedido_id", everyMs: 86400000, ops: ["count"] }
+Regras que não se dobram:
+- "field" é um campo que EXISTE na fonte (o catálogo lista os campos de cada uma) e é um
+  NÚMERO. Nunca um carimbo de tempo: resumir o relógio grava uma série que parece certa.
+- "everyMs" é o tamanho da janela em milissegundos, tirado do que a pessoa disse.
+- Não sabe qual campo, ou a fonte tem dois números e a pessoa não disse qual? Deixe
+  "windows" vazio e PERGUNTE. Escolher por ela grava o número errado para sempre.
+- Guardar CADA leitura não é janela — isso é "toda ocorrência", e não vai aqui.
 
 DADO QUE CHEGA e DADO QUE FICA — os dois campos que fazem a proposta ter Database:
 - liveDataNeeds[]: o que a operação PRECISA LER continuamente. "Já tenho uma base com o
-  preço do bitcoin a cada 15 segundos" é um item aqui, com o nome que a pessoa usou — o
-  servidor procura essa base na conta e reaproveita em vez de criar outra.
+  preço atualizado a cada 15 segundos", "a leitura do sensor da câmara fria", "os pedidos
+  que entram pelo site" são itens aqui, com o nome que a pessoa usou — o servidor procura
+  essa base na conta e reaproveita em vez de criar outra.
 - recordsToKeep[]: o que precisa FICAR GUARDADO para poder ser comparado depois. "Uma base
-  só com o máximo do dia e a data" é um item aqui.
+  só com o máximo do dia e a data", "o estoque de cada SKU ao fim do dia" são itens aqui.
 Sem estes dois campos preenchidos, a proposta sai SEM Database nenhum — e uma operação que
 lê de um lugar e grava em outro vira um agente sozinho, sem de onde ler nem onde escrever.
 
