@@ -3,7 +3,7 @@ import { db } from '../db.js'
 import { getDataset, getDataStore, logQuery } from './store.js'
 import { parseQuery, QueryDslError, toMongoFilter, toMongoProjection, toMongoSort } from './queryDsl.js'
 import type { QuerySpec } from './queryDsl.js'
-import type { DataSetDefinition, DataStore } from './types.js'
+import type { DataSetDefinition, DataStore, DataStoreAdapterKind } from './types.js'
 
 // OS ADAPTERS de armazenamento — cada um lendo onde o dado JÁ mora.
 //
@@ -75,6 +75,18 @@ async function comColunasCalculadas(dataset: DataSetDefinition, linhas: Record<s
   }
   return linhas
 }
+
+/**
+ * DE ONDE ESTA BASE LÊ.
+ *
+ * A base manda; a pasta responde pelas que nasceram antes de o campo existir. É o que
+ * permite a pasta ser só organização: mover uma base entre pastas não pode trocar,
+ * calado, de onde o dado dela vem.
+ */
+export const adapterDaBase = (
+  store: { adapterKind: DataStoreAdapterKind },
+  dataset: { adapterKind?: DataStoreAdapterKind },
+): DataStoreAdapterKind => dataset.adapterKind ?? store.adapterKind
 
 /**
  * QUAL SÉRIE alimenta este conjunto — a resposta num lugar só.
@@ -278,8 +290,8 @@ export async function runQuery(input: RunQueryInput): Promise<QueryResult> {
     throw erro
   }
 
-  const executar =
-    store.adapterKind === 'market_data' ? queryMarketData : store.adapterKind === 'external_app' ? queryExternalApp : queryDataHistory
+  const adapter = adapterDaBase(store, dataset)
+  const executar = adapter === 'market_data' ? queryMarketData : adapter === 'external_app' ? queryExternalApp : queryDataHistory
 
   try {
     const r = await executar(store, dataset, spec)
@@ -320,9 +332,11 @@ export async function runQuery(input: RunQueryInput): Promise<QueryResult> {
 export async function runInsert(input: RunQueryInput & { rows: Record<string, unknown>[] }): Promise<{ inserted: number }> {
   const store = await getDataStore(input.accountId, input.dataStoreId)
   if (!store) throw new AdapterError('database não encontrado', 'not_found')
-  if (store.adapterKind !== 'data_history') throw new AdapterError('este database não aceita escrita', 'read_only')
   const dataset = await getDataset(input.accountId, input.dataStoreId, input.datasetKey)
   if (!dataset) throw new AdapterError('dataset não encontrado', 'not_found')
+  // Mercado é somente leitura por decisão de produto, não por omissão — e quem decide é a
+  // BASE, porque é ela que sabe de onde lê.
+  if (adapterDaBase(store, dataset) !== 'data_history') throw new AdapterError('este database não aceita escrita', 'read_only')
 
   const { validateAgainstSchema } = await import('./schemaValidation.js')
   const linhas = input.rows.slice(0, 100)

@@ -116,6 +116,37 @@ const req = <T>(caminho: string, init: { method?: string; body?: unknown } = {})
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   }).then(json<T>)
 
+/**
+ * UMA BASE — a coisa principal da tela.
+ *
+ * A pasta continua existindo no servidor: é ela que carrega o grant e a configuração de
+ * mercado e de App. Mas ela só vem como `folder` quando é uma pasta de verdade, criada de
+ * propósito. `folder: null` é base solta, e é o caso normal.
+ */
+export interface BaseResumo {
+  id: string
+  key: string
+  name: string
+  adapterKind: AdapterKind
+  mutability: Mutability
+  fields: string[]
+  folder: { id: string; name: string } | null
+  /** Onde ela mora de fato — as rotas de consulta e escrita continuam passando por aqui. */
+  dataStoreId: string
+  createdAt: string
+}
+
+export const listBases = () => req<{ items: BaseResumo[] }>('/api/databases/bases')
+
+export const createBase = (body: { name: string; fields: { name: string; type: 'string' | 'number' | 'boolean' }[]; folderId?: string | null }) =>
+  req<BaseResumo>('/api/databases/bases', { method: 'POST', body })
+
+export const createFolder = (name: string) => req<{ id: string; name: string }>('/api/databases/folders', { method: 'POST', body: { name } })
+
+/** Mover não move registro nenhum — mas muda quem alcança a base. Por isso devolve a conta. */
+export const moveBase = (baseId: string, folderId: string | null) =>
+  req<{ folder: { id: string; name: string } | null; perdeuGrants: number }>(`/api/databases/bases/${baseId}/folder`, { method: 'PATCH', body: { folderId } })
+
 export const listDatabases = () => req<{ items: DatabaseSummary[] }>('/api/databases')
 export const getDatabase = (id: string) => req<DatabaseDetail>(`/api/databases/${id}`)
 export const createDatabase = (body: { name: string; description?: string; adapterKind: AdapterKind; adapterConfig?: Record<string, unknown> }) =>

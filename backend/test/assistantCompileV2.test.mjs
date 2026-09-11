@@ -852,14 +852,22 @@ test('ACEITAÇÃO: a fonte que já existe vira base de LEITURA no plano, com ace
   assert.equal(blueprint.operations.sources.filter((s) => s.action === 'create').length, 0)
   assert.deepEqual(pending.filter((p) => p.kind === 'source_config'), [])
 
-  // DUAS bases: de onde se lê e onde se grava — cada uma com o seu acesso.
-  const leitura = blueprint.resources.databases.find((d) => d.agentAccess === 'read')
-  const escrita = blueprint.resources.databases.find((d) => d.agentAccess === 'write')
-  assert.ok(leitura, `sem base de leitura, o agente não alcança o dado: ${JSON.stringify(blueprint.resources.databases)}`)
-  assert.equal(leitura.action, 'reuse')
-  assert.equal(leitura.resourceId, '000000000000000000000db1')
-  assert.ok(escrita, 'sem base de destino, não há onde gravar')
-  assert.ok((leitura.agentKeys ?? []).length > 0, 'a leitura precisa dizer de quem é')
+  /**
+   * UMA base, e não duas.
+   *
+   * A operação lê e grava no MESMO lugar — "Históricos" já é onde a fonte grava, e é para lá
+   * que o resumo vai. Declarar duas entradas para um Database só (uma de leitura, outra de
+   * escrita) fazia o grant, que é único por base e agente, ser sobrescrito pela ordem de
+   * aplicação: quem mandava era o acaso. `write` responde as duas coisas — escrever inclui
+   * ler —, e uma pasta com uma tabela dentro deixa de nascer só para ter onde gravar.
+   */
+  assert.equal(blueprint.resources.databases.length, 1, JSON.stringify(blueprint.resources.databases))
+  const destino = blueprint.resources.databases[0]
+  assert.equal(destino.action, 'reuse')
+  assert.equal(destino.resourceId, '000000000000000000000db1')
+  assert.equal(destino.agentAccess, 'write')
+  assert.ok((destino.agentKeys ?? []).length > 0, 'o acesso precisa dizer de quem é')
+  assert.notEqual(destino.explicit, true, 'com um assunto só, o destino não vira pasta na tela')
 })
 
 test('ACEITAÇÃO: respondida "é outra origem", ele NÃO reusa — abre a coleta nova', () => {
@@ -1431,4 +1439,66 @@ test('AMEAÇA: a janela NÃO ganha um segundo conjunto ao lado do dela', () => {
   assert.equal(blueprint.resources.datasets.length, 0, `o plano criou um conjunto ao lado do da janela: ${JSON.stringify(blueprint.resources.datasets.map((d) => d.datasetKey))}`)
   // O Database continua sendo criado: é onde a série do recorder vai morar.
   assert.ok(blueprint.resources.databases.some((d) => d.key === janela.databaseKey))
+})
+
+
+// --- pasta só quando há o que agrupar --------------------------------------------------------
+//
+// "E por que temos pasta e conjunto?" O compilador abria um Database por assunto guardado. Na
+// conta do dono isso produziu duas pastas com uma tabela em cada, e o nome da pasta era a
+// descrição da tabela lá dentro: "Histórico consolidado do menor e maior valor do bitcoin por
+// janela de 10 minutos", com um conjunto só.
+
+const comHistoricos = () => ({
+  ownerId: 'dono',
+  at: new Date(),
+  building: { id: '000000000000000000000b01', name: 'Prédio' },
+  sections: {
+    database: { kind: 'database', total: 1, truncated: false, items: [{ id: '000000000000000000000db1', label: 'Históricos', ownerScope: 'account:', status: 'active', meta: { adapterKind: 'data_history' } }] },
+  },
+})
+
+test('ACEITAÇÃO: UM assunto guardado não abre pasta nenhuma — vai para o lar de sempre', () => {
+  const brief = {
+    ...soRotina(),
+    recordsToKeep: [{ subject: 'máximo diário do bitcoin', fields: ['data', 'maximo'], retentionDays: null }],
+  }
+  const { blueprint } = compilar(brief, { inventory: comHistoricos() })
+  assert.equal(blueprint.resources.databases.length, 1)
+  const d = blueprint.resources.databases[0]
+  assert.equal(d.action, 'reuse', 'o lar de sempre já existe: expandir, não duplicar')
+  assert.equal(d.name, 'Históricos')
+  assert.notEqual(d.explicit, true, 'sem nada a agrupar, não há pasta a criar')
+})
+
+test('ACEITAÇÃO: VÁRIOS assuntos abrem UMA pasta, nomeada pela operação', () => {
+  const brief = {
+    ...soRotina(),
+    recordsToKeep: [
+      { subject: 'máximo diário do bitcoin', fields: ['data', 'maximo'], retentionDays: null },
+      { subject: 'volume diário do bitcoin', fields: ['data', 'volume'], retentionDays: null },
+    ],
+  }
+  const { blueprint } = compilar(brief, { inventory: comHistoricos() })
+  assert.equal(blueprint.resources.databases.length, 1, 'uma pasta para os dois, e não uma por assunto')
+  assert.equal(blueprint.resources.databases[0].explicit, true, 'aqui ela agrupa de verdade — então ela aparece')
+  // E os DOIS conjuntos entram: antes, o segundo assunto batia no `continue` e sumia.
+  assert.equal(blueprint.resources.datasets.length, 2, JSON.stringify(blueprint.resources.datasets.map((d) => d.name)))
+})
+
+test('AMEAÇA: o segundo assunto no mesmo destino não perde o conjunto dele', () => {
+  // O `continue` que pulava o Database já declarado pulava o assunto INTEIRO: com dois
+  // registros indo para o mesmo lugar, o segundo não ganhava conjunto, nem teste, nem nada.
+  const brief = {
+    ...soRotina(),
+    recordsToKeep: [
+      { subject: 'vendas', fields: ['valor'], retentionDays: null },
+      { subject: 'devoluções', fields: ['valor'], retentionDays: null },
+    ],
+  }
+  const { blueprint } = compilar(brief, { inventory: comHistoricos() })
+  assert.deepEqual(
+    blueprint.resources.datasets.map((d) => d.name).sort(),
+    ['devoluções', 'vendas'],
+  )
 })

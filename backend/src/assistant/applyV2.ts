@@ -293,6 +293,18 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
       adapterKind: String(item.adapterKind ?? 'data_history') as never,
       ...(item.retentionDays ? { retention: { mode: 'days', days: Number(item.retentionDays) } as never } : {}),
     })
+    /**
+     * PASTA DE VERDADE só quando o plano diz que ela agrupa.
+     *
+     * A tela lista bases; uma pasta só aparece quando alguém decidiu criá-la. O compilador
+     * marca `explicit` quando a operação guarda VÁRIOS assuntos — e aí a pasta ganha nome de
+     * operação e junta as bases. Com um assunto só, a base cai no lar de sempre e aparece
+     * solta, que é o que evita a caixa com uma tabela dentro.
+     */
+    if (item.explicit === true) {
+      const { db } = await import('../db.js')
+      await db.collection('data_stores').updateOne({ _id: store._id, ownerId }, { $set: { explicit: true, updatedAt: new Date() } })
+    }
     await concederBase(ownerId, store._id, item, idDe)
     return { id: store._id.toString() }
   }

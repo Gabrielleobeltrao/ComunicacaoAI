@@ -19,6 +19,7 @@ import { resolveDatabaseAccess, assertMutationAllowed } from '../databases/acces
 import { AdapterError, runInsert, runQuery } from '../databases/adapters.js'
 import { QueryDslError } from '../databases/queryDsl.js'
 import { criarColunaCalculada, removerColunaCalculada } from '../databases/computedColumns.js'
+import { criarBase, criarPasta, listarBases, moverBase } from '../databases/bases.js'
 import { ValidationError } from '../building.js'
 import { DATABASE_CAPABILITIES } from '../databases/types.js'
 import type { DatabaseCapability } from '../databases/types.js'
@@ -171,6 +172,52 @@ databaseRouter.post('/', async (req, res, next) => {
       retention: body.retention as never,
     })
     res.status(201).json({ id: store._id.toString(), name: store.name, adapterKind: store.adapterKind, status: store.status })
+  } catch (erro) {
+    if (recusa(res, erro)) return
+    next(erro as Error)
+  }
+})
+
+// --- bases e pastas --------------------------------------------------------------------------
+//
+// A tela lista BASES. A pasta continua existindo — ela é quem carrega o grant e quem sabe a
+// configuração de mercado e de App externo —, mas só aparece como pasta quando alguém decidiu
+// criá-la. Ver `bases.ts`.
+
+databaseRouter.get('/bases', async (_req, res) => {
+  res.json({ items: await listarBases(res.locals.userId) })
+})
+
+databaseRouter.post('/bases', async (req, res, next) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const base = await criarBase(res.locals.userId, {
+      name: String(body.name ?? ''),
+      fields: Array.isArray(body.fields) ? (body.fields as { name: string; type: 'string' | 'number' | 'boolean' }[]) : [],
+      folderId: typeof body.folderId === 'string' && body.folderId ? body.folderId : null,
+    })
+    res.status(201).json(base)
+  } catch (erro) {
+    if (recusa(res, erro)) return
+    next(erro as Error)
+  }
+})
+
+databaseRouter.post('/folders', async (req, res, next) => {
+  try {
+    res.status(201).json(await criarPasta(res.locals.userId, String((req.body ?? {}).name ?? '')))
+  } catch (erro) {
+    if (recusa(res, erro)) return
+    next(erro as Error)
+  }
+})
+
+databaseRouter.patch('/bases/:baseId/folder', async (req, res, next) => {
+  const baseId = oid(String(req.params.baseId))
+  if (!baseId) return notFound(res)
+  try {
+    const alvo = (req.body ?? {}).folderId
+    res.json(await moverBase(res.locals.userId, baseId, typeof alvo === 'string' && alvo ? alvo : null))
   } catch (erro) {
     if (recusa(res, erro)) return
     next(erro as Error)

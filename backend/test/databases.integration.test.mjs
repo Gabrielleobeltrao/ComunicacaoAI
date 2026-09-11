@@ -808,3 +808,93 @@ test('mercado e App externo NÃO ganham série: eles respondem de fora', async (
   const ds = await createDataset(DONO, mercado._id, { key: 'candles', name: 'Candles', schema: { type: 'object', properties: { close: { type: 'number' } } } })
   assert.equal(ds.recorderId, undefined)
 })
+
+// --- a base é a coisa principal, a pasta é organização ---------------------------------------
+//
+// "E por que temos pasta e conjunto?" Na conta do dono era 1:1: duas pastas, uma tabela em
+// cada, e o nome da pasta era a descrição da tabela lá dentro. A pasta continua existindo — é
+// ela que carrega o grant e a configuração de mercado e de App —, mas só APARECE como pasta
+// quando alguém decidiu criá-la.
+
+const criarBaseHttp = (corpo) => pedir('POST', '/api/databases/bases', corpo)
+
+test('ACEITAÇÃO: criar uma base é UM passo — nome e campos, sem pasta nenhuma', async () => {
+  const r = await criarBaseHttp({ name: 'Vendas do mês', fields: [{ name: 'valor', type: 'number' }, { name: 'vendedor', type: 'string' }] })
+  assert.equal(r.status, 201, JSON.stringify(r.body))
+  assert.equal(r.body.name, 'Vendas do mês')
+  assert.equal(r.body.folder, null, 'sem pasta escolhida, a base nasce solta')
+  assert.deepEqual(r.body.fields.sort(), ['valor', 'vendedor'])
+
+  // E ela FUNCIONA: era o que não acontecia quando criar exigia dois passos.
+  const w = await pedir('POST', `/api/databases/${r.body.dataStoreId}/datasets/${r.body.key}/rows`, { rows: [{ valor: 10, vendedor: 'ana' }] })
+  assert.equal(w.status, 201, JSON.stringify(w.body))
+  const q = await pedir('POST', `/api/databases/${r.body.dataStoreId}/datasets/${r.body.key}/query`, { limit: 5 })
+  assert.equal(q.body.rows.length, 1)
+})
+
+test('as pastas que o sistema inventou por dentro NÃO aparecem como pasta', async () => {
+  // É assim que a conta do dono achata: nenhum registro se move para isso acontecer.
+  const r = await criarBaseHttp({ name: 'Solta', fields: [{ name: 'x', type: 'number' }] })
+  const lista = await pedir('GET', '/api/databases/bases')
+  const base = lista.body.items.find((b) => b.id === r.body.id)
+  assert.equal(base.folder, null)
+  // A pasta de origem existe no banco — ela só não é uma pasta na tela.
+  assert.ok(base.dataStoreId)
+})
+
+test('ACEITAÇÃO: uma pasta CRIADA de propósito aparece, e a base entra nela', async () => {
+  const pasta = await pedir('POST', '/api/databases/folders', { name: 'Financeiro' })
+  assert.equal(pasta.status, 201, JSON.stringify(pasta.body))
+  const base = await criarBaseHttp({ name: 'Cotações', fields: [{ name: 'preco', type: 'number' }], folderId: pasta.body.id })
+  assert.deepEqual(base.body.folder, { id: pasta.body.id, name: 'Financeiro' })
+})
+
+test('ACEITAÇÃO: mover uma base de pasta NÃO move registro nenhum', async () => {
+  const base = await criarBaseHttp({ name: 'Vendas', fields: [{ name: 'valor', type: 'number' }] })
+  await pedir('POST', `/api/databases/${base.body.dataStoreId}/datasets/${base.body.key}/rows`, { rows: [{ valor: 7 }] })
+  const pasta = await pedir('POST', '/api/databases/folders', { name: 'Comercial' })
+
+  const m = await pedir('PATCH', `/api/databases/bases/${base.body.id}/folder`, { folderId: pasta.body.id })
+  assert.equal(m.status, 200, JSON.stringify(m.body))
+  assert.deepEqual(m.body.folder, { id: pasta.body.id, name: 'Comercial' })
+
+  // As linhas ficam penduradas na SÉRIE, não na pasta.
+  const q = await pedir('POST', `/api/databases/${pasta.body.id}/datasets/${base.body.key}/query`, { limit: 5 })
+  assert.equal(q.status, 200, JSON.stringify(q.body))
+  assert.deepEqual(q.body.rows.map((l) => l.valor), [7])
+})
+
+test('mover DIZ quantos grants a base deixa para trás — permissão mora na pasta', async () => {
+  const base = await criarBaseHttp({ name: 'Sensível', fields: [{ name: 'valor', type: 'number' }] })
+  await pedir('PUT', `/api/databases/${base.body.dataStoreId}/grants`, {
+    subjectType: 'agent',
+    subjectId: cena.marina._id.toString(),
+    capabilities: ['query'],
+  })
+  const pasta = await pedir('POST', '/api/databases/folders', { name: 'Outra' })
+  const m = await pedir('PATCH', `/api/databases/bases/${base.body.id}/folder`, { folderId: pasta.body.id })
+  assert.ok(m.body.perdeuGrants >= 1, `mover em silêncio tira acesso de quem tinha: ${JSON.stringify(m.body)}`)
+})
+
+test('AMEAÇA: mover para uma pasta que já tem base com a mesma chave é recusado', async () => {
+  const pasta = await pedir('POST', '/api/databases/folders', { name: 'Destino' })
+  const a = await criarBaseHttp({ name: 'Vendas', fields: [{ name: 'x', type: 'number' }] })
+  await criarBaseHttp({ name: 'Vendas', fields: [{ name: 'x', type: 'number' }], folderId: pasta.body.id })
+  const m = await pedir('PATCH', `/api/databases/bases/${a.body.id}/folder`, { folderId: pasta.body.id })
+  assert.equal(m.status, 400)
+  assert.match(m.body.message ?? '', /já tem uma base com a chave/i)
+})
+
+test('AMEAÇA: uma base sem campo nenhum é recusada — ela não poderia ser consultada', async () => {
+  const r = await criarBaseHttp({ name: 'Vazia', fields: [] })
+  assert.equal(r.status, 400)
+  assert.match(r.body.message ?? '', /ao menos um campo/i)
+})
+
+test('AMEAÇA: a base do vizinho não se move', async () => {
+  const base = await criarBaseHttp({ name: 'Minha', fields: [{ name: 'x', type: 'number' }] })
+  sessao = VIZINHO
+  const m = await pedir('PATCH', `/api/databases/bases/${base.body.id}/folder`, { folderId: null })
+  assert.ok(m.status === 404 || m.status === 400, `esperava recusa, veio ${m.status}`)
+  sessao = DONO
+})
