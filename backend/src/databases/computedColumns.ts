@@ -18,7 +18,7 @@
 import { ObjectId } from 'mongodb'
 import { db } from '../db.js'
 import { getDataStore, getDataset } from './store.js'
-import { AdapterError } from './adapters.js'
+import { AdapterError, recorderDoConjunto } from './adapters.js'
 import { criarRecorder } from '../dataHistory/recorders.js'
 import { ValidationError } from '../building.js'
 import { refDerivada, calcularDerivados } from '../dataHistory/derived.js'
@@ -50,18 +50,6 @@ export interface NovaColunaInput {
 }
 
 const NOME_DE_COLUNA = /^[a-z][a-z0-9_]{0,39}$/
-
-/**
- * O recorder que ESTE conjunto lê.
- *
- * A configuração do Database manda; a chave do conjunto é o retorno de quem foi criado antes
- * de a configuração existir.
- */
-const recorderDoConjunto = (store: { adapterConfig: Record<string, unknown> }, dataset: DataSetDefinition): ObjectId => {
-  const bruto = String(store.adapterConfig.recorderId ?? dataset.key)
-  if (!ObjectId.isValid(bruto)) throw new AdapterError('este conjunto não aponta para um histórico válido', 'bad_config')
-  return new ObjectId(bruto)
-}
 
 /** Os campos que o conjunto declara — é contra eles que a entrada da função é conferida. */
 export const camposDoConjunto = (dataset: DataSetDefinition): string[] =>

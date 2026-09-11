@@ -121,10 +121,19 @@ databaseRouter.get('/', async (_req, res) => {
 async function origemDoConjunto(
   ownerId: string,
   chave: string,
+  recorderId?: ObjectId | null,
 ): Promise<{ serie?: { id: string; nome: string; modo: string; intervalMs: number | null; contas: string[]; ativa: boolean; registros: number; fonte: string | null } }> {
-  if (!ObjectId.isValid(chave)) return {}
+  /**
+   * A AMARRAÇÃO EXPLÍCITA primeiro, a chave depois.
+   *
+   * Lendo só a chave, o bloco aparecia nos conjuntos que o Assistente criou — cuja chave é o
+   * id da série — e sumia nos criados à mão, que têm chave de gente. O dono viu exatamente
+   * isso: "parece que tem coisas que só o Assistente consegue fazer".
+   */
+  const alvo = recorderId ?? (ObjectId.isValid(chave) ? new ObjectId(chave) : null)
+  if (!alvo) return {}
   const { obterRecorder } = await import('../dataHistory/recorders.js')
-  const r = await obterRecorder(ownerId, new ObjectId(chave)).catch(() => null)
+  const r = await obterRecorder(ownerId, alvo).catch(() => null)
   if (!r) return {}
   // O nome da fonte, quando ela existe: `monitoring:<id>` é o endereço, e ninguém deveria
   // precisar ler um id para saber de onde o dado vem.
@@ -196,7 +205,7 @@ databaseRouter.get('/:id', async (req, res) => {
         // DE ONDE VEM e COM QUE REGRA. Sem isto, o conjunto é uma tabela sem procedência: dá
         // para ver o que foi gravado e não dá para saber quem gravou, de onde, nem de quanto
         // em quanto tempo — que é a pergunta seguinte de quem olha um número.
-        ...(await origemDoConjunto(res.locals.userId, d.key)),
+        ...(await origemDoConjunto(res.locals.userId, d.key, d.recorderId)),
       })),
     ),
     updatedAt: store.updatedAt,

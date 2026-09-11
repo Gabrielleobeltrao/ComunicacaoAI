@@ -169,11 +169,45 @@ export async function createDataset(ownerId: string, dataStoreId: ObjectId, inpu
   }
 
   const agora = new Date()
+  const _id = new ObjectId()
+
+  /**
+   * UM CONJUNTO DE HISTÓRICO NASCE COM A SÉRIE DELE.
+   *
+   * "Por que aparece 'Como este dado chega' nas databases e, quando eu crio uma manualmente,
+   * não aparece? Parece que tem coisas que só o Assistente consegue fazer." O buraco era
+   * maior que o bloco que faltava: sem série por trás, nada resolvia o histórico do conjunto,
+   * e a consulta E a escrita recusavam com "este database não aponta para um histórico
+   * válido". A base criada pela tela nascia quebrada, antes do primeiro uso.
+   *
+   * A série nasce `manual`: ela não coleta de lugar nenhum sozinha, e recebe o que for
+   * gravado — pela tela, por um agente, por uma rotina. Conectá-la a uma fonte e trocar a
+   * regra é edição, e a tela do histórico já faz as duas.
+   *
+   * Só para `data_history`. Mercado e App externo são VIRTUAIS: eles respondem de fora, e uma
+   * série vazia ao lado deles seria um recurso que nunca recebe nada.
+   */
+  let recorderId: ObjectId | null = null
+  if (store.adapterKind === 'data_history' && !ObjectId.isValid(key) && !store.adapterConfig.recorderId) {
+    const { criarRecorder } = await import('../dataHistory/recorders.js')
+    const campos = Object.keys((schema.properties ?? {}) as Record<string, unknown>)
+    const r = await criarRecorder(ownerId, {
+      name: String(input.name ?? key).slice(0, 120),
+      source: { kind: 'manual', ref: `database:${_id.toString()}` },
+      mode: 'every_event',
+      // Os campos do schema descem para a série: é o que faz a coluna existir para quem lê a
+      // definição do recorder, e não só para quem lê o conjunto.
+      ...(campos.length ? { selectedFields: campos } : {}),
+    })
+    recorderId = r._id
+  }
+
   const doc: DataSetDefinition = {
-    _id: new ObjectId(),
+    _id,
     ownerId,
     dataStoreId,
     key,
+    ...(recorderId ? { recorderId } : {}),
     name: String(input.name ?? key).slice(0, 120),
     schema: schema as Record<string, unknown>,
     ...(input.primaryKey?.length ? { primaryKey: input.primaryKey.slice(0, 5) } : {}),

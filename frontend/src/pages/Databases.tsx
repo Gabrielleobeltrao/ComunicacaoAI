@@ -669,16 +669,27 @@ function ConsultaDoDataset({ databaseId, dataset, onMudou }: { databaseId: strin
               <strong style={{ fontWeight: 600 }}>Como este dado chega</strong>
               <Badge tone={dataset.serie.ativa ? 'success' : 'warning'}>{dataset.serie.ativa ? 'coletando' : 'parada'}</Badge>
             </div>
+            {/*
+              SEM FONTE não é "não sei de onde vem" — é "ninguém coleta, ele recebe".
+              O texto genérico de antes ("alimentado por uma série desta conta") não dizia nem
+              uma coisa nem outra, e quem criou a base à mão ficava sem saber o que fazer em
+              seguida. Quem grava aqui é a própria tela, um agente com permissão de escrita ou
+              uma rotina; conectar uma coleta é edição, e o botão abaixo leva a ela.
+            */}
             <p style={{ margin: '6px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>
-              {dataset.serie.fonte ? `Vem de "${dataset.serie.fonte}"` : 'Alimentado por uma série desta conta'} ·{' '}
-              {regraDaSerie(dataset.serie)} · {dataset.serie.registros.toLocaleString('pt-BR')} registro(s)
+              {dataset.serie.fonte
+                ? `Vem de "${dataset.serie.fonte}"`
+                : 'Ninguém coleta para ele: recebe o que for gravado aqui, por um agente ou por uma rotina'}{' '}
+              · {regraDaSerie(dataset.serie)} · {dataset.serie.registros.toLocaleString('pt-BR')} registro(s)
             </p>
             {dataset.serie.contas.length > 0 && (
               <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-faint)' }}>{dataset.serie.contas.join(' · ')}</p>
             )}
             <div className="flex flex-wrap gap-2" style={{ marginTop: 8 }}>
               <Button variant="secondary" size="sm" icon="pencil" onClick={() => navigate(`/historicos/${dataset.serie!.id}/editar`)} data-testid="dataset-editar-regra">
-                Editar a regra
+                {/* Sem fonte, "editar a regra" é o caminho para GANHAR uma: é a mesma tela que
+                    escolhe de onde o dado vem e de quanto em quanto tempo ele chega. */}
+                {dataset.serie.fonte ? 'Editar a regra' : 'Conectar uma coleta'}
               </Button>
             </div>
           </div>
