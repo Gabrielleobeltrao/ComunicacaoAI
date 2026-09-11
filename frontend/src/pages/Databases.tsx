@@ -9,7 +9,7 @@ import { DatabaseGrants } from '../components/DatabaseGrants'
 import { FunctionPicker } from '../components/FunctionPicker'
 import { listExecutorCatalog } from '../lib/apps'
 import type { CatalogFunction } from '../lib/apps'
-import type { DatabaseDetail, DatabaseSummary, DatasetSummary, QueryResult } from '../lib/databases'
+import type { DatabaseDetail, DatasetSummary, QueryResult } from '../lib/databases'
 
 // DATABASES — o sistema de registros do escritório.
 //
@@ -21,26 +21,24 @@ import type { DatabaseDetail, DatabaseSummary, DatasetSummary, QueryResult } fro
 export function Databases() {
   const [params, setParams] = useSearchParams()
   const aberto = params.get('id')
-  const [lista, setLista] = useState<DatabaseSummary[] | null>(null)
-  const [erro, setErro] = useState<string | null>(null)
-  const [criando, setCriando] = useState(false)
   /**
-   * Os conjuntos de cada Database, carregados quando a lista chega.
+   * A TELA LISTA BASES.
    *
-   * A lista resumida traz só a CONTAGEM. Sem os nomes, a pasta abriria dizendo "1
-   * conjunto" sem dizer qual — que é a mesma tela de antes com uma seta a mais.
+   * "E por que temos pasta e conjunto?" Na conta do dono era 1:1 — duas pastas, uma tabela em
+   * cada, e o nome da pasta era a descrição da tabela lá dentro. A pasta continua existindo,
+   * porque é ela que carrega a permissão e a configuração de mercado e de App; ela só deixou
+   * de ser a porta de entrada. Uma pasta aparece quando alguém decidiu criá-la — o resto é
+   * agrupamento que o sistema inventou por dentro, e uma caixa com uma coisa dentro é
+   * cerimônia.
    */
-  const [conjuntos, setConjuntos] = useState<Record<string, api.DatabaseDetail['datasets']>>({})
+  const [bases, setBases] = useState<api.BaseResumo[] | null>(null)
+  const [erro, setErro] = useState<string | null>(null)
+  const [criando, setCriando] = useState<'base' | 'pasta' | null>(null)
 
   const carregar = useCallback(async () => {
     setErro(null)
     try {
-      const items = (await api.listDatabases()).items
-      setLista(items)
-      // Em paralelo, e tolerante: um Database que recusar a leitura não pode impedir a
-      // lista inteira de aparecer.
-      const detalhes = await Promise.all(items.map((d) => api.getDatabase(d.id).catch(() => null)))
-      setConjuntos(Object.fromEntries(detalhes.filter((x) => x !== null).map((x) => [x!.id, x!.datasets])))
+      setBases((await api.listBases()).items)
     } catch (e) {
       setErro((e as Error).message)
     }
@@ -59,6 +57,9 @@ export function Databases() {
     setParams(p, { replace: true })
   }
 
+  const soltas = (bases ?? []).filter((b) => !b.folder)
+  const pastas = [...new Map((bases ?? []).filter((b) => b.folder).map((b) => [b.folder!.id, b.folder!])).values()]
+
   return (
     <AppLayout current="/databases" title="Databases" subtitle="O que este escritório guarda, e quem pode consultar">
       <div className="flex flex-col gap-3">
@@ -76,56 +77,77 @@ export function Databases() {
         {!aberto && (
           <>
             <div className="flex flex-wrap gap-2">
-              <Button onClick={() => setCriando((v) => !v)} data-testid="databases-new">
-                {criando ? 'Cancelar' : 'Criar database'}
+              <Button onClick={() => setCriando((v) => (v === 'base' ? null : 'base'))} data-testid="databases-new">
+                {criando === 'base' ? 'Cancelar' : 'Nova base'}
+              </Button>
+              <Button variant="secondary" onClick={() => setCriando((v) => (v === 'pasta' ? null : 'pasta'))} data-testid="folder-new">
+                {criando === 'pasta' ? 'Cancelar' : 'Nova pasta'}
               </Button>
             </div>
-            {criando && <NovoDatabase onCriado={() => { setCriando(false); void carregar() }} />}
+            {criando === 'base' && (
+              <NovaBase
+                pastas={pastas}
+                onCriada={() => {
+                  setCriando(null)
+                  void carregar()
+                }}
+              />
+            )}
+            {criando === 'pasta' && (
+              <NovaPasta
+                onCriada={() => {
+                  setCriando(null)
+                  void carregar()
+                }}
+              />
+            )}
 
-            {lista && lista.length === 0 && !erro && (
+            {bases && bases.length === 0 && !erro && (
               <Card>
                 <p style={{ fontSize: 13, color: 'var(--text-muted)' }} data-testid="databases-empty">
-                  Nenhum database ainda. Crie um para guardar registros estruturados — preço, pedido, ocorrência — sem misturá-los com conhecimento.
+                  Nenhuma base ainda. Crie uma para guardar registros estruturados — preço, pedido, ocorrência — sem misturá-los com conhecimento.
                 </p>
               </Card>
             )}
 
-            {lista && lista.length > 0 && (
-              /**
-               * PASTAS, e não uma fileira de botões.
-               *
-               * Para ver o que tinha dentro de um Database era preciso ABRIR OUTRA TELA e
-               * voltar para olhar o próximo. E não havia como renomear nem apagar de lugar
-               * nenhum — o servidor respondia às duas desde sempre, e a tela nunca ofereceu.
-               */
+            {/* As BASES SOLTAS primeiro, e no mesmo nível: é o caso normal, e enterrá-las
+                dentro de uma caixa foi o que fez a pergunta "por que temos pasta e conjunto?"
+                existir. */}
+            {soltas.length > 0 && (
+              <Card>
+                <div className="flex flex-col gap-2" data-testid="bases-soltas">
+                  {soltas.map((b) => (
+                    <LinhaDeBase key={b.id} base={b} pastas={pastas} onAbrir={() => abrir(b.dataStoreId, b.key)} onMudou={carregar} />
+                  ))}
+                </div>
+              </Card>
+            )}
+
+            {pastas.length > 0 && (
               <ListaDePastas
                 testid="databases-list"
                 aoMudar={() => void carregar()}
-                pastas={lista.map((d) => ({
-                  chave: d.id,
-                  nome: d.name,
-                  detalhe: d.description || `${api.ADAPTER_LABEL[d.adapterKind]} · ${d.datasets} conjunto(s)`,
-                  marcas: [
-                    { texto: api.STATUS_LABEL[d.status], tom: d.status === 'active' ? ('success' as const) : ('warning' as const) },
-                    { texto: api.ADAPTER_LABEL[d.adapterKind], tom: 'neutral' as const },
-                  ],
-                  itens: (conjuntos[d.id] ?? []).map((c) => ({
-                    chave: c.key,
-                    nome: c.name || c.key,
-                    ...((c.fields ?? []).length ? { detalhe: (c.fields ?? []).join(', ') } : {}),
-                    marcas: [{ texto: api.MUTABILITY_LABEL[c.mutability], tom: 'neutral' as const }],
-                    aoRenomear: (nome: string) => api.patchDataset(d.id, c.key, { name: nome }),
-                    aoApagar: () => api.deleteDataset(d.id, c.key),
-                    avisoAoApagar: `O conjunto "${c.name || c.key}" e TODOS os registros dele são apagados. O Database continua de pé.`,
-                    aoAbrir: () => abrir(d.id, c.key),
-                  })),
-                  vazio: 'Nenhum conjunto declarado ainda — crie o primeiro aqui embaixo.',
-                  // Criar um conjunto é mexer no que a pasta guarda: o lugar disso é a pasta.
-                  rodape: <NovoDataset databaseId={d.id} onCriado={() => void carregar()} />,
-                  aoRenomear: (nome) => api.patchDatabase(d.id, { name: nome }),
-                  aoApagar: () => api.deleteDatabase(d.id),
-                  avisoAoApagar: `O Database "${d.name}", os conjuntos dele e TODOS os registros guardados são apagados. Quem tinha acesso perde o acesso junto.`,
-                  aoAbrirTela: () => abrir(d.id),
+                pastas={pastas.map((f) => ({
+                  chave: f.id,
+                  nome: f.name,
+                  detalhe: `${(bases ?? []).filter((b) => b.folder?.id === f.id).length} base(s)`,
+                  itens: (bases ?? [])
+                    .filter((b) => b.folder?.id === f.id)
+                    .map((b) => ({
+                      chave: b.key,
+                      nome: b.name || b.key,
+                      ...(b.fields.length ? { detalhe: b.fields.join(', ') } : {}),
+                      marcas: [{ texto: api.MUTABILITY_LABEL[b.mutability], tom: 'neutral' as const }],
+                      aoRenomear: (nome: string) => api.patchDataset(b.dataStoreId, b.key, { name: nome }),
+                      aoApagar: () => api.deleteDataset(b.dataStoreId, b.key),
+                      avisoAoApagar: `A base "${b.name || b.key}" e TODOS os registros dela são apagados. A pasta continua de pé.`,
+                      aoAbrir: () => abrir(b.dataStoreId, b.key),
+                    })),
+                  vazio: 'Nenhuma base aqui dentro — mova uma para cá pela lista acima.',
+                  aoRenomear: (nome) => api.patchDatabase(f.id, { name: nome }),
+                  aoApagar: () => api.deleteDatabase(f.id),
+                  avisoAoApagar: `A pasta "${f.name}", as bases dela e TODOS os registros guardados são apagados. Quem tinha acesso perde o acesso junto.`,
+                  aoAbrirTela: () => abrir(f.id),
                 }))}
               />
             )}
@@ -138,9 +160,121 @@ export function Databases() {
   )
 }
 
-function NovoDatabase({ onCriado }: { onCriado: () => void }) {
+/**
+ * Uma base na lista — e para onde ela pode ir.
+ *
+ * A troca de pasta fica AQUI, ao lado do nome, e não numa tela de configuração: mover é
+ * organização, e organização se faz olhando a lista inteira.
+ */
+function LinhaDeBase({
+  base,
+  pastas,
+  onAbrir,
+  onMudou,
+}: {
+  base: api.BaseResumo
+  pastas: { id: string; name: string }[]
+  onAbrir: () => void
+  onMudou: () => void
+}) {
+  const [aviso, setAviso] = useState<string | null>(null)
+
+  const mover = async (folderId: string) => {
+    setAviso(null)
+    const r = await api.moveBase(base.id, folderId || null)
+    // Mover não move registro nenhum — mas PERMISSÃO mora na pasta, e sair dela tira o acesso
+    // de quem tinha. Descobrir isso depois, por um agente que parou de responder, é caro.
+    if (r.perdeuGrants > 0) setAviso(`${r.perdeuGrants} permissão(ões) ficaram na pasta anterior — quem tinha acesso por ali perdeu.`)
+    onMudou()
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2" data-testid={`base-${base.key}`}>
+      <button
+        type="button"
+        onClick={onAbrir}
+        style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: 'var(--text-body)', textAlign: 'left' }}
+        data-testid={`base-abrir-${base.key}`}
+      >
+        {base.name || base.key}
+      </button>
+      <Badge>{api.ADAPTER_LABEL[base.adapterKind]}</Badge>
+      <span style={{ fontSize: 12, color: 'var(--text-faint)', minWidth: 0 }}>{base.fields.join(', ') || 'sem campos'}</span>
+      <select
+        value={base.folder?.id ?? ''}
+        onChange={(e) => void mover(e.target.value)}
+        aria-label={`Pasta de ${base.name || base.key}`}
+        className="ml-auto"
+        style={{ minHeight: 32, padding: '0 8px', borderRadius: 8, border: '1px solid var(--border-subtle)', background: 'var(--surface-card)', fontSize: 12 }}
+        data-testid={`base-pasta-${base.key}`}
+      >
+        <option value="">Sem pasta</option>
+        {pastas.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}
+          </option>
+        ))}
+      </select>
+      {aviso && (
+        <p role="alert" style={{ flexBasis: '100%', margin: 0, fontSize: 12, color: 'var(--intent-warning)' }} data-testid={`base-aviso-${base.key}`}>
+          {aviso}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** Uma pasta é só um nome: o que ela guarda são as bases que alguém mover para dentro. */
+function NovaPasta({ onCriada }: { onCriada: () => void }) {
   const [nome, setNome] = useState('')
-  const [adapter, setAdapter] = useState<api.AdapterKind>('data_history')
+  const [erro, setErro] = useState<string | null>(null)
+  return (
+    <Card>
+      <div className="flex flex-col gap-2" data-testid="folder-new-form">
+        <label className="flex flex-col gap-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          Nome da pasta
+          <Input value={nome} onChange={(e) => setNome(e.target.value)} data-testid="folder-new-name" />
+        </label>
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--text-faint)' }}>
+          A pasta organiza — e uma permissão dada nela vale para todas as bases que estiverem dentro.
+        </p>
+        {erro && (
+          <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="folder-new-error">
+            {erro}
+          </p>
+        )}
+        <div>
+          <Button
+            disabled={!nome.trim()}
+            onClick={async () => {
+              setErro(null)
+              try {
+                await api.createFolder(nome)
+                onCriada()
+              } catch (e) {
+                setErro((e as Error).message)
+              }
+            }}
+            data-testid="folder-new-save"
+          >
+            Criar pasta
+          </Button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+/**
+ * A base em UM passo: nome, campos, e só.
+ *
+ * Antes eram dois — criar a pasta e, dentro dela, criar o conjunto. Quem criava a pasta e
+ * parava ali ficava com uma caixa vazia e nada dizendo qual era o próximo passo.
+ */
+function NovaBase({ pastas, onCriada }: { pastas: { id: string; name: string }[]; onCriada: () => void }) {
+  const [nome, setNome] = useState('')
+  const [campos, setCampos] = useState('valor:number\ndata:string')
+  const [pasta, setPasta] = useState('')
   const [erro, setErro] = useState<string | null>(null)
   const [salvando, setSalvando] = useState(false)
 
@@ -148,8 +282,15 @@ function NovoDatabase({ onCriado }: { onCriado: () => void }) {
     setSalvando(true)
     setErro(null)
     try {
-      await api.createDatabase({ name: nome, adapterKind: adapter })
-      onCriado()
+      // "campo:tipo", uma linha por campo — o formato mais simples que ainda produz um schema
+      // de verdade. JSON cru na tela seria pedir para errar.
+      const fields = campos
+        .split('\n')
+        .map((l) => l.split(':').map((x) => x.trim()))
+        .filter(([n]) => n)
+        .map(([n, t]) => ({ name: n, type: (['string', 'number', 'boolean'].includes(t) ? t : 'string') as 'string' | 'number' | 'boolean' }))
+      await api.createBase({ name: nome, fields, folderId: pasta || null })
+      onCriada()
     } catch (e) {
       setErro((e as Error).message)
     } finally {
@@ -162,23 +303,30 @@ function NovoDatabase({ onCriado }: { onCriado: () => void }) {
       <div className="flex flex-col gap-2" data-testid="database-new-form">
         <label className="flex flex-col gap-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           Nome
-          <Input value={nome} onChange={(e) => setNome(e.target.value)} data-testid="database-new-name" />
+          <Input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Vendas do mês" data-testid="database-new-name" />
         </label>
         <label className="flex flex-col gap-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          De onde vêm os dados
-          <select
-            value={adapter}
-            onChange={(e) => setAdapter(e.target.value as api.AdapterKind)}
-            data-testid="database-new-adapter"
-            style={{ minHeight: 40, padding: '0 10px', borderRadius: 10, border: '1px solid var(--border-subtle)', background: 'var(--surface-card)', fontSize: 13 }}
-          >
-            {(Object.keys(api.ADAPTER_LABEL) as api.AdapterKind[]).map((k) => (
-              <option key={k} value={k}>
-                {api.ADAPTER_LABEL[k]}
-              </option>
-            ))}
-          </select>
+          Campos — um por linha, no formato nome:tipo
+          <Textarea rows={4} value={campos} onChange={(e) => setCampos(e.target.value)} data-testid="database-new-fields" />
         </label>
+        {pastas.length > 0 && (
+          <label className="flex flex-col gap-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Pasta (opcional)
+            <select
+              value={pasta}
+              onChange={(e) => setPasta(e.target.value)}
+              data-testid="database-new-folder"
+              style={{ minHeight: 40, padding: '0 10px', borderRadius: 10, border: '1px solid var(--border-subtle)', background: 'var(--surface-card)', fontSize: 13 }}
+            >
+              <option value="">Sem pasta</option>
+              {pastas.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {erro && (
           <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="database-new-error">
             {erro}
@@ -186,7 +334,7 @@ function NovoDatabase({ onCriado }: { onCriado: () => void }) {
         )}
         <div>
           <Button onClick={salvar} disabled={salvando || !nome.trim()} data-testid="database-new-save">
-            {salvando ? 'Criando…' : 'Criar'}
+            {salvando ? 'Criando…' : 'Criar base'}
           </Button>
         </div>
       </div>
@@ -245,70 +393,6 @@ function DetalheDoDatabase({ id, conjunto, onVoltar }: { id: string; conjunto: s
       {dataset && <ConsultaDoDataset databaseId={id} dataset={dataset} onMudou={carregar} />}
 
       <DatabaseGrants databaseId={id} />
-    </div>
-  )
-}
-
-function NovoDataset({ databaseId, onCriado }: { databaseId: string; onCriado: () => void }) {
-  const [aberto, setAberto] = useState(false)
-  const [chave, setChave] = useState('')
-  const [campos, setCampos] = useState('preco:number\nticker:string')
-  const [erro, setErro] = useState<string | null>(null)
-
-  const salvar = async () => {
-    setErro(null)
-    try {
-      // O schema é montado a partir de "campo:tipo" — o formato mais simples que ainda
-      // produz um schema de verdade. JSON cru na tela seria pedir para errar.
-      const properties: Record<string, { type: string }> = {}
-      for (const linha of campos.split('\n')) {
-        const [nome, tipo] = linha.split(':').map((x) => x.trim())
-        if (!nome) continue
-        properties[nome] = { type: ['string', 'number', 'boolean'].includes(tipo) ? tipo : 'string' }
-      }
-      if (Object.keys(properties).length === 0) throw new Error('declare ao menos um campo')
-      await api.createDataset(databaseId, { key: chave, name: chave, schema: { type: 'object', properties } })
-      setAberto(false)
-      setChave('')
-      onCriado()
-    } catch (e) {
-      setErro((e as Error).message)
-    }
-  }
-
-  if (!aberto) {
-    return (
-      <div>
-        <Button variant="secondary" onClick={() => setAberto(true)} data-testid={`dataset-new-${databaseId}`}>
-          Adicionar conjunto
-        </Button>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex flex-col gap-2" style={{ padding: 10, borderRadius: 10, background: 'var(--surface-sunken)' }} data-testid={`dataset-new-form-${databaseId}`}>
-      <label className="flex flex-col gap-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-        Chave (letras minúsculas, números e _)
-        <Input value={chave} onChange={(e) => setChave(e.target.value)} data-testid={`dataset-new-key-${databaseId}`} />
-      </label>
-      <label className="flex flex-col gap-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-        Campos — um por linha, no formato nome:tipo
-        <Textarea rows={4} value={campos} onChange={(e) => setCampos(e.target.value)} data-testid={`dataset-new-fields-${databaseId}`} />
-      </label>
-      {erro && (
-        <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid={`dataset-new-error-${databaseId}`}>
-          {erro}
-        </p>
-      )}
-      <div className="flex gap-2">
-        <Button onClick={salvar} disabled={!chave.trim()} data-testid={`dataset-new-save-${databaseId}`}>
-          Salvar
-        </Button>
-        <Button variant="secondary" onClick={() => setAberto(false)}>
-          Cancelar
-        </Button>
-      </div>
     </div>
   )
 }

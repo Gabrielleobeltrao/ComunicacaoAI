@@ -322,6 +322,12 @@ const RULES: Rule[] = [
   // único lugar onde depois se pergunta quem trocou aquele número, e quando.
   R('PATCH', 'api/databases/:/datasets/:/rows/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/databases/:/datasets/:/rows/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  // Criar uma base, criar uma pasta e mover uma base entre pastas: as três mudam o que a conta
+  // guarda e quem alcança. Mover, em especial, tira acesso de quem tinha — quem administra
+  // precisa poder ver quem moveu.
+  R('POST', 'api/databases/bases', { entityType: 'database', action: 'create' }),
+  R('POST', 'api/databases/folders', { entityType: 'database', action: 'create' }),
+  R('PATCH', 'api/databases/bases/:/folder', { entityType: 'database', action: 'update' }, { idAt: 3 }),
   // A coluna calculada muda a FORMA do conjunto e cria uma série que passa a gravar sozinha:
   // é mudança de estrutura, e quem administra a conta precisa ver quem a criou.
   R('POST', 'api/databases/:/datasets/:/columns', { entityType: 'database', action: 'update' }, { idAt: 2 }),

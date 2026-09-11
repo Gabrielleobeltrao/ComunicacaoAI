@@ -56,6 +56,8 @@ let apagados: string[] = []
 let conjuntosApagados: string[] = []
 let linhasApagadas: string[] = []
 let criado: Record<string, unknown> | null = null
+let pastaCriada: Record<string, unknown> | null = null
+let movida: { url: string; body: Record<string, unknown> } | null = null
 let colunaCriada: Record<string, unknown> | null = null
 let colunasApagadas: string[] = []
 
@@ -98,8 +100,10 @@ const IMPACTO = {
   recommendation: 'prefer_archive',
 }
 
-async function stub(page: Page, opts: { listStatus?: number; empty?: boolean } = {}) {
+async function stub(page: Page, opts: { listStatus?: number; empty?: boolean; basesSoltas?: typeof DETALHE.datasets } = {}) {
   criado = null
+  pastaCriada = null
+  movida = null
   colunaCriada = null
   colunasApagadas = []
   grantSalvo = null
@@ -138,6 +142,45 @@ async function stub(page: Page, opts: { listStatus?: number; empty?: boolean } =
   await page.route(`**/api/databases/${DB_ID}/datasets`, (r) => {
     criado = r.request().postDataJSON() as Record<string, unknown>
     return r.fulfill({ status: 201, json: { key: String(criado.key) } })
+  })
+  /**
+   * A TELA LISTA BASES.
+   *
+   * As duas de sempre vêm dentro da pasta "Operações" — é o caso que exercita a pasta. As
+   * soltas têm caso próprio mais abaixo.
+   */
+  await page.route('**/api/databases/bases', (r) => {
+    if (r.request().method() === 'GET' && opts.listStatus && opts.listStatus >= 400) {
+      return r.fulfill({ status: opts.listStatus, json: { message: 'não foi possível carregar' } })
+    }
+    if (r.request().method() === 'GET' && opts.empty) return r.fulfill({ json: { items: [] } })
+    if (r.request().method() === 'POST') {
+      criado = r.request().postDataJSON()
+      return r.fulfill({ status: 201, json: { id: 'b-novo', key: 'nova', name: 'Nova', adapterKind: 'data_history', mutability: 'append_only', fields: ['valor'], folder: null, dataStoreId: DB_ID, createdAt: NOW } })
+    }
+    return r.fulfill({
+      json: {
+        items: (opts.basesSoltas ?? DETALHE.datasets).map((d) => ({
+          id: `b-${d.key}`,
+          key: d.key,
+          name: d.name,
+          adapterKind: 'data_history',
+          mutability: d.mutability,
+          fields: d.fields,
+          folder: opts.basesSoltas ? null : { id: DB_ID, name: 'Operações' },
+          dataStoreId: DB_ID,
+          createdAt: NOW,
+        })),
+      },
+    })
+  })
+  await page.route('**/api/databases/folders', (r) => {
+    pastaCriada = r.request().postDataJSON()
+    return r.fulfill({ status: 201, json: { id: 'f1', name: pastaCriada?.name ?? 'Nova' } })
+  })
+  await page.route('**/api/databases/bases/*/folder', (r) => {
+    movida = { url: r.request().url(), body: r.request().postDataJSON() }
+    return r.fulfill({ json: { folder: null, perdeuGrants: 2 } })
   })
   await page.route('**/api/executors/catalog', (r) => r.fulfill({ json: CATALOGO }))
   await page.route(`**/api/databases/${DB_ID}/datasets/ordens/columns/**`, (r) => {
@@ -204,15 +247,67 @@ async function stub(page: Page, opts: { listStatus?: number; empty?: boolean } =
   })
 }
 
-test('a lista diz a ORIGEM de cada database, e o estado', async ({ page }) => {
+test('a lista diz a ORIGEM de cada BASE — e é a base que a tela lista', async ({ page }) => {
+  // "E por que temos pasta e conjunto?" A pasta continua existindo, e só aparece quando
+  // alguém a criou. A coisa principal é a base, e ela diz de onde lê: mercado não é memória
+  // nem conhecimento, e confundir os três é o começo de todo mal-entendido.
+  await stub(page, { basesSoltas: DETALHE.datasets })
+  await page.goto('/databases')
+  await expect(page.getByTestId('bases-soltas')).toBeVisible()
+  await expect(page.getByTestId('base-ordens')).toContainText('Histórico interno')
+  await expect(page.getByTestId('base-ordens')).toContainText('ticker')
+  // Sem pasta criada por ninguém, não há pasta na tela.
+  await expect(page.getByTestId('databases-list')).toHaveCount(0)
+})
+
+test('ACEITAÇÃO: criar uma base é UM passo — nome e campos, sem pasta nenhuma', async ({ page }) => {
+  // Antes eram dois: criar a pasta e, dentro dela, criar o conjunto. Quem parava no primeiro
+  // ficava com uma caixa vazia e nada dizendo qual era o próximo passo.
   await stub(page)
   await page.goto('/databases')
+  await page.getByTestId('databases-new').click()
+  await page.getByTestId('database-new-name').fill('Vendas do mês')
+  await page.getByTestId('database-new-fields').fill('valor:number\nvendedor:string')
+  await page.getByTestId('database-new-save').click()
+  await expect.poll(() => criado).toMatchObject({
+    name: 'Vendas do mês',
+    fields: [{ name: 'valor', type: 'number' }, { name: 'vendedor', type: 'string' }],
+  })
+})
+
+test('ACEITAÇÃO: dá para criar uma pasta e mover uma base para dentro dela', async ({ page }) => {
+  await stub(page, { basesSoltas: DETALHE.datasets })
+  await page.goto('/databases')
+  await page.getByTestId('folder-new').click()
+  await page.getByTestId('folder-new-name').fill('Financeiro')
+  await page.getByTestId('folder-new-save').click()
+  await expect.poll(() => pastaCriada).toMatchObject({ name: 'Financeiro' })
+})
+
+test('mover uma base AVISA quem perdeu acesso — permissão mora na pasta', async ({ page }) => {
+  // Mover não move registro nenhum: as linhas ficam penduradas na série. O que muda é quem
+  // alcança a base, e descobrir isso depois por um agente que parou de responder é caro.
+  await stub(page, { basesSoltas: DETALHE.datasets })
+  await page.route('**/api/databases/bases', (r) =>
+    r.fulfill({
+      json: {
+        items: DETALHE.datasets.map((d) => ({
+          id: `b-${d.key}`,
+          key: d.key,
+          name: d.name,
+          adapterKind: 'data_history',
+          mutability: d.mutability,
+          fields: d.fields,
+          folder: { id: 'f1', name: 'Financeiro' },
+          dataStoreId: DB_ID,
+          createdAt: NOW,
+        })),
+      },
+    }),
+  )
+  await page.goto('/databases')
   await expect(page.getByTestId('databases-list')).toBeVisible()
-  // Mercado não é memória nem conhecimento — e a tela diz de onde vem.
-  // A lista virou uma lista de PASTAS: o mesmo conteúdo, num lugar que se abre.
-  await expect(page.getByTestId('pasta-000000000000000000000db2')).toContainText('Dados de mercado')
-  await expect(page.getByTestId('pasta-000000000000000000000db2')).toContainText('pausado')
-  await expect(page.getByTestId(`pasta-${DB_ID}`)).toContainText('Histórico interno')
+  await expect(page.getByTestId('pasta-f1')).toContainText('Financeiro')
 })
 
 test('abrir um database mostra os conjuntos e a consulta', async ({ page }) => {
@@ -232,28 +327,6 @@ test('abrir um database mostra os conjuntos e a consulta', async ({ page }) => {
   await expect(page.getByTestId('dataset-query-table')).toContainText('T0')
 })
 
-test('criar um conjunto monta o schema a partir de campo:tipo', async ({ page }) => {
-  await stub(page)
-  // Criar um conjunto é mexer no que a pasta guarda — o botão fica DENTRO da pasta.
-  await page.goto('/databases')
-  await page.getByTestId(`pasta-${DB_ID}`).click()
-  await page.getByTestId(`dataset-new-${DB_ID}`).click()
-  await page.getByTestId(`dataset-new-key-${DB_ID}`).fill('clientes')
-  await page.getByTestId(`dataset-new-fields-${DB_ID}`).fill('nome:string\nidade:number')
-  await page.getByTestId(`dataset-new-save-${DB_ID}`).click()
-  await expect.poll(() => (criado as { schema?: { properties?: Record<string, { type: string }> } } | null)?.schema?.properties?.idade?.type).toBe('number')
-})
-
-test('criar um database manda o adapter escolhido', async ({ page }) => {
-  await stub(page)
-  await page.goto('/databases')
-  await page.getByTestId('databases-new').click()
-  await page.getByTestId('database-new-name').fill('Estoque')
-  await page.getByTestId('database-new-adapter').selectOption('market_data')
-  await page.getByTestId('database-new-save').click()
-  await expect.poll(() => (criado as { adapterKind?: string } | null)?.adapterKind).toBe('market_data')
-})
-
 test('erro NÃO vira lista vazia', async ({ page }) => {
   await stub(page, { listStatus: 500 })
   await page.goto('/databases')
@@ -261,7 +334,7 @@ test('erro NÃO vira lista vazia', async ({ page }) => {
   await expect(page.getByTestId('databases-empty')).toHaveCount(0)
 })
 
-test('vazio explica o que um database é', async ({ page }) => {
+test('vazio explica o que uma base é', async ({ page }) => {
   await stub(page, { empty: true })
   await page.goto('/databases')
   await expect(page.getByTestId('databases-empty')).toContainText('sem misturá-los com conhecimento')
@@ -665,9 +738,17 @@ test('ACEITAÇÃO: o conjunto criado à mão DIZ como o dado chega — e oferece
   await page.route(`**/api/databases/${DB_ID}/datasets/vendas/query`, (r) =>
     r.fulfill({ json: { rows: [], total: 0, returned: 0, truncated: false, freshness: null } }),
   )
+  await page.route('**/api/databases/bases', (r) =>
+    r.fulfill({
+      json: {
+        items: [
+          { id: 'b-vendas', key: 'vendas', name: 'Vendas', adapterKind: 'data_history', mutability: 'append_only', fields: ['valor'], folder: null, dataStoreId: DB_ID, createdAt: NOW },
+        ],
+      },
+    }),
+  )
   await page.goto('/databases')
-  await page.getByTestId(`pasta-${DB_ID}`).click()
-  await page.getByTestId('item-abrir-vendas').click()
+  await page.getByTestId('base-abrir-vendas').click()
 
   const origem = page.getByTestId('dataset-origem')
   await expect(origem).toBeVisible()

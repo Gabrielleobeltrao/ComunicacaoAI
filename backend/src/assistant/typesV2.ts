@@ -165,6 +165,14 @@ export interface BlueprintAppRequirementV2 extends BlueprintItemBaseV2 {
 export interface BlueprintDatabaseV2 extends BlueprintItemBaseV2 {
   name: string
   description?: string
+  /**
+   * ESTA PASTA AGRUPA — e por isso ela aparece como pasta.
+   *
+   * A tela lista bases. Um plano que guarda um assunto só manda a base para o lar de sempre,
+   * que não é uma pasta na tela; um que guarda vários pede uma pasta de verdade, e é aqui que
+   * ele diz isso. Ausente nos planos anteriores: eles continuam sem pasta, como eram.
+   */
+  explicit?: boolean
   owner: { ownerType: 'account' | 'building' | 'floor'; ownerKey?: string | null }
   adapterKind: string
   retentionDays?: number | null

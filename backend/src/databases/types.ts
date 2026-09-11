@@ -49,6 +49,18 @@ export interface DataStore {
   /** Quem administra. `account`/`building` hoje; andar e setor quando a UI oferecer. */
   owner: { ownerType: 'account' | 'building' | 'floor' | 'sector'; ownerId: string }
   adapterKind: DataStoreAdapterKind
+  /**
+   * ESTA PASTA FOI FEITA DE PROPÓSITO.
+   *
+   * A tela lista BASES. Uma pasta só aparece como pasta quando alguém decidiu criá-la — o
+   * resto é agrupamento que o sistema inventou por dentro, e uma caixa com uma coisa só
+   * dentro é cerimônia: o dono abria a pasta para encontrar uma tabela com quase o mesmo
+   * nome dela.
+   *
+   * Ausente nas pastas que já existiam, e é assim que elas achatam: sem a marca, as bases
+   * delas aparecem soltas, e nenhum registro se move para isso acontecer.
+   */
+  explicit?: boolean
   /** REFERÊNCIAS, nunca segredo: id de recorder, chave de App, símbolo de mercado. */
   adapterConfig: Record<string, unknown>
   status: DataStoreStatus
@@ -90,6 +102,16 @@ export interface DataSetDefinition {
    * Ausente nos conjuntos que já existiam: neles a chave continua respondendo.
    */
   recorderId?: ObjectId | null
+  /**
+   * DE ONDE ESTA BASE LÊ — histórico interno, mercado ou App externo.
+   *
+   * Morava só na pasta, e era o que prendia a base a ela: mover uma base de pasta trocaria o
+   * adaptador dela junto, calado. Com o tipo aqui, a pasta volta a ser o que ela deveria ser
+   * — organização e permissão —, e mover não muda de onde o dado vem.
+   *
+   * Ausente nas bases que já existiam: nelas a pasta continua respondendo.
+   */
+  adapterKind?: DataStoreAdapterKind
   /**
    * As COLUNAS CALCULADAS deste conjunto.
    *

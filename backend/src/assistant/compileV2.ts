@@ -917,13 +917,49 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
     } as never)
   }
 
-  for (const [i, registro] of (brief.recordsToKeep ?? []).entries()) {
-    const raiz = slug(registro.subject) || `registro-${i}`
-    const dbKey = `base-${raiz}`
-    if (bp.resources.databases.some((d) => d.key === dbKey)) continue
+  /**
+   * UMA PASTA SÓ QUANDO HÁ O QUE AGRUPAR.
+   *
+   * O compilador abria um Database por assunto guardado. Na conta do dono isso produziu duas
+   * pastas com uma tabela em cada, e o nome da pasta era a descrição da tabela lá dentro —
+   * "Histórico consolidado do menor e maior valor do bitcoin por janela de 10 minutos", com
+   * um conjunto só. Ele perguntou: "e por que temos pasta e conjunto?".
+   *
+   * Com um assunto só, tudo vai para o mesmo lugar de sempre e a base aparece SOLTA — a
+   * pasta padrão não é uma pasta na tela. Com vários, aí sim uma pasta, porque aí ela agrupa
+   * de verdade.
+   */
+  const assuntos = brief.recordsToKeep ?? []
+  const agrupa = assuntos.length > 1
+  const pastaComum = agrupa ? null : (acharDatabase(inventory, 'Históricos') ?? null)
 
-    const existente = acharDatabase(inventory, registro.subject)
-    bp.resources.databases.push({
+  for (const [i, registro] of assuntos.entries()) {
+    const raiz = slug(registro.subject) || `registro-${i}`
+    // Com vários assuntos, UMA pasta para todos, nomeada pela operação; com um, o lar de
+    // sempre, que não aparece como pasta.
+    const dbKey = agrupa ? `base-${slug(base.title) || 'operacao'}` : pastaComum ? 'base-historicos' : `base-${raiz}`
+    /**
+     * O MESMO destino serve a vários assuntos — e o segundo não recria a pasta.
+     *
+     * Antes, `continue` aqui pulava o assunto inteiro: com dois registros indo para o mesmo
+     * lugar, o segundo não ganhava conjunto nenhum. Agora só a criação da pasta é pulada; o
+     * conjunto, a janela e o teste continuam sendo declarados logo abaixo.
+     */
+    const jaDeclarada = bp.resources.databases.find((d) => d.key === dbKey)
+    const existente = pastaComum ?? (agrupa ? acharDatabase(inventory, base.title) : acharDatabase(inventory, registro.subject))
+    /**
+     * A MESMA BASE não entra duas vezes no plano — ela SOBE de acesso.
+     *
+     * Quando a operação lê e grava no mesmo lugar, o plano declarava duas entradas para um
+     * Database só: uma de leitura e outra de escrita. O grant é único por (base, agente), então
+     * a segunda sobrescrevia a primeira e quem mandava era a ordem de aplicação — silenciosa.
+     * Uma entrada com `write` responde as duas coisas: escrever inclui ler.
+     */
+    if (jaDeclarada) {
+      jaDeclarada.agentAccess = 'write'
+      jaDeclarada.agentKeys = [...new Set([...(jaDeclarada.agentKeys ?? []), ...bp.organization.agents.map((a) => a.key)])]
+    }
+    if (!jaDeclarada) bp.resources.databases.push({
       key: dbKey,
       // Expandir em vez de duplicar: um Database com o mesmo nome já é o lugar deste dado.
       action: existente ? 'reuse' : 'create',
@@ -931,9 +967,12 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
       ...ESSENCIAL,
       rationale: existente ? 'este Database já existe: a proposta grava nele' : `"${registro.subject}" precisa ficar guardado para poder ser comparado depois`,
       dependsOn: [],
-      name: existente?.label ?? registro.subject,
+      name: existente?.label ?? (agrupa ? base.title : registro.subject),
       owner: { ownerType: 'account' },
       adapterKind: 'data_history',
+      // Uma pasta de verdade só quando ela AGRUPA: com um assunto só, o destino é o lar de
+      // sempre, e a base aparece solta na tela.
+      ...(agrupa ? { explicit: true } : {}),
       // Quem grava aqui são os agentes DESTA operação — declarado, para o dono ver e
       // aprovar junto com o resto. Sem isto o plano criava a base e o agente não a
       // alcançava: operação montada e muda.
@@ -1007,6 +1046,7 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
      * Só a janela que ainda não tem destino: uma já ligada não é realocada por um registro
      * que apareceu depois.
      */
+    if (bp.acceptanceTests.some((t) => t.key === `teste-${dbKey}`)) continue
     bp.acceptanceTests.push({
       key: `teste-${dbKey}`,
       kind: 'database_permission',

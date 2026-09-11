@@ -147,6 +147,8 @@ export interface CreateDatasetInput {
   primaryKey?: string[]
   mutability?: DataSetDefinition['mutability']
   timeField?: string
+  /** De onde ESTA base lê. Ausente herda da pasta, que é como as bases antigas funcionam. */
+  adapterKind?: DataStoreAdapterKind
 }
 
 const CHAVE = /^[a-z0-9_]{1,60}$/
@@ -188,7 +190,9 @@ export async function createDataset(ownerId: string, dataStoreId: ObjectId, inpu
    * série vazia ao lado deles seria um recurso que nunca recebe nada.
    */
   let recorderId: ObjectId | null = null
-  if (store.adapterKind === 'data_history' && !ObjectId.isValid(key) && !store.adapterConfig.recorderId) {
+  // O tipo da BASE: escolhido por quem cria, ou herdado da pasta para quem não escolheu.
+  const adapterKind = input.adapterKind ?? store.adapterKind
+  if (adapterKind === 'data_history' && !ObjectId.isValid(key) && !store.adapterConfig.recorderId) {
     const { criarRecorder } = await import('../dataHistory/recorders.js')
     const campos = Object.keys((schema.properties ?? {}) as Record<string, unknown>)
     const r = await criarRecorder(ownerId, {
@@ -208,12 +212,13 @@ export async function createDataset(ownerId: string, dataStoreId: ObjectId, inpu
     dataStoreId,
     key,
     ...(recorderId ? { recorderId } : {}),
+    ...(input.adapterKind ? { adapterKind: input.adapterKind } : {}),
     name: String(input.name ?? key).slice(0, 120),
     schema: schema as Record<string, unknown>,
     ...(input.primaryKey?.length ? { primaryKey: input.primaryKey.slice(0, 5) } : {}),
     // Série temporal nasce `append_only`: aceitar `update` faria alguém corrigir um valor
     // de ontem e o gráfico mudar sem que nada registre a mudança.
-    mutability: input.mutability ?? (store.adapterKind === 'market_data' ? 'read_only' : 'append_only'),
+    mutability: input.mutability ?? (adapterKind === 'market_data' ? 'read_only' : 'append_only'),
     ...(input.timeField ? { timeField: input.timeField } : {}),
     createdAt: agora,
     updatedAt: agora,
