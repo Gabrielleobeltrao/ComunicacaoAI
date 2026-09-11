@@ -3,7 +3,7 @@ import { Link } from 'react-router'
 import { listExecutorCatalog, listInstallations } from '../lib/apps'
 import type { CatalogAction, CatalogFunction, AppInstallation } from '../lib/apps'
 import type { ExecutorKind, ResponseMode } from '../lib/types'
-import { Icon } from '../ui'
+import { FunctionPicker } from './FunctionPicker'
 
 // COMO este agente executa — a pergunta que muda todo o resto do formulário.
 //
@@ -53,25 +53,6 @@ function valorDeExemplo(def: { type?: string; enum?: unknown[]; description?: st
   if (def.type === 'array') return [valorDeExemplo((def.items ?? {}) as { type?: string })]
   if (def.type === 'object') return {}
   return 'valor'
-}
-
-/** O prefixo antes do ponto: `lista.agrupar` → `lista`. É como as funções já se agrupam. */
-const familiaDe = (nome: string): string => (nome.includes('.') ? nome.split('.')[0] : 'geral')
-
-const FAMILIA_LABEL: Record<string, string> = {
-  lista: 'Listas e tabelas',
-  json: 'Objetos e campos',
-  texto: 'Texto',
-  dados: 'Conferência de dados',
-  math: 'Cálculo',
-  financeiro: 'Financeiro',
-  data: 'Datas',
-  br: 'Documentos brasileiros',
-  regra: 'Regras e faixas',
-  liveData: 'Dado ao vivo',
-  data_history: 'Histórico',
-  realtime_data: 'Tempo real do agente',
-  geral: 'Outras',
 }
 
 const TIPOS: { kind: ExecutorKind; titulo: string; resumo: string }[] = [
@@ -163,7 +144,6 @@ export function AgentExecutorSection({
   const [acoes, setAcoes] = useState<CatalogAction[]>([])
   const [instalacoes, setInstalacoes] = useState<AppInstallation[]>([])
   const [erro, setErro] = useState<string | null>(null)
-  const [busca, setBusca] = useState('')
 
   useEffect(() => {
     let vivo = true
@@ -188,64 +168,6 @@ export function AgentExecutorSection({
     () => new Set(instalacoes.filter((i) => i.status === 'connected').map((i) => i.appKey)),
     [instalacoes],
   )
-  const filtro = busca.trim().toLowerCase()
-  /**
-   * O filtro por FAMÍLIA, ao lado da busca.
-   *
-   * Buscar serve para quem já sabe o nome ou uma palavra da descrição. Filtrar serve
-   * para o caso oposto — "o que existe para mexer em lista?" —, que é a pergunta de
-   * quem está montando o agente pela primeira vez. As duas coisas somam: o filtro
-   * estreita o conjunto, a busca procura dentro dele.
-   */
-  const [familias, setFamilias] = useState<Set<string>>(new Set())
-  const [filtroAberto, setFiltroAberto] = useState(false)
-
-  /**
-   * As famílias possíveis vêm da lista INTEIRA, não da filtrada.
-   *
-   * Derivá-las do que está visível faria a opção sumir no instante em que fosse
-   * escolhida — e aí não haveria como desmarcá-la.
-   */
-  const familiasDisponiveis = useMemo(() => [...new Set(funcoes.map((f) => familiaDe(f.functionName)))], [funcoes])
-
-  const alternarFamilia = (familia: string) =>
-    setFamilias((atual) => {
-      const proximo = new Set(atual)
-      if (proximo.has(familia)) proximo.delete(familia)
-      else proximo.add(familia)
-      return proximo
-    })
-  const funcoesVisiveis = useMemo(
-    () =>
-      funcoes.filter(
-        (f) =>
-          // Nenhuma família escolhida quer dizer TODAS — é o que "sem filtro" significa.
-          (familias.size === 0 || familias.has(familiaDe(f.functionName))) &&
-          (!filtro ||
-            f.functionName.toLowerCase().includes(filtro) ||
-            f.description.toLowerCase().includes(filtro) ||
-            f.capabilities.some((c) => c.toLowerCase().includes(filtro))),
-      ),
-    [funcoes, filtro, familias],
-  )
-
-  /**
-   * As visíveis, agrupadas por família e na ordem em que as famílias aparecem.
-   *
-   * Ordem de aparição, e não alfabética: a lista já chega ordenada por nome do servidor,
-   * então "cálculo" antes de "datas" é o que a pessoa vê nas duas telas. Reordenar aqui
-   * criaria uma segunda ordem para a mesma coisa.
-   */
-  const porFamilia = useMemo(() => {
-    const mapa = new Map<string, CatalogFunction[]>()
-    for (const f of funcoesVisiveis) {
-      const familia = familiaDe(f.functionName)
-      const atual = mapa.get(familia)
-      if (atual) atual.push(f)
-      else mapa.set(familia, [f])
-    }
-    return [...mapa.entries()]
-  }, [funcoesVisiveis])
   const escolhida = funcoes.find((f) => f.functionName === draft.functionName) ?? null
   const appsComAcao = useMemo(() => [...new Map(acoes.map((a) => [a.appKey, a])).values()], [acoes])
   const acoesDoApp = acoes.filter((a) => a.appKey === draft.appKey)
@@ -336,177 +258,82 @@ export function AgentExecutorSection({
             Função do sistema
           </label>
           {/*
-            Uma LISTA, e nunca uma caixa de texto livre.
-            O que executa é código deste servidor; o agente guarda o nome. Um campo onde se
-            cola um trecho seria a porta de execução arbitrária que o resto do sistema
-            existe para fechar.
+            O MESMO seletor do conjunto de dados — ver `FunctionPicker`.
+            Ele morava aqui dentro, e as trinta e poucas funções do registro só existiam para
+            quem estava contratando alguém. São as mesmas funções nos dois lugares; não havia
+            motivo para serem duas telas.
           */}
-          <div className="flex items-center gap-2">
-            <input
-              id="function-search"
-              value={busca}
-              onChange={(e) => setBusca(e.target.value)}
-              placeholder="Procurar por nome, descrição ou capacidade"
-              className="min-w-0 flex-1 rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-              data-testid="function-search"
-            />
-            <button
-              type="button"
-              onClick={() => setFiltroAberto((v) => !v)}
-              aria-expanded={filtroAberto}
-              aria-label={familias.size ? `Filtrar por tipo (${familias.size} ativo(s))` : 'Filtrar por tipo'}
-              title="Filtrar por tipo"
-              className={`ds-hit flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-2 text-xs ${
-                familias.size ? 'border-(--border-focus) text-(--intent-brand)' : 'border-(--border-strong) text-(--text-muted)'
-              }`}
-              data-testid="function-filter"
-            >
-              <Icon name="list-filter" size={16} />
-              {/* O número no botão: com o painel fechado, é a única pista de que há
-                  filtro ativo — e sem ela a lista parece incompleta sem motivo. */}
-              {familias.size > 0 && <span className="font-semibold">{familias.size}</span>}
-            </button>
-          </div>
-
-          {filtroAberto && (
-            <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-(--border-subtle) p-2" data-testid="function-filter-panel">
-              {familiasDisponiveis.map((familia) => {
-                const ativa = familias.has(familia)
-                return (
-                  <button
-                    key={familia}
-                    type="button"
-                    onClick={() => alternarFamilia(familia)}
-                    aria-pressed={ativa}
-                    className={`rounded-full border px-2.5 py-1 text-xs ${
-                      ativa ? 'border-(--border-focus) bg-(--surface-sunken) font-semibold' : 'border-(--border-subtle) text-(--text-muted)'
-                    }`}
-                    data-testid={`function-filter-${familia}`}
-                  >
-                    {FAMILIA_LABEL[familia] ?? familia}
-                  </button>
-                )
-              })}
-              {familias.size > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setFamilias(new Set())}
-                  className="ml-auto rounded-full px-2 py-1 text-xs text-(--text-muted) underline"
-                  data-testid="function-filter-clear"
-                >
-                  Limpar
-                </button>
-              )}
-            </div>
-          )}
-          {/* Agrupadas por família: com quase trinta funções, uma lista corrida obriga a
-              ler todas para achar a que serve. O prefixo já dizia o grupo — só não
-              estava sendo usado. */}
-          <div className="max-h-96 space-y-3 overflow-y-auto" data-testid="function-list">
-            {funcoesVisiveis.length === 0 && <p className="p-2 text-xs text-(--text-faint)">Nenhuma função encontrada.</p>}
-            {porFamilia.map(([familia, doGrupo]) => (
-              <div key={familia} className="space-y-1.5">
-                <p className="text-[11px] font-bold uppercase tracking-wide text-(--text-faint)">{FAMILIA_LABEL[familia] ?? familia}</p>
-                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-                  {doGrupo.map((f) => {
-                    const escolhidaAqui = draft.functionName === f.functionName
-                    const exemplo = exemploDe(f.inputSchema)
-                    return (
-                      <button
-                        key={f.functionName}
-                        type="button"
-                        onClick={() => {
-                          set({ functionName: f.functionName, functionVersion: f.version })
-                          onContractDerived?.({ inputJsonSchema: f.inputSchema, outputJsonSchema: f.outputSchema })
-                        }}
-                        aria-pressed={escolhidaAqui}
-                        className={`flex h-full flex-col gap-1 rounded-lg border p-2.5 text-left transition ${
-                          escolhidaAqui ? 'border-(--border-focus) bg-(--surface-sunken)' : 'border-(--border-subtle) hover:border-(--border-strong)'
-                        }`}
-                        data-testid={`function-option-${f.functionName}`}
-                      >
-                        <span className="font-mono text-xs font-semibold">{f.functionName}</span>
-                        <span className="text-xs text-(--text-muted)">{f.description}</span>
-                        {f.capabilities?.length > 0 && (
-                          <span className="flex flex-wrap gap-1">
-                            {f.capabilities.slice(0, 3).map((c) => (
-                              <span key={c} className="rounded-full bg-(--surface-sunken) px-1.5 py-0.5 text-[10px] text-(--text-faint)">
-                                {c}
-                              </span>
-                            ))}
-                          </span>
+          <FunctionPicker
+            funcoes={funcoes}
+            escolhida={draft.functionName}
+            onEscolher={(f) => {
+              set({ functionName: f.functionName, functionVersion: f.version })
+              onContractDerived?.({ inputJsonSchema: f.inputSchema, outputJsonSchema: f.outputSchema })
+            }}
+            detalhe={(f) => (
+              <div className="space-y-2">
+                {/* O EXEMPLO só no card escolhido: em todos, vinte e sete blocos de JSON
+                    viram parede de texto e ninguém lê nenhum. */}
+                {exemploDe(f.inputSchema) && (
+                  <pre className="overflow-x-auto rounded bg-(--surface-card) p-1.5 text-[10.5px] leading-tight" data-testid={`function-example-${f.functionName}`}>
+                    {exemploDe(f.inputSchema)}
+                  </pre>
+                )}
+                {parametros.length > 0 && (
+                  <div className="space-y-2" data-testid="function-config">
+                    <p className="text-xs text-(--text-muted)">Parâmetros desta função</p>
+                    {/*
+                      Um formulário GERADO do schema, e não um editor JSON livre.
+                      Livre, o dono digita o que quiser, o handler recebe o que vier, e nada
+                      diz quais campos existem. E um campo livre é onde uma credencial acaba
+                      parando.
+                    */}
+                    {parametros.map((campo) => (
+                      <div key={campo.name}>
+                        <label className="mb-1 block text-xs text-(--text-muted)" htmlFor={`config-${campo.name}`}>
+                          {campo.description || campo.name}
+                        </label>
+                        {campo.type === 'boolean' ? (
+                          <input
+                            id={`config-${campo.name}`}
+                            type="checkbox"
+                            checked={Boolean(draft.config[campo.name])}
+                            onChange={(e) => set({ config: { ...draft.config, [campo.name]: e.target.checked } })}
+                            data-testid={`function-config-${campo.name}`}
+                          />
+                        ) : (
+                          <input
+                            id={`config-${campo.name}`}
+                            type={campo.type === 'string' ? 'text' : 'number'}
+                            value={String(draft.config[campo.name] ?? '')}
+                            min={campo.minimum}
+                            max={campo.maximum}
+                            onChange={(e) => {
+                              const bruto = e.target.value
+                              const valor = campo.type === 'string' ? bruto : bruto === '' ? undefined : Number(bruto)
+                              const proximo = { ...draft.config }
+                              if (valor === undefined || valor === '') delete proximo[campo.name]
+                              else proximo[campo.name] = valor
+                              set({ config: proximo })
+                            }}
+                            className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                            data-testid={`function-config-${campo.name}`}
+                          />
                         )}
-                        {/* O exemplo só aparece no card ESCOLHIDO: em todos, vinte e sete
-                            blocos de JSON viram parede de texto e ninguém lê nenhum. */}
-                        {escolhidaAqui && exemplo && (
-                          <pre
-                            className="mt-0.5 overflow-x-auto rounded bg-(--surface-sunken) p-1.5 text-[10.5px] leading-tight"
-                            data-testid={`function-example-${f.functionName}`}
-                          >
-                            {exemplo}
-                          </pre>
-                        )}
-                      </button>
-                    )
-                  })}
-                </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* Versão, capacidades e contratos: é o que separa "escolhi a função certa"
+                    de "escolhi a que tinha o nome mais parecido". */}
+                <p className="text-xs text-(--text-muted)" data-testid="function-detail">
+                  versão {f.version}
+                  {f.capabilities.length > 0 && <> · Capacidades: {f.capabilities.join(', ')}</>} · Recebe: {campos(f.inputSchema) || '—'} · Devolve:{' '}
+                  {campos(f.outputSchema) || '—'}
+                </p>
               </div>
-            ))}
-          </div>
-          {escolhida && parametros.length > 0 && (
-            <div className="space-y-2 rounded-md border border-(--border-subtle) p-2" data-testid="function-config">
-              <p className="text-xs text-(--text-muted)">Parâmetros desta função</p>
-              {/*
-                Um formulário GERADO do schema, e não um editor JSON livre.
-                Livre, o dono digita o que quiser, o handler recebe o que vier, e nada diz
-                quais campos existem. E um campo livre é onde uma credencial acaba parando.
-              */}
-              {parametros.map((campo) => (
-                <div key={campo.name}>
-                  <label className="mb-1 block text-xs text-(--text-muted)" htmlFor={`config-${campo.name}`}>
-                    {campo.description || campo.name}
-                  </label>
-                  {campo.type === 'boolean' ? (
-                    <input
-                      id={`config-${campo.name}`}
-                      type="checkbox"
-                      checked={Boolean(draft.config[campo.name])}
-                      onChange={(e) => set({ config: { ...draft.config, [campo.name]: e.target.checked } })}
-                      data-testid={`function-config-${campo.name}`}
-                    />
-                  ) : (
-                    <input
-                      id={`config-${campo.name}`}
-                      type={campo.type === 'string' ? 'text' : 'number'}
-                      value={String(draft.config[campo.name] ?? '')}
-                      min={campo.minimum}
-                      max={campo.maximum}
-                      onChange={(e) => {
-                        const bruto = e.target.value
-                        const valor = campo.type === 'string' ? bruto : bruto === '' ? undefined : Number(bruto)
-                        const proximo = { ...draft.config }
-                        if (valor === undefined || valor === '') delete proximo[campo.name]
-                        else proximo[campo.name] = valor
-                        set({ config: proximo })
-                      }}
-                      className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-                      data-testid={`function-config-${campo.name}`}
-                    />
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-          {escolhida && (
-            <div className="rounded-md border border-(--border-subtle) p-2 text-xs text-(--text-muted)" data-testid="function-detail">
-              <p>
-                <span className="font-mono">{escolhida.functionName}</span> · versão {escolhida.version}
-              </p>
-              {escolhida.capabilities.length > 0 && <p className="mt-1">Capacidades: {escolhida.capabilities.join(', ')}</p>}
-              <p className="mt-1">Recebe: {campos(escolhida.inputSchema) || '—'}</p>
-              <p>Devolve: {campos(escolhida.outputSchema) || '—'}</p>
-            </div>
-          )}
+            )}
+          />
         </div>
       )}
 

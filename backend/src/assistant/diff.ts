@@ -1,4 +1,5 @@
 import type { OfficeBlueprintV1 } from './types.js'
+import type { OfficeBlueprintV2 } from './typesV2.js'
 
 // O que mudou entre a proposta anterior e a de agora.
 //
@@ -9,7 +10,7 @@ import type { OfficeBlueprintV1 } from './types.js'
 // Puro de propósito: nada de banco, nada de relógio. A mesma dupla de blueprints
 // produz sempre a mesma lista, o que a torna testável sem subir nada.
 
-export type BlueprintChangeKind = 'floor' | 'agent' | 'sector' | 'routine' | 'app' | 'knowledge'
+export type BlueprintChangeKind = 'floor' | 'agent' | 'sector' | 'routine' | 'app' | 'knowledge' | 'database' | 'dataset' | 'tool' | 'source' | 'history' | 'live' | 'monitor' | 'flow' | 'channel' | 'delivery'
 
 export interface BlueprintChange {
   kind: BlueprintChangeKind
@@ -38,6 +39,47 @@ const LISTAS: Lista[] = [
   { kind: 'app', campo: 'appRequirements', rotulo: (i) => String(i.appKey ?? i.key ?? '') },
   { kind: 'knowledge', campo: 'knowledgeRequirements', rotulo: (i) => String(i.title ?? i.key ?? '') },
 ]
+
+/**
+ * O QUE SÓ EXISTE NO V2 — e por isso não aparecia em "Criei:" nenhuma.
+ *
+ * O diff nasceu conhecendo o Blueprint V1. Um plano que só cria Database, conjunto, fonte e
+ * janela — que é a forma de TODO pedido de "guardar isso a cada X minutos" — não mexia em
+ * nenhuma das listas acima, e a mensagem terminava em "Nada mudou na proposta nesta rodada"
+ * na mesma rodada em que a proposta inteira nasceu. Na conta do dono isso aconteceu quatro
+ * vezes seguidas, enquanto o texto do modelo, logo acima, descrevia a base sendo criada.
+ *
+ * Andar, agente e setor ficam DE FORA: o V1 já os percorre, e contá-los duas vezes faria
+ * cada agente aparecer duas vezes na mesma linha.
+ */
+interface ListaV2 {
+  kind: BlueprintChangeKind
+  itens: (bp: OfficeBlueprintV2) => unknown[]
+}
+
+const LISTAS_V2: ListaV2[] = [
+  { kind: 'database', itens: (b) => b.resources.databases },
+  { kind: 'dataset', itens: (b) => b.resources.datasets },
+  { kind: 'tool', itens: (b) => b.resources.tools },
+  { kind: 'source', itens: (b) => b.operations.sources },
+  { kind: 'history', itens: (b) => b.operations.histories },
+  { kind: 'live', itens: (b) => b.operations.liveDestinations },
+  { kind: 'monitor', itens: (b) => b.operations.monitors },
+  { kind: 'flow', itens: (b) => b.operations.flows },
+  { kind: 'channel', itens: (b) => b.operations.channels },
+  { kind: 'delivery', itens: (b) => b.operations.deliveries },
+]
+
+/**
+ * REAPROVEITAR NÃO É MUDAR.
+ *
+ * Um Database que o plano só lê entraria como "Criei: Históricos" na primeira rodada — e
+ * "criei" sobre uma base que já existia é a frase que faz a pessoa procurar a base
+ * duplicada que ela nunca teve.
+ */
+const mexe = (item: unknown): boolean => (item as { action?: string })?.action !== 'reuse'
+
+const rotuloV2 = (item: Record<string, unknown>): string => String(item.name ?? item.alias ?? item.key ?? '')
 
 /** O nome do campo como a pessoa o conhece. Sem tradução, o diff fala inglês de schema. */
 const CAMPO: Record<string, string> = {
@@ -105,36 +147,70 @@ function camposMudados(antes: Record<string, unknown>, depois: Record<string, un
  * Sem versão anterior não há mudança nenhuma a mostrar — e isso não é o mesmo que
  * "nada mudou": é a primeira proposta.
  */
-export function diffBlueprints(antes: OfficeBlueprintV1 | null | undefined, depois: OfficeBlueprintV1 | null | undefined): BlueprintChange[] {
-  if (!antes || !depois) return []
+/**
+ * O núcleo: duas coleções de itens com `key`, e o que mudou entre elas.
+ *
+ * Compartilhado entre V1 e V2 porque a pergunta é a mesma — "o que entrou, o que saiu, o
+ * que mudou de campo" — e um segundo laço seria um segundo lugar para o mesmo erro.
+ */
+function diffListas(kind: BlueprintChangeKind, antes: unknown[], depois: unknown[], rotulo: (i: Record<string, unknown>) => string): BlueprintChange[] {
+  const mudancas: BlueprintChange[] = []
+  const anteriores = new Map<string, Record<string, unknown>>()
+  for (const item of antes) {
+    const k = chave(item)
+    if (k) anteriores.set(k, item as Record<string, unknown>)
+  }
+  const vistos = new Set<string>()
+
+  for (const item of depois) {
+    const k = chave(item)
+    if (!k) continue
+    vistos.add(k)
+    const anterior = anteriores.get(k)
+    const atual = item as Record<string, unknown>
+    if (!anterior) {
+      mudancas.push({ kind, key: k, label: rotulo(atual), change: 'added', fields: [] })
+      continue
+    }
+    const fields = camposMudados(anterior, atual)
+    if (fields.length > 0) mudancas.push({ kind, key: k, label: rotulo(atual), change: 'changed', fields })
+  }
+
+  for (const [k, anterior] of anteriores) {
+    // O que saiu. É a mudança que ninguém percebe sozinho, e por isso vem primeiro
+    // na ordenação lá embaixo.
+    if (!vistos.has(k)) mudancas.push({ kind, key: k, label: rotulo(anterior), change: 'removed', fields: [] })
+  }
+  return mudancas
+}
+
+/**
+ * O que a revisão mexeu.
+ *
+ * `null` de qualquer lado é "não há o que comparar" — e isso NÃO é "nada mudou". A tela de
+ * mudanças compara duas REVISÕES; na primeira proposta não existe a anterior, e a proposta
+ * inteira já está na tela ao lado. Quem precisa contar o nascimento da proposta — o resumo
+ * da conversa — passa um plano VAZIO como `antes`, que é o que a conta tinha de verdade.
+ *
+ * O par do V2 vai junto e não separado: o teto de itens é conferido uma vez só, no fim, e
+ * duas listas cortadas em 60 cada dariam 120.
+ */
+export function diffBlueprints(
+  antes: OfficeBlueprintV1 | null | undefined,
+  depois: OfficeBlueprintV1 | null | undefined,
+  v2?: { antes: OfficeBlueprintV2 | null | undefined; depois: OfficeBlueprintV2 | null | undefined },
+): BlueprintChange[] {
   const mudancas: BlueprintChange[] = []
 
-  for (const lista of LISTAS) {
-    const anteriores = new Map<string, Record<string, unknown>>()
-    for (const item of (antes[lista.campo] ?? []) as unknown[]) {
-      const k = chave(item)
-      if (k) anteriores.set(k, item as Record<string, unknown>)
+  if (antes && depois) {
+    for (const lista of LISTAS) {
+      mudancas.push(...diffListas(lista.kind, (antes[lista.campo] ?? []) as unknown[], (depois[lista.campo] ?? []) as unknown[], lista.rotulo))
     }
-    const vistos = new Set<string>()
+  }
 
-    for (const item of (depois[lista.campo] ?? []) as unknown[]) {
-      const k = chave(item)
-      if (!k) continue
-      vistos.add(k)
-      const anterior = anteriores.get(k)
-      const atual = item as Record<string, unknown>
-      if (!anterior) {
-        mudancas.push({ kind: lista.kind, key: k, label: lista.rotulo(atual), change: 'added', fields: [] })
-        continue
-      }
-      const fields = camposMudados(anterior, atual)
-      if (fields.length > 0) mudancas.push({ kind: lista.kind, key: k, label: lista.rotulo(atual), change: 'changed', fields })
-    }
-
-    for (const [k, anterior] of anteriores) {
-      // O que saiu. É a mudança que ninguém percebe sozinho, e por isso vem primeiro
-      // na ordenação lá embaixo.
-      if (!vistos.has(k)) mudancas.push({ kind: lista.kind, key: k, label: lista.rotulo(anterior), change: 'removed', fields: [] })
+  if (v2?.antes && v2.depois) {
+    for (const lista of LISTAS_V2) {
+      mudancas.push(...diffListas(lista.kind, lista.itens(v2.antes).filter(mexe), lista.itens(v2.depois).filter(mexe), rotuloV2))
     }
   }
 

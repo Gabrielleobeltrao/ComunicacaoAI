@@ -793,3 +793,85 @@ test('a porta da proposta NÃO segue a conversa — ela fica na rodada que a mon
   ])
   expect(yBotao, 'a porta seguiu a conversa em vez de ficar na rodada dela').toBeLessThan(yUltima)
 })
+
+/**
+ * E A PORTA ACOMPANHA A RODADA QUE MEXEU NO PLANO.
+ *
+ * A regra "fica onde foi pendurada" resolvia a deriva e criava a outra metade do problema:
+ * quem faz cinco ajustes rola até o fim da conversa, a porta ficou lá em cima na primeira
+ * rodada, e o relato foi exatamente esse — "o botão de proposta se perde quando estou
+ * fazendo ajustes". Não é primeira nem última: é a rodada que MUDOU a proposta, e o servidor
+ * já diz qual foi pelo `blueprintHash`.
+ */
+test('a porta VEM para a rodada que mudou a proposta', async ({ page }) => {
+  let linha: { id: string; role: string; content: string; createdAt: string }[] = [
+    { id: 'm1', role: 'user', content: 'monta a operação', createdAt: NOW },
+    { id: 'm2', role: 'assistant', content: 'Montei a proposta.', createdAt: NOW },
+  ]
+  let hash = 'hash-1'
+  await stub(page, { turno: TURNO_PROPOE })
+  await page.route('**/api/assistant/projects/000000000000000000000abc', (r) =>
+    r.fulfill({ json: PROJETO({ hasBlueprint: true, status: 'draft', blueprintHash: hash }) }),
+  )
+  await page.route('**/api/assistant/projects/*/messages', (r) =>
+    r.request().method() === 'POST'
+      ? r.fulfill({ json: { ...PROJETO({ hasBlueprint: true, status: 'draft', blueprintHash: hash }), assistantText: 'ok', question: null } })
+      : r.fulfill({ json: linha }),
+  )
+
+  await page.goto('/dashboard')
+  await page.getByTestId('assistant-launcher').click()
+  await page.getByTestId('assistant-input').fill('monta a operação')
+  await page.getByTestId('assistant-enviar').click()
+  await expect(page.getByTestId('assistant-abrir-projeto')).toBeVisible()
+
+  // O AJUSTE muda o plano: hash novo.
+  hash = 'hash-2'
+  linha = [
+    ...linha,
+    { id: 'm3', role: 'user', content: 'de dez em dez minutos', createdAt: NOW },
+    { id: 'm4', role: 'assistant', content: 'Ajustei para dez minutos.', createdAt: NOW },
+  ]
+  await page.getByTestId('assistant-input').fill('de dez em dez minutos')
+  await page.getByTestId('assistant-enviar').click()
+  await expect(page.getByTestId('assistant-message-assistant').last()).toContainText('Ajustei para dez')
+
+  const [yBotao, yUltima] = await Promise.all([
+    page.getByTestId('assistant-abrir-projeto').evaluate((e) => e.getBoundingClientRect().top),
+    page.getByTestId('assistant-message-assistant').last().evaluate((e) => e.getBoundingClientRect().top),
+  ])
+  expect(yBotao, 'a proposta mudou nesta rodada e a porta ficou para trás').toBeGreaterThan(yUltima)
+})
+
+/**
+ * A MENSAGEM CLICADA NÃO SOME.
+ *
+ * `responder` era uma cópia de `enviar` sem o resgate do catch. Quando a rodada falhava, o
+ * eco otimista da resposta clicada ficava na tela sem nunca ter sido gravado: a pessoa via a
+ * própria frase, recarregava, e ela não estava lá — "está perdendo as mensagens".
+ */
+test('AMEAÇA: a rodada que FALHA não deixa na tela uma resposta que nunca foi gravada', async ({ page }) => {
+  const linha = [
+    { id: 'm1', role: 'user', content: 'monta a operação', createdAt: NOW },
+    { id: 'm2', role: 'assistant', content: 'De onde vem esse dado?', createdAt: NOW },
+  ]
+  await stub(page, { turno: TURNO_PROPOE })
+  await page.route('**/api/assistant/projects/000000000000000000000abc', (r) =>
+    r.fulfill({
+      json: PROJETO({ status: 'discovery', pendingQuestion: { key: 'origem', text: 'De onde vem esse dado?', choices: [{ value: 'usar', label: 'Da fonte que já tenho' }] } }),
+    }),
+  )
+  await page.route('**/api/assistant/projects/*/messages', (r) =>
+    r.request().method() === 'POST' ? r.fulfill({ status: 500, json: { code: 'provider_down', message: 'o provedor não respondeu' } }) : r.fulfill({ json: linha }),
+  )
+
+  await page.goto('/assistant/000000000000000000000abc')
+  // Sem proposta, o painel se abre sozinho — a conversa é o trabalho nesta tela.
+  await expect(page.getByTestId('assistant-panel')).toBeVisible()
+  await expect(page.getByTestId('assistant-question').first()).toBeVisible()
+  await page.getByRole('button', { name: 'Da fonte que já tenho' }).click()
+
+  // A linha gravada é a verdade: a resposta clicada não ficou na tela fingindo que foi.
+  await expect(page.getByTestId('assistant-message-user')).toHaveCount(1)
+  await expect(page.getByTestId('assistant-message-user')).toHaveText(/monta a operação/)
+})

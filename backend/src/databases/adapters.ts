@@ -40,6 +40,42 @@ const records = db.collection('data_history_records')
  * dataset vira `value.ownerId` e não alcança a raiz do documento: é a razão de o prefixo
  * ser do servidor e não do chamador.
  */
+/**
+ * AS COLUNAS CALCULADAS entram na linha — pelo INSTANTE, que é o que as alinha.
+ *
+ * A série derivada é gravada com o `occurredAt` do FATO que a originou, e não com o de quando
+ * a conta rodou. É isso que faz uma linha da conta corresponder a exatamente uma linha da
+ * origem, e é por isso que a junção é por instante e não por posição: uma linha de origem que
+ * ainda não tinha passado suficiente para a conta simplesmente não tem par, e a célula fica
+ * vazia — que é a verdade, e não um zero.
+ *
+ * Uma consulta sem coluna calculada nenhuma não faz nenhuma leitura a mais.
+ */
+async function comColunasCalculadas(dataset: DataSetDefinition, linhas: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
+  const colunas = dataset.computedColumns ?? []
+  if (colunas.length === 0 || linhas.length === 0) return linhas
+
+  const instantes = linhas.map((l) => l.occurredAt as Date).filter(Boolean)
+  if (instantes.length === 0) return linhas
+
+  for (const coluna of colunas) {
+    const calculados = await records
+      .find(
+        { ownerId: dataset.ownerId, recorderId: coluna.recorderId, occurredAt: { $in: instantes } },
+        { projection: { value: 1, occurredAt: 1 } },
+      )
+      .toArray()
+    const porInstante = new Map(calculados.map((c) => [(c.occurredAt as Date).getTime(), c.value as Record<string, unknown>]))
+    for (const linha of linhas) {
+      const achado = porInstante.get((linha.occurredAt as Date)?.getTime())
+      // A coluna sem par fica AUSENTE, e não `null`: quem lê a linha distingue "ainda não
+      // deu para calcular" de "a conta deu zero".
+      if (achado && achado[coluna.outputField] !== undefined) linha[coluna.name] = achado[coluna.outputField]
+    }
+  }
+  return linhas
+}
+
 async function queryDataHistory(store: DataStore, dataset: DataSetDefinition, spec: QuerySpec): Promise<QueryResult> {
   const recorderId = String(store.adapterConfig.recorderId ?? dataset.key)
   if (!ObjectId.isValid(recorderId)) throw new AdapterError('este database não aponta para um histórico válido', 'bad_config')
@@ -76,7 +112,10 @@ async function queryDataHistory(store: DataStore, dataset: DataSetDefinition, sp
      * ANTES do `value`, ele seria sobrescrito por esse campo e a linha perderia a identidade
      * justamente nos conjuntos que mais têm o que corrigir.
      */
-    rows: linhas.map((l) => ({ ...(l.value as Record<string, unknown>), rowId: String(l._id), occurredAt: l.occurredAt })),
+    rows: await comColunasCalculadas(
+      dataset,
+      linhas.map((l) => ({ ...(l.value as Record<string, unknown>), rowId: String(l._id), occurredAt: l.occurredAt })),
+    ),
     total,
     freshness: (ultimo?.occurredAt as Date) ?? null,
     truncated: total > (spec.skip ?? 0) + linhas.length,

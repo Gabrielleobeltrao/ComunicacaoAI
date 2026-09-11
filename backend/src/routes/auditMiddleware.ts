@@ -322,6 +322,10 @@ const RULES: Rule[] = [
   // único lugar onde depois se pergunta quem trocou aquele número, e quando.
   R('PATCH', 'api/databases/:/datasets/:/rows/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/databases/:/datasets/:/rows/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  // A coluna calculada muda a FORMA do conjunto e cria uma série que passa a gravar sozinha:
+  // é mudança de estrutura, e quem administra a conta precisa ver quem a criou.
+  R('POST', 'api/databases/:/datasets/:/columns', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/databases/:/datasets/:/columns/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/databases/:/datasets/:/query', null, { why: 'read, not a change' }),
 
   R('POST', 'api/assistant/projects', { entityType: 'assistant_project', action: 'create' }),

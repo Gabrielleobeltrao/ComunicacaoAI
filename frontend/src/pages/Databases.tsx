@@ -4,7 +4,11 @@ import { AppLayout } from '../components/AppLayout'
 import { ListaDePastas } from '../components/PastaDeDados'
 import { Badge, Button, Card, Dialog, IconButton, Input, Textarea } from '../ui'
 import * as api from '../lib/databases'
+import { createComputedColumn, deleteComputedColumn } from '../lib/databases'
 import { DatabaseGrants } from '../components/DatabaseGrants'
+import { FunctionPicker } from '../components/FunctionPicker'
+import { listExecutorCatalog } from '../lib/apps'
+import type { CatalogFunction } from '../lib/apps'
 import type { DatabaseDetail, DatabaseSummary, DatasetSummary, QueryResult } from '../lib/databases'
 
 // DATABASES — o sistema de registros do escritório.
@@ -238,7 +242,7 @@ function DetalheDoDatabase({ id, conjunto, onVoltar }: { id: string; conjunto: s
         </div>
       </Card>
 
-      {dataset && <ConsultaDoDataset databaseId={id} dataset={dataset} />}
+      {dataset && <ConsultaDoDataset databaseId={id} dataset={dataset} onMudou={carregar} />}
 
       <DatabaseGrants databaseId={id} />
     </div>
@@ -336,7 +340,228 @@ const MODO_DE_SERIE: Record<string, string> = {
   condition: 'Só quando a condição bater',
 }
 
-function ConsultaDoDataset({ databaseId, dataset }: { databaseId: string; dataset: DatasetSummary }) {
+/**
+ * O QUE DÁ PARA CALCULAR em cima deste conjunto.
+ *
+ * "Não são essas funções? quero o mesmo no database." As trinta e poucas funções do registro
+ * só alcançavam o agente e o Flow: um conjunto com preço mínimo e máximo a cada dez minutos
+ * não tinha como ganhar uma terceira coluna com a variação — a conta estava pronta e não
+ * chegava no dado.
+ *
+ * O seletor é o MESMO de "Contratar agente" (`FunctionPicker`), e o card escolhido abre com
+ * os campos dentro dele. O motor é o de série derivada, que já existia: a conta acontece na
+ * gravação, com a versão da função fixada, e o histórico que já estava lá é recalculado na
+ * hora em que a coluna nasce.
+ */
+function ColunasCalculadas({ databaseId, dataset, onMudou }: { databaseId: string; dataset: DatasetSummary; onMudou: () => void }) {
+  const [aberto, setAberto] = useState(false)
+  const [funcoes, setFuncoes] = useState<CatalogFunction[]>([])
+  const [escolhida, setEscolhida] = useState<CatalogFunction | null>(null)
+  const [nome, setNome] = useState('')
+  const [campo, setCampo] = useState('')
+  const [argumento, setArgumento] = useState('')
+  const [saida, setSaida] = useState('')
+  const [quantos, setQuantos] = useState(3)
+  const [erro, setErro] = useState<string | null>(null)
+  const [salvando, setSalvando] = useState(false)
+
+  useEffect(() => {
+    if (!aberto || funcoes.length) return
+    listExecutorCatalog()
+      .then((c) => setFuncoes(c.functions))
+      .catch(() => setErro('Não foi possível carregar as funções.'))
+  }, [aberto, funcoes.length])
+
+  /**
+   * O ARGUMENTO e a SAÍDA são derivados do schema da função — e conferidos pelo servidor.
+   *
+   * Perguntar "qual argumento recebe a série?" a quem só quer a variação do preço seria pedir
+   * que a pessoa lesse um JSON Schema. O que a tela faz é escolher o candidato óbvio: o único
+   * argumento que é lista de números, e o primeiro número da saída.
+   */
+  const argumentos = propriedadesDe(escolhida?.inputSchema)
+  const saidas = propriedadesDe(escolhida?.outputSchema)
+  const serieDe = (f: CatalogFunction): string => {
+    const props = (((f.inputSchema ?? {}) as { properties?: Record<string, { type?: string }> }).properties ?? {}) as Record<string, { type?: string }>
+    return Object.keys(props).find((k) => props[k]?.type === 'array') ?? Object.keys(props)[0] ?? ''
+  }
+
+  const escolher = (f: CatalogFunction) => {
+    setEscolhida(f)
+    setErro(null)
+    setArgumento(serieDe(f))
+    setSaida(propriedadesDe(f.outputSchema)[0] ?? '')
+    // Um nome sugerido do que a função devolve: `variacaoPercentual` → `variacaopercentual`.
+    // Editável, e é só um começo — quem nomeia a coluna é quem vai lê-la depois.
+    if (!nome) setNome((propriedadesDe(f.outputSchema)[0] ?? f.functionName.split('.').pop() ?? '').toLowerCase().replace(/[^a-z0-9_]/g, ''))
+    if (!campo) setCampo(dataset.fields[0] ?? '')
+  }
+
+  const criar = async () => {
+    if (!escolhida) return
+    setSalvando(true)
+    setErro(null)
+    try {
+      await createComputedColumn(databaseId, dataset.key, {
+        name: nome,
+        functionName: escolhida.functionName,
+        version: escolhida.version,
+        inputField: campo,
+        inputArg: argumento,
+        lookback: quantos,
+        outputField: saida,
+      })
+      setAberto(false)
+      setEscolhida(null)
+      setNome('')
+      onMudou()
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setSalvando(false)
+    }
+  }
+
+  const existentes = dataset.computedColumns ?? []
+
+  return (
+    <div
+      style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '10px 12px' }}
+      data-testid="dataset-colunas-calculadas"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2" style={{ fontSize: 12.5 }}>
+        <strong style={{ fontWeight: 600 }}>O que este conjunto calcula</strong>
+        <Button variant="secondary" size="sm" icon={aberto ? 'x' : 'plus'} onClick={() => setAberto((v) => !v)} data-testid="coluna-nova">
+          {aberto ? 'Cancelar' : 'Nova coluna'}
+        </Button>
+      </div>
+
+      {existentes.length === 0 && !aberto && (
+        <p style={{ margin: '6px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>
+          Nenhuma ainda. Uma coluna calculada usa uma função do sistema — a mesma lista que um agente usa — e o servidor a preenche a cada registro
+          novo, e no histórico que já existe.
+        </p>
+      )}
+
+      {existentes.length > 0 && (
+        <ul style={{ margin: '8px 0 0', padding: 0, listStyle: 'none' }} className="flex flex-col gap-1.5">
+          {existentes.map((c) => (
+            <li key={c.name} className="flex flex-wrap items-center gap-2" data-testid={`coluna-${c.name}`}>
+              <code style={{ fontSize: 12 }}>{c.name}</code>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {c.functionName} · {c.outputField} · versão {c.version}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon="trash-2"
+                onClick={async () => {
+                  await deleteComputedColumn(databaseId, dataset.key, c.name)
+                  onMudou()
+                }}
+                data-testid={`coluna-apagar-${c.name}`}
+              >
+                Remover
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {aberto && (
+        <div style={{ marginTop: 10 }}>
+          {erro && (
+            <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="coluna-erro">
+              {erro}
+            </p>
+          )}
+          <FunctionPicker
+            funcoes={funcoes}
+            escolhida={escolhida?.functionName ?? ''}
+            onEscolher={escolher}
+            idPrefixo="coluna-funcao"
+            detalhe={(f) => (
+              <div className="flex flex-col gap-2" style={{ fontSize: 12.5 }}>
+                <label className="flex flex-col gap-1">
+                  <span style={{ color: 'var(--text-muted)' }}>Ler qual campo deste conjunto</span>
+                  <select value={campo} onChange={(e) => setCampo(e.target.value)} className="rounded-lg border border-(--border-strong) bg-(--surface-card) px-2 py-1.5" data-testid="coluna-campo">
+                    {dataset.fields.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span style={{ color: 'var(--text-muted)' }}>Quantos registros a conta olha para trás</span>
+                  <input
+                    type="number"
+                    min={2}
+                    max={5000}
+                    value={quantos}
+                    onChange={(e) => setQuantos(Number(e.target.value))}
+                    className="rounded-lg border border-(--border-strong) bg-(--surface-card) px-2 py-1.5"
+                    data-testid="coluna-lookback"
+                  />
+                  {/* Sem passado suficiente a conta NÃO roda — e a célula fica vazia em vez
+                      de trazer uma estimativa. É melhor dizer isso antes. */}
+                  <span style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>
+                    As primeiras {Math.max(0, quantos - 1)} linha(s) ficam vazias: não há passado suficiente para calcular, e um número ali seria chute.
+                  </span>
+                </label>
+                {saidas.length > 1 && (
+                  <label className="flex flex-col gap-1">
+                    <span style={{ color: 'var(--text-muted)' }}>Qual número de {f.functionName} vira a coluna</span>
+                    <select value={saida} onChange={(e) => setSaida(e.target.value)} className="rounded-lg border border-(--border-strong) bg-(--surface-card) px-2 py-1.5" data-testid="coluna-saida">
+                      {saidas.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {argumentos.length > 1 && (
+                  <label className="flex flex-col gap-1">
+                    <span style={{ color: 'var(--text-muted)' }}>Qual argumento recebe a série</span>
+                    <select value={argumento} onChange={(e) => setArgumento(e.target.value)} className="rounded-lg border border-(--border-strong) bg-(--surface-card) px-2 py-1.5" data-testid="coluna-argumento">
+                      {argumentos.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label className="flex flex-col gap-1">
+                  <span style={{ color: 'var(--text-muted)' }}>Nome da coluna na tabela</span>
+                  <input
+                    value={nome}
+                    onChange={(e) => setNome(e.target.value)}
+                    placeholder="variacao"
+                    className="rounded-lg border border-(--border-strong) bg-(--surface-card) px-2 py-1.5"
+                    data-testid="coluna-nome"
+                  />
+                </label>
+                <div>
+                  <Button size="sm" onClick={criar} disabled={salvando || !nome || !campo || !saida} data-testid="coluna-criar">
+                    {salvando ? 'Criando…' : 'Criar coluna'}
+                  </Button>
+                </div>
+              </div>
+            )}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Os nomes das propriedades de um JSON Schema de objeto. */
+const propriedadesDe = (schema: unknown): string[] =>
+  Object.keys((((schema ?? {}) as { properties?: Record<string, unknown> }).properties ?? {}) as Record<string, unknown>)
+
+function ConsultaDoDataset({ databaseId, dataset, onMudou }: { databaseId: string; dataset: DatasetSummary; onMudou: () => void }) {
   const navigate = useNavigate()
   const [resultado, setResultado] = useState<QueryResult | null>(null)
   const [erro, setErro] = useState<string | null>(null)
@@ -458,6 +683,7 @@ function ConsultaDoDataset({ databaseId, dataset }: { databaseId: string; datase
             </div>
           </div>
         )}
+        <ColunasCalculadas databaseId={databaseId} dataset={dataset} onMudou={onMudou} />
         <div className="flex flex-wrap items-center justify-between gap-2">
           <strong style={{ fontSize: 13 }}>{dataset.name}</strong>
           <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>

@@ -56,6 +56,31 @@ let apagados: string[] = []
 let conjuntosApagados: string[] = []
 let linhasApagadas: string[] = []
 let criado: Record<string, unknown> | null = null
+let colunaCriada: Record<string, unknown> | null = null
+let colunasApagadas: string[] = []
+
+/** O catálogo de funções — o MESMO que o agente lê. */
+const CATALOGO = {
+  functions: [
+    {
+      functionName: 'math.serie',
+      version: '1.0.0',
+      description: 'Lê uma série de números: variação do começo ao fim, tendência, mediana e percentil.',
+      capabilities: ['calculo', 'dados'],
+      inputSchema: { type: 'object', properties: { values: { type: 'array', items: { type: 'number' } }, percentil: { type: 'number' } }, required: ['values'] },
+      outputSchema: { type: 'object', properties: { variacaoPercentual: {}, tendencia: { type: 'string' }, mediana: {} } },
+    },
+    {
+      functionName: 'texto.normalizar',
+      version: '1.0.0',
+      description: 'Tira acento e espaço sobrando.',
+      capabilities: ['texto'],
+      inputSchema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
+      outputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+    },
+  ],
+  actions: [],
+}
 let grantSalvo: Record<string, unknown> | null = null
 
 const GRANTS = {
@@ -75,6 +100,8 @@ const IMPACTO = {
 
 async function stub(page: Page, opts: { listStatus?: number; empty?: boolean } = {}) {
   criado = null
+  colunaCriada = null
+  colunasApagadas = []
   grantSalvo = null
   patchesEnviados = []
   apagados = []
@@ -111,6 +138,15 @@ async function stub(page: Page, opts: { listStatus?: number; empty?: boolean } =
   await page.route(`**/api/databases/${DB_ID}/datasets`, (r) => {
     criado = r.request().postDataJSON() as Record<string, unknown>
     return r.fulfill({ status: 201, json: { key: String(criado.key) } })
+  })
+  await page.route('**/api/executors/catalog', (r) => r.fulfill({ json: CATALOGO }))
+  await page.route(`**/api/databases/${DB_ID}/datasets/ordens/columns/**`, (r) => {
+    colunasApagadas.push(r.request().url().split('/').pop() ?? '')
+    return r.fulfill({ status: 204, body: '' })
+  })
+  await page.route(`**/api/databases/${DB_ID}/datasets/ordens/columns`, (r) => {
+    colunaCriada = r.request().postDataJSON()
+    return r.fulfill({ status: 201, json: { name: 'variacao', functionName: 'math.serie', version: '1.0.0', outputField: 'variacaoPercentual' } })
   })
   await page.route('**/api/agents', (r) => r.fulfill({ json: [{ _id: 'a1', name: 'Marina' }] }))
   await page.route('**/api/sectors', (r) => r.fulfill({ json: [{ _id: 's1', name: 'Análise' }] }))
@@ -499,4 +535,101 @@ test('um conjunto criado à mão não inventa procedência', async ({ page }) =>
   await page.getByTestId(`pasta-${DB_ID}`).click()
   await page.getByTestId('item-abrir-fechamentos').click()
   await expect(page.getByTestId('dataset-origem')).toHaveCount(0)
+})
+
+// --- a coluna calculada -----------------------------------------------------------------------
+//
+// "Não são essas funções? quero o mesmo no database." As trinta e poucas funções do registro
+// só alcançavam a tela de contratar agente. O seletor é o mesmo componente nos dois lugares, e
+// o card escolhido abre com os campos DENTRO dele — antes eles ficavam no fim do formulário,
+// depois de vinte e sete cards, e quem clicava não via nada acontecer.
+
+test('ACEITAÇÃO: escolher a função ABRE o card, e os campos aparecem ali dentro', async ({ page }) => {
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId('item-abrir-ordens').click()
+
+  await page.getByTestId('coluna-nova').click()
+  // Fechado, o card não mostra campo nenhum: vinte e sete formulários abertos não é uma lista.
+  await expect(page.getByTestId('coluna-funcao-detail-math.serie')).toHaveCount(0)
+  await expect(page.getByTestId('coluna-campo')).toHaveCount(0)
+
+  await page.getByTestId('coluna-funcao-option-math.serie').click()
+  const detalhe = page.getByTestId('coluna-funcao-detail-math.serie')
+  await expect(detalhe).toBeVisible()
+  // Os campos estão DENTRO do card escolhido, e não no fim da tela.
+  await expect(detalhe.getByTestId('coluna-campo')).toBeVisible()
+  await expect(detalhe.getByTestId('coluna-lookback')).toBeVisible()
+  // E a outra função continua fechada.
+  await expect(page.getByTestId('coluna-funcao-detail-texto.normalizar')).toHaveCount(0)
+})
+
+test('a coluna criada leva o campo, o argumento e a saída — derivados do schema', async ({ page }) => {
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId('item-abrir-ordens').click()
+  await page.getByTestId('coluna-nova').click()
+  await page.getByTestId('coluna-funcao-option-math.serie').click()
+
+  await page.getByTestId('coluna-campo').selectOption('preco')
+  await page.getByTestId('coluna-nome').fill('variacao')
+  await page.getByTestId('coluna-criar').click()
+
+  await expect.poll(() => colunaCriada).toBeTruthy()
+  // `values` é o único argumento que é lista de números, e `variacaoPercentual` é o primeiro
+  // número da saída: quem quer a variação do preço não deveria ter de ler um JSON Schema.
+  expect(colunaCriada).toMatchObject({ name: 'variacao', functionName: 'math.serie', inputField: 'preco', inputArg: 'values', outputField: 'variacaoPercentual' })
+})
+
+test('a tela AVISA quantas linhas vão ficar vazias — vazio não é a conta dando zero', async ({ page }) => {
+  await stub(page)
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId('item-abrir-ordens').click()
+  await page.getByTestId('coluna-nova').click()
+  await page.getByTestId('coluna-funcao-option-math.serie').click()
+
+  await page.getByTestId('coluna-lookback').fill('5')
+  await expect(page.getByTestId('coluna-funcao-detail-math.serie')).toContainText('4 linha(s) ficam vazias')
+})
+
+test('a recusa do servidor aparece na tela — e não some no console', async ({ page }) => {
+  await stub(page)
+  await page.route(`**/api/databases/${DB_ID}/datasets/ordens/columns`, (r) =>
+    r.fulfill({ status: 400, json: { code: 'invalid', message: 'math.serie não devolve "desvio" — devolve: variacaoPercentual, tendencia, mediana.' } }),
+  )
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId('item-abrir-ordens').click()
+  await page.getByTestId('coluna-nova').click()
+  await page.getByTestId('coluna-funcao-option-math.serie').click()
+  await page.getByTestId('coluna-nome').fill('desvio')
+  await page.getByTestId('coluna-criar').click()
+
+  await expect(page.getByTestId('coluna-erro')).toContainText('não devolve')
+})
+
+test('as colunas que já existem aparecem, dizendo QUAL função as calcula', async ({ page }) => {
+  await stub(page)
+  await page.route(`**/api/databases/${DB_ID}`, (r) =>
+    r.fulfill({
+      json: {
+        ...DETALHE,
+        datasets: DETALHE.datasets.map((d) =>
+          d.key === 'ordens' ? { ...d, computedColumns: [{ name: 'variacao', functionName: 'math.serie', version: '1.0.0', outputField: 'variacaoPercentual' }] } : d,
+        ),
+      },
+    }),
+  )
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId('item-abrir-ordens').click()
+
+  // Sem isto, a variação apareceria ao lado do preço como se tivesse vindo da mesma origem —
+  // e um erro de coleta e um erro de cálculo viram o mesmo sintoma.
+  await expect(page.getByTestId('coluna-variacao')).toContainText('math.serie')
+  await page.getByTestId('coluna-apagar-variacao').click()
+  await expect.poll(() => colunasApagadas).toContain('variacao')
 })

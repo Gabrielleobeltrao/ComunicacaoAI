@@ -58,6 +58,15 @@ export interface DataStore {
   updatedAt: Date
 }
 
+/** Ver `computedColumns.ts`. Fica aqui porque o documento do conjunto é quem o carrega. */
+export interface ComputedColumnBinding {
+  name: string
+  recorderId: ObjectId
+  outputField: string
+  functionName: string
+  version: string
+}
+
 export interface DataSetDefinition {
   _id: ObjectId
   ownerId: string
@@ -69,6 +78,17 @@ export interface DataSetDefinition {
   primaryKey?: string[]
   mutability: DatasetMutability
   timeField?: string
+  /**
+   * As COLUNAS CALCULADAS deste conjunto.
+   *
+   * Cada uma é uma série derivada — o motor de `derivedFrom` calcula na gravação e grava
+   * alinhada com a linha de origem —, e o que fica guardado aqui é só a AMARRAÇÃO: como a
+   * coluna se chama na tabela e qual número da saída da função é o valor dela. A conta em si
+   * mora no recorder, que é quem a executa.
+   *
+   * Ausente nos conjuntos que já existiam, com o sentido óbvio: nenhuma coluna calculada.
+   */
+  computedColumns?: ComputedColumnBinding[]
   createdAt: Date
   updatedAt: Date
 }

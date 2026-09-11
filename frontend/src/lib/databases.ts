@@ -36,12 +36,28 @@ export interface DatabaseSummary {
   updatedAt: string
 }
 
+/** Uma coluna que o servidor CALCULA — não veio da fonte. Ver `computedColumns.ts`. */
+export interface ComputedColumn {
+  name: string
+  functionName: string
+  version: string
+  outputField: string
+}
+
 export interface DatasetSummary {
   key: string
   name: string
   mutability: Mutability
   fields: string[]
   schema: Record<string, unknown>
+  /**
+   * As colunas que são CONTA, e não dado gravado pela fonte.
+   *
+   * A tela precisa da distinção: a variação ao lado do preço, sem nada dizendo qual é qual,
+   * faz as duas parecerem ter vindo da mesma origem — e aí um erro de coleta e um erro de
+   * cálculo viram o mesmo sintoma.
+   */
+  computedColumns?: ComputedColumn[]
   /**
    * DE ONDE VEM e COM QUE REGRA, quando o conjunto é alimentado por uma série.
    *
@@ -131,6 +147,15 @@ export const patchRow = (id: string, key: string, rowId: string, row: Record<str
   req<{ updated: number }>(`/api/databases/${id}/datasets/${key}/rows/${rowId}`, { method: 'PATCH', body: { row } })
 export const deleteRow = (id: string, key: string, rowId: string) =>
   req<null>(`/api/databases/${id}/datasets/${key}/rows/${rowId}`, { method: 'DELETE' })
+
+export const createComputedColumn = (
+  id: string,
+  key: string,
+  body: { name: string; functionName: string; version?: string; inputField: string; inputArg: string; lookback: number; outputField: string; params?: Record<string, unknown> },
+) => req<ComputedColumn>(`/api/databases/${id}/datasets/${key}/columns`, { method: 'POST', body })
+
+export const deleteComputedColumn = (id: string, key: string, name: string) =>
+  req<null>(`/api/databases/${id}/datasets/${key}/columns/${encodeURIComponent(name)}`, { method: 'DELETE' })
 
 export const queryDataset = (id: string, key: string, body: Record<string, unknown>) =>
   req<QueryResult>(`/api/databases/${id}/datasets/${key}/query`, { method: 'POST', body })
