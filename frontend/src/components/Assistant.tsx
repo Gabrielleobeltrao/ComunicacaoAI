@@ -326,11 +326,49 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   })
 
   /** Passa a mostrar a conversa gravada de um projeto — a partir daqui é ela que vale. */
+/**
+ * QUAL CONVERSA ESTAVA ABERTA — lembrada nesta aba, e só nela.
+ *
+ * O painel não guardava isso em lugar nenhum: ao recarregar, ele procurava um projeto "em
+ * andamento" e, não achando, abria vazio. Na conta do dono isso era todo reload: os cinco
+ * projetos dele estão APLICADOS, e um projeto aplicado é deliberadamente pulado — retomar um
+ * histórico como se fosse o trabalho de agora é pior que começar do zero.
+ *
+ * O raciocínio continua valendo para ADIVINHAR qual conversa retomar. Não vale para a
+ * conversa que a pessoa estava lendo um segundo antes: ali não há adivinhação nenhuma, e a
+ * mensagem que ela acabou de mandar sumir da tela é a forma mais rápida de o trabalho parecer
+ * perdido. O "+" no topo continua abrindo uma conversa nova a um clique.
+ *
+ * `localStorage` porque é preferência DESTA aba e deste navegador: não é estado do servidor,
+ * e outra pessoa na mesma conta não deve herdar a conversa que esta estava lendo. Em janela
+ * anônima, ou com dado de site bloqueado, ele lança — e aí o painel volta a adivinhar, que é
+ * o que ele já fazia.
+ */
+const CHAVE_DA_CONVERSA = 'comunicacaoai.assistente.conversa'
+
+const lembrarConversa = (id: string | null): void => {
+  try {
+    if (id) window.localStorage.setItem(CHAVE_DA_CONVERSA, id)
+    else window.localStorage.removeItem(CHAVE_DA_CONVERSA)
+  } catch {
+    // Sem armazenamento o painel adivinha, como sempre adivinhou. Não é motivo para quebrar.
+  }
+}
+
+const conversaLembrada = (): string | null => {
+  try {
+    return window.localStorage.getItem(CHAVE_DA_CONVERSA)
+  } catch {
+    return null
+  }
+}
+
   const entrarNoProjeto = useCallback(async (id: string) => {
     const [p, linhas] = await Promise.all([arq.getProject(id), arq.listMessages(id)])
     // Sem `id` não é projeto. Adotar o que voltou sem conferir trocava um projeto bom por
     // um objeto vazio, e o botão de continuar a montagem perdia para onde ir.
     if (!p?.id) throw new Error('projeto não encontrado')
+    lembrarConversa(p.id)
     setProjeto(p)
     // `getProject` não devolve `question` — quem tem pergunta aberta é `pendingQuestion`,
     // gravada no projeto. É a mesma leitura que a página do projeto faz ao abrir.
@@ -593,16 +631,32 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!aberto || jaRetomou.current || projeto || mensagens.length > 0) return
     jaRetomou.current = true
-    arq
-      .listProjects()
-      .then((lista) => {
-        // "Aberto" é o que ainda se monta. Aplicado e arquivado são histórico, e retomar
-        // um histórico como se fosse o trabalho de agora é pior que começar do zero.
-        const emAndamento = lista.find((p) => p.status === 'discovery' || p.status === 'draft' || p.status === 'ready')
-        if (emAndamento) return entrarNoProjeto(emAndamento.id)
-        return undefined
-      })
-      .catch(() => undefined)
+    // A conversa que ESTA aba estava lendo vem primeiro, qualquer que seja o estado dela:
+    // não há o que adivinhar sobre a tela que a pessoa tinha na frente.
+    const lembrada = conversaLembrada()
+    const retomar = lembrada
+      ? entrarNoProjeto(lembrada).catch(() => {
+          // Apagado, de outra conta, ou de um navegador que mudou de dono: a lembrança não
+          // vale mais, e insistir nela deixaria o painel preso num erro a cada abertura.
+          lembrarConversa(null)
+          return undefined
+        })
+      : Promise.resolve(undefined)
+
+    void retomar.then((p) => {
+      if (p) return
+      return arq
+        .listProjects()
+        .then((lista) => {
+          // Sem lembrança, o painel ADIVINHA — e aí sim: "aberto" é o que ainda se monta.
+          // Aplicado e arquivado são histórico, e retomar um histórico como se fosse o
+          // trabalho de agora é pior que começar do zero.
+          const emAndamento = lista.find((p2) => p2.status === 'discovery' || p2.status === 'draft' || p2.status === 'ready')
+          if (emAndamento) return entrarNoProjeto(emAndamento.id)
+          return undefined
+        })
+        .catch(() => undefined)
+    })
   }, [aberto, projeto, mensagens.length, entrarNoProjeto])
 
   /**
@@ -633,6 +687,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     setUltimoErro(null)
     setIdDaProposta(null)
     hashDaPorta.current = null
+    lembrarConversa(null)
     setPhase('idle')
     /**
      * A retomada NÃO volta a disparar sozinha, e isso não é sorte: `jaRetomou` é marcado

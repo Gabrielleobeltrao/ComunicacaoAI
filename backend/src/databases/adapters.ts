@@ -76,11 +76,35 @@ async function comColunasCalculadas(dataset: DataSetDefinition, linhas: Record<s
   return linhas
 }
 
-async function queryDataHistory(store: DataStore, dataset: DataSetDefinition, spec: QuerySpec): Promise<QueryResult> {
-  const recorderId = String(store.adapterConfig.recorderId ?? dataset.key)
-  if (!ObjectId.isValid(recorderId)) throw new AdapterError('este database não aponta para um histórico válido', 'bad_config')
+/**
+ * QUAL SÉRIE alimenta este conjunto — a resposta num lugar só.
+ *
+ * Três formas, e a ordem importa:
+ *
+ *   `dataset.recorderId` — a amarração explícita, gravada quando o conjunto nasce. É a única
+ *   que funciona para um conjunto com chave escolhida por gente ("vendas", "ordens").
+ *
+ *   `store.adapterConfig.recorderId` — um Database inteiro apontado para uma série só. Era o
+ *   caso do "Históricos" antes de os conjuntos existirem.
+ *
+ *   A CHAVE do conjunto — como as séries migradas nasceram: a chave É o id do recorder.
+ *
+ * A resolução estava copiada em quatro lugares, e nos quatro sem a primeira forma. Por isso
+ * um Database criado à mão não lia nem escrevia: a chave era "vendas", nenhuma das duas
+ * formas restantes resolvia, e as duas rotas recusavam com "não aponta para um histórico
+ * válido" — uma base recém-criada, quebrada antes do primeiro uso.
+ */
+export function recorderDoConjunto(
+  store: { adapterConfig: Record<string, unknown> },
+  dataset: { key: string; recorderId?: ObjectId | null },
+): ObjectId {
+  const bruto = String(dataset.recorderId ?? store.adapterConfig.recorderId ?? dataset.key)
+  if (!ObjectId.isValid(bruto)) throw new AdapterError('este database não aponta para um histórico válido', 'bad_config')
+  return new ObjectId(bruto)
+}
 
-  const escopo = { ownerId: store.ownerId, recorderId: new ObjectId(recorderId) }
+async function queryDataHistory(store: DataStore, dataset: DataSetDefinition, spec: QuerySpec): Promise<QueryResult> {
+  const escopo = { ownerId: store.ownerId, recorderId: recorderDoConjunto(store, dataset) }
   const filtro = { ...escopo, ...toMongoFilter(spec.filter) }
   const projecao = toMongoProjection(spec.fields)
 
@@ -307,14 +331,13 @@ export async function runInsert(input: RunQueryInput & { rows: Record<string, un
     if (erro) throw new AdapterError(`linha ${i + 1}: ${erro}`, 'schema_violation')
   }
 
-  const recorderId = String(store.adapterConfig.recorderId ?? '')
-  if (!ObjectId.isValid(recorderId)) throw new AdapterError('este database não aponta para um histórico válido', 'bad_config')
+  const recorderId = recorderDoConjunto(store, dataset)
 
   const agora = new Date()
   const docs = linhas.map((value, i) => ({
     _id: new ObjectId(),
     ownerId: input.accountId,
-    recorderId: new ObjectId(recorderId),
+    recorderId,
     sourceKey: `datastore:${input.dataStoreId.toString()}`,
     entityKey: dataset.primaryKey?.length ? dataset.primaryKey.map((k) => String(value[k] ?? '')).join('|') : null,
     occurredAt: dataset.timeField && value[dataset.timeField] ? new Date(String(value[dataset.timeField])) : agora,
@@ -408,10 +431,8 @@ export async function runDelete(input: RunQueryInput & { rowId: string }): Promi
  * consulta mostra: a pessoa apagaria uma linha e veria a lista igual, ou pior, apagaria
  * outra. E o `ownerId` no filtro é o que impede um id vazado de alcançar dado alheio.
  */
-function escopoDoHistorico(store: { ownerId: string; adapterConfig: Record<string, unknown> }, dataset: { key: string }) {
-  const recorderId = String(store.adapterConfig.recorderId ?? dataset.key)
-  if (!ObjectId.isValid(recorderId)) throw new AdapterError('este database não aponta para um histórico válido', 'bad_config')
-  return { ownerId: store.ownerId, recorderId: new ObjectId(recorderId) }
+function escopoDoHistorico(store: { ownerId: string; adapterConfig: Record<string, unknown> }, dataset: { key: string; recorderId?: ObjectId | null }) {
+  return { ownerId: store.ownerId, recorderId: recorderDoConjunto(store, dataset) }
 }
 
 /** As conferências que valem para as duas: existe, aceita escrita, e a regra permite. */

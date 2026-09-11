@@ -633,3 +633,49 @@ test('as colunas que já existem aparecem, dizendo QUAL função as calcula', as
   await page.getByTestId('coluna-apagar-variacao').click()
   await expect.poll(() => colunasApagadas).toContain('variacao')
 })
+
+// --- a base criada à mão tem o mesmo que a do Assistente ---------------------------------------
+//
+// "Por que aparece 'Como este dado chega' nas databases e, quando eu crio uma manualmente, não
+// aparece? Parece que tem coisas que só o Assistente consegue fazer, e isso não pode acontecer."
+//
+// O bloco lia a CHAVE do conjunto para achar a série. Os conjuntos do Assistente têm o id da
+// série como chave; os criados à mão têm chave de gente ("vendas"), e o bloco sumia.
+
+test('ACEITAÇÃO: o conjunto criado à mão DIZ como o dado chega — e oferece conectar uma coleta', async ({ page }) => {
+  await stub(page)
+  await page.route(`**/api/databases/${DB_ID}`, (r) =>
+    r.fulfill({
+      json: {
+        ...DETALHE,
+        datasets: [
+          {
+            key: 'vendas',
+            name: 'Vendas',
+            mutability: 'append_only',
+            fields: ['valor'],
+            schema: { type: 'object', properties: { valor: { type: 'number' } } },
+            // Série própria, sem fonte externa: é o que uma base criada pela tela produz.
+            serie: { id: '000000000000000000000e11', nome: 'Vendas', modo: 'every_event', intervalMs: null, contas: [], ativa: true, registros: 0, fonte: null },
+          },
+        ],
+      },
+    }),
+  )
+  await page.route(`**/api/databases/${DB_ID}/datasets/vendas/query`, (r) =>
+    r.fulfill({ json: { rows: [], total: 0, returned: 0, truncated: false, freshness: null } }),
+  )
+  await page.goto('/databases')
+  await page.getByTestId(`pasta-${DB_ID}`).click()
+  await page.getByTestId('item-abrir-vendas').click()
+
+  const origem = page.getByTestId('dataset-origem')
+  await expect(origem).toBeVisible()
+  // "Sem fonte" não é "não sei de onde vem" — é "ninguém coleta, ele recebe".
+  await expect(origem).toContainText('recebe o que for gravado')
+  await expect(origem).toContainText('Toda ocorrência')
+  // E o caminho para GANHAR uma coleta é o mesmo botão, com o nome do que ele faz ali.
+  await expect(page.getByTestId('dataset-editar-regra')).toContainText('Conectar uma coleta')
+  await page.getByTestId('dataset-editar-regra').click()
+  await expect(page).toHaveURL(/\/historicos\/000000000000000000000e11\/editar/)
+})

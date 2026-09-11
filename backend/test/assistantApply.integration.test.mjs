@@ -203,6 +203,61 @@ test('AMEAÇA: a rodada que FAZ NASCER a proposta não é anunciada como "nada m
   assert.equal(antesTinha, true, 'o cenário exige que a proposta tenha nascido em alguma rodada')
 })
 
+test('ACEITAÇÃO: a opção CLICADA é gravada pelo valor dela, e vira fato conhecido', async () => {
+  // Da conta do dono: cinco projetos, todos com `origem:bitcoin` gravado como
+  // `Sim, ler de "Bitcoin"` — o rótulo do botão. O classificador lê o VALOR ("usar" ou
+  // "criar"), então a escolha da origem foi clicada cinco vezes e nunca chegou ao desenho.
+  await db.collection('monitoring_sources').insertOne({
+    _id: new ObjectId(),
+    ownerId: DONO,
+    name: 'Cotação CXSE3',
+    kind: 'api_polling',
+    status: 'active',
+    scope: { ownerType: 'account', ownerId: '' },
+    destination: { live: true, history: true },
+    cadence: { mode: 'interval', intervalMs: 60_000 },
+  })
+  const criado = await pedir('POST', '/projects', { objective: 'Observe CXSE3 e me avise quando o RSI cair abaixo de 30' })
+  const id = criado.body.id
+  // Até a rodada em que a lacuna da ORIGEM abre: é ela que decide se a operação lê a fonte
+  // que já existe ou abre uma coleta nova, e é a que o dono clicou cinco vezes.
+  let comBotoes = null
+  for (const frase of ['observe CXSE3', 'a cada minuto', 'pode manter assim']) {
+    await pedir('POST', `/projects/${id}/messages`, { content: frase })
+    const p = await pedir('GET', `/projects/${id}`)
+    if (p.body.pendingQuestion?.key?.startsWith('origem:')) {
+      comBotoes = p
+      break
+    }
+  }
+  assert.ok(comBotoes, 'o cenário exige que a lacuna da origem abra em alguma rodada')
+  const pergunta = comBotoes.body.pendingQuestion
+  assert.ok(pergunta?.choices?.length, `o cenário exige uma pergunta com botões: ${JSON.stringify(pergunta)}`)
+
+  // A tela manda o RÓTULO — e tem de mandar: é ele que vira a fala da pessoa na conversa.
+  const rotulo = pergunta.choices[0].label
+  await pedir('POST', `/projects/${id}/messages`, { content: rotulo })
+
+  const depois = await pedir('GET', `/projects/${id}`)
+  assert.equal(depois.body.answers[pergunta.key], pergunta.choices[0].value, `gravou o rótulo em vez do valor: ${JSON.stringify(depois.body.answers)}`)
+  // E o valor é o que faz a escolha virar fato do entendimento — sem isso ela não desce.
+  assert.ok(
+    (depois.body.brief?.knownFacts ?? []).some((f) => f.key === pergunta.key),
+    `a escolha não virou fato conhecido: ${JSON.stringify(depois.body.brief?.knownFacts)}`,
+  )
+})
+
+test('uma resposta DIGITADA continua valendo como texto — ela não casa com rótulo nenhum', async () => {
+  const criado = await pedir('POST', '/projects', { objective: 'Quero automatizar o atendimento do meu restaurante' })
+  const id = criado.body.id
+  await pedir('POST', `/projects/${id}/messages`, { content: 'quero automatizar' })
+  const p = await pedir('GET', `/projects/${id}`)
+  assert.ok(p.body.pendingQuestion?.key, 'o cenário exige uma pergunta aberta')
+  await pedir('POST', `/projects/${id}/messages`, { content: 'a gente atende por telefone mesmo' })
+  const depois = await pedir('GET', `/projects/${id}`)
+  assert.equal(depois.body.answers[p.body.pendingQuestion.key], 'a gente atende por telefone mesmo')
+})
+
 // --- confirmação ---------------------------------------------------------------------------
 
 test('sem confirmação explícita, nada é criado', async () => {

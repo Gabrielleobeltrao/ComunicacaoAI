@@ -79,6 +79,18 @@ export interface DataSetDefinition {
   mutability: DatasetMutability
   timeField?: string
   /**
+   * A SÉRIE que alimenta este conjunto.
+   *
+   * As séries migradas nasceram com a chave do conjunto sendo o id do recorder, e por isso a
+   * amarração nunca foi escrita em lugar nenhum: quem precisava dela lia a chave. Um conjunto
+   * com chave escolhida por gente — "vendas", "ordens" — não tinha como ser resolvido, e as
+   * rotas de leitura e escrita recusavam "este database não aponta para um histórico válido"
+   * numa base recém-criada pela própria tela.
+   *
+   * Ausente nos conjuntos que já existiam: neles a chave continua respondendo.
+   */
+  recorderId?: ObjectId | null
+  /**
    * As COLUNAS CALCULADAS deste conjunto.
    *
    * Cada uma é uma série derivada — o motor de `derivedFrom` calcula na gravação e grava

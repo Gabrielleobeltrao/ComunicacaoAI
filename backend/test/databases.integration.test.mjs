@@ -747,3 +747,64 @@ test('AMEAÇA: o conjunto do vizinho não ganha coluna nenhuma', async () => {
   assert.ok(r.status === 404 || r.status === 403, `esperava recusa, veio ${r.status}`)
   sessao = DONO
 })
+
+// --- a database criada À MÃO -----------------------------------------------------------------
+//
+// "Por que aparece 'Como este dado chega' nas databases e, quando eu crio uma manualmente,
+// não aparece? Parece que tem coisas que só o Assistente consegue fazer, e isso não pode
+// acontecer." Estava certo, e o buraco era maior que o bloco que faltava.
+
+test('ACEITAÇÃO: a database criada à mão LÊ e ESCREVE — como a que o Assistente cria', async () => {
+  // Exatamente o que o formulário manda: nome + tipo, sem configuração nenhuma. Antes disto,
+  // as duas rotas recusavam com "este database não aponta para um histórico válido": a base
+  // nascia quebrada, antes do primeiro uso.
+  const store = await createDataStore(DONO, { name: 'Minha base', adapterKind: 'data_history' })
+  const ds = await createDataset(DONO, store._id, { key: 'vendas', name: 'Vendas', schema: { type: 'object', properties: { valor: { type: 'number' } } } })
+
+  const w = await pedir('POST', `/api/databases/${store._id}/datasets/vendas/rows`, { rows: [{ valor: 10 }, { valor: 20 }] })
+  assert.equal(w.status, 201, JSON.stringify(w.body))
+
+  const r = await pedir('POST', `/api/databases/${store._id}/datasets/vendas/query`, { limit: 10 })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.deepEqual(r.body.rows.map((l) => l.valor).sort(), [10, 20])
+
+  // E a série é DELA, não a de outro conjunto: duas bases à mão não podem se misturar.
+  assert.ok(ds.recorderId, 'o conjunto nasce amarrado à série dele')
+})
+
+test('ACEITAÇÃO: o conjunto criado à mão também DIZ como o dado chega', async () => {
+  // "Por que aparece 'Como este dado chega' nas databases e, quando eu crio uma manualmente,
+  // não aparece? Parece que tem coisas que só o Assistente consegue fazer."
+  const store = await createDataStore(DONO, { name: 'Base à mão', adapterKind: 'data_history' })
+  await createDataset(DONO, store._id, { key: 'vendas', name: 'Vendas', schema: { type: 'object', properties: { valor: { type: 'number' } } } })
+
+  const d = await pedir('GET', `/api/databases/${store._id}`)
+  const conjunto = d.body.datasets.find((x) => x.key === 'vendas')
+  assert.ok(conjunto.serie, `o conjunto criado à mão tem de dizer de onde o dado vem: ${JSON.stringify(conjunto)}`)
+  assert.equal(conjunto.serie.modo, 'every_event')
+  assert.equal(conjunto.serie.ativa, true)
+  // Sem fonte externa: ele recebe o que for gravado, e dizer isso é melhor que inventar uma
+  // origem que não existe.
+  assert.equal(conjunto.serie.fonte, null)
+  // E a regra é EDITÁVEL: o id da série é o que a tela usa para abrir a edição.
+  assert.match(conjunto.serie.id, /^[a-f0-9]{24}$/)
+})
+
+test('duas bases criadas à mão NÃO compartilham linha', async () => {
+  const a = await createDataStore(DONO, { name: 'Base A', adapterKind: 'data_history' })
+  const b = await createDataStore(DONO, { name: 'Base B', adapterKind: 'data_history' })
+  const esquema = { type: 'object', properties: { valor: { type: 'number' } } }
+  await createDataset(DONO, a._id, { key: 'vendas', name: 'Vendas', schema: esquema })
+  await createDataset(DONO, b._id, { key: 'vendas', name: 'Vendas', schema: esquema })
+
+  await pedir('POST', `/api/databases/${a._id}/datasets/vendas/rows`, { rows: [{ valor: 1 }] })
+  const naB = await pedir('POST', `/api/databases/${b._id}/datasets/vendas/query`, { limit: 10 })
+  assert.deepEqual(naB.body.rows, [], 'a chave "vendas" é a mesma nas duas; a série não pode ser')
+})
+
+test('mercado e App externo NÃO ganham série: eles respondem de fora', async () => {
+  // Uma série vazia ao lado deles seria um recurso que nunca recebe nada.
+  const mercado = await createDataStore(DONO, { name: 'Mercado', adapterKind: 'market_data' })
+  const ds = await createDataset(DONO, mercado._id, { key: 'candles', name: 'Candles', schema: { type: 'object', properties: { close: { type: 'number' } } } })
+  assert.equal(ds.recorderId, undefined)
+})

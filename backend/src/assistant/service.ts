@@ -178,7 +178,25 @@ async function runTurn(
 
   const respondidas = { ...projeto.answers }
   if (projeto.pendingQuestion && opts.answeringPending?.trim()) {
-    respondidas[projeto.pendingQuestion.key] = opts.answeringPending.trim()
+    const texto = opts.answeringPending.trim()
+    /**
+     * O BOTÃO CLICADO VOLTA COMO VALOR, e não como o rótulo que estava escrito nele.
+     *
+     * A tela manda o rótulo — e tem de mandar: é ele que vira a fala da pessoa na conversa
+     * ("Sim, ler de \"Bitcoin\"" lê como resposta; "usar" não lê como nada). Mas o que fica
+     * gravado como RESPOSTA era esse mesmo texto, e quem lê a resposta depois compara com o
+     * valor: `origem:` só vira fato conhecido quando vale "usar" ou "criar".
+     *
+     * Resultado, em todos os cinco projetos da conta do dono: a escolha da origem foi
+     * clicada, gravada, e nunca chegou ao classificador. Ele respondia "sim, ler de Bitcoin"
+     * e o desenho seguia sem saber disso — quando não voltava a perguntar.
+     *
+     * A tradução acontece AQUI porque é aqui que as duas metades existem: o texto que chegou
+     * e as opções que foram oferecidas. Uma resposta digitada, que não casa com rótulo
+     * nenhum, continua valendo como texto.
+     */
+    const escolha = (projeto.pendingQuestion.choices ?? []).find((c) => c.label === texto)
+    respondidas[projeto.pendingQuestion.key] = escolha?.value ?? texto
   }
 
   /**

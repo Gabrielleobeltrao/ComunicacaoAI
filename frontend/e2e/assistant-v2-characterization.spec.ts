@@ -875,3 +875,73 @@ test('AMEAÇA: a rodada que FALHA não deixa na tela uma resposta que nunca foi 
   await expect(page.getByTestId('assistant-message-user')).toHaveCount(1)
   await expect(page.getByTestId('assistant-message-user')).toHaveText(/monta a operação/)
 })
+
+
+/**
+ * A CONVERSA VOLTA DEPOIS DO RELOAD.
+ *
+ * "Por que toda vez que atualizo a página está perdendo o chat?" Não estava perdendo: o
+ * painel procurava um projeto "em andamento" e, não achando, abria vazio. Os cinco projetos
+ * da conta do dono estão APLICADOS, e aplicado é deliberadamente pulado — a regra é boa para
+ * ADIVINHAR qual conversa retomar, e não tem nada a ver com a conversa que a pessoa estava
+ * lendo um segundo antes.
+ */
+test('ACEITAÇÃO: recarregar a página devolve a conversa que estava aberta — mesmo aplicada', async ({ page }) => {
+  const linha = [
+    { id: 'm1', role: 'user', content: 'monta a operação', createdAt: NOW },
+    { id: 'm2', role: 'assistant', content: 'Montei a proposta.', createdAt: NOW },
+  ]
+  let listou = 0
+  await stub(page, { turno: TURNO_PROPOE })
+  await page.route('**/api/assistant/projects/000000000000000000000abc', (r) =>
+    r.fulfill({ json: PROJETO({ hasBlueprint: true, status: 'applied', blueprintHash: 'h1' }) }),
+  )
+  await page.route('**/api/assistant/projects/*/messages', (r) =>
+    r.request().method() === 'POST'
+      ? r.fulfill({ json: { ...PROJETO({ hasBlueprint: true, status: 'applied' }), assistantText: 'ok', question: null } })
+      : r.fulfill({ json: linha }),
+  )
+  // A lista NÃO tem nada em andamento: é a conta do dono, com tudo já aplicado.
+  await page.route('**/api/assistant/projects?**', (r) => {
+    listou += 1
+    return r.fulfill({ json: [] })
+  })
+
+  await page.goto('/dashboard')
+  await page.getByTestId('assistant-launcher').click()
+  await page.getByTestId('assistant-input').fill('monta a operação')
+  await page.getByTestId('assistant-enviar').click()
+  await expect(page.getByTestId('assistant-message-assistant').last()).toContainText('Montei a proposta')
+
+  await page.reload()
+  await page.getByTestId('assistant-launcher').click()
+  await expect(page.getByTestId('assistant-message-assistant').last()).toContainText('Montei a proposta')
+  expect(listou, 'com a conversa lembrada não há o que adivinhar na lista').toBe(0)
+})
+
+test('o "+" ESQUECE a conversa — a próxima abertura começa limpa', async ({ page }) => {
+  const linha = [
+    { id: 'm1', role: 'user', content: 'monta a operação', createdAt: NOW },
+    { id: 'm2', role: 'assistant', content: 'Montei a proposta.', createdAt: NOW },
+  ]
+  await stub(page, { turno: TURNO_PROPOE })
+  await page.route('**/api/assistant/projects/000000000000000000000abc', (r) => r.fulfill({ json: PROJETO({ hasBlueprint: true, status: 'applied' }) }))
+  await page.route('**/api/assistant/projects/*/messages', (r) =>
+    r.request().method() === 'POST'
+      ? r.fulfill({ json: { ...PROJETO({ hasBlueprint: true, status: 'applied' }), assistantText: 'ok', question: null } })
+      : r.fulfill({ json: linha }),
+  )
+  await page.route('**/api/assistant/projects?**', (r) => r.fulfill({ json: [] }))
+
+  await page.goto('/dashboard')
+  await page.getByTestId('assistant-launcher').click()
+  await page.getByTestId('assistant-input').fill('monta a operação')
+  await page.getByTestId('assistant-enviar').click()
+  await expect(page.getByTestId('assistant-message-assistant').last()).toContainText('Montei a proposta')
+
+  await page.getByTestId('assistant-nova-conversa').click()
+  await page.reload()
+  await page.getByTestId('assistant-launcher').click()
+  // Sem a lembrança, e sem nada em andamento na lista: conversa limpa, que é o que o "+" pede.
+  await expect(page.getByTestId('assistant-message-assistant')).toHaveCount(0)
+})
